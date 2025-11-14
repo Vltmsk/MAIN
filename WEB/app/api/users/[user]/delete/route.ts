@@ -20,15 +20,32 @@ export async function DELETE(
       );
     }
     
-    const res = await fetch(`${API_URL}/api/users/${encodeURIComponent(decodedUser)}`, {
+    const encodedUser = encodeURIComponent(decodedUser);
+    const res = await fetch(`${API_URL}/api/users/${encodedUser}`, {
       method: "DELETE",
     });
+    
+    // Проверяем статус ответа
+    if (!res.ok) {
+      let errorData;
+      try {
+        errorData = await res.json();
+      } catch {
+        errorData = { detail: `Backend returned status ${res.status}` };
+      }
+      return NextResponse.json(
+        { error: errorData.detail || errorData.error || `Failed to delete user: ${res.status}` },
+        { status: res.status }
+      );
+    }
+    
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
     console.error("Error deleting user:", error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(
-      { error: "Failed to delete user" },
+      { error: `Failed to delete user: ${errorMessage}` },
       { status: 500 }
     );
   }
