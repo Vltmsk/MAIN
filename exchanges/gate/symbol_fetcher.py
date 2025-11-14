@@ -1,6 +1,8 @@
 """
 Получение списка торговых символов с Gate.io API
 """
+import ssl
+import certifi
 import aiohttp
 from typing import List
 from core.logger import get_logger
@@ -29,7 +31,10 @@ async def fetch_symbols(market: str) -> List[str]:
         return []
     
     try:
-        async with aiohttp.ClientSession() as session:
+        # Используем сертификаты из certifi для безопасных SSL подключений
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        async with aiohttp.ClientSession(connector=connector) as session:
             async with session.get(url) as response:
                 if response.status != 200:
                     logger.warning(f"Gate.io API вернул статус {response.status} для {market}")

@@ -2,8 +2,11 @@
 WebSocket обработчик для Gate.io
 Адаптация существующего Gate к стандарту NEWEX.md
 """
+import ssl
+import certifi
 import asyncio
 import time
+import sys
 from typing import Awaitable, Callable, List
 import websockets
 import json
@@ -78,11 +81,22 @@ async def _ws_connection_worker(
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * BACKOFF_MULTIPLIER + random.uniform(0, 5), MAX_RECONNECT_DELAY)
             
+            # Настройка SSL для websockets
+            # На Windows отключаем проверку SSL-сертификатов (аналогично другим биржам)
+            # На Linux/Mac используем сертификаты из certifi
+            if sys.platform == "win32":
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+            else:
+                ssl_context = ssl.create_default_context(cafile=certifi.where())
+            
             async with websockets.connect(
                 ws_url,
                 ping_interval=None,  # Отключаем автоматические ping, используем ручные JSON ping
                 ping_timeout=None,
                 close_timeout=10,
+                ssl=ssl_context,
             ) as websocket:
                 _stats[market]["active_connections"] += 1
                 

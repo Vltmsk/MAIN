@@ -125,7 +125,9 @@ export default function Dashboard() {
   type ConditionalTemplate = {
     conditions: Array<{
       type: "volume" | "delta" | "series";
-      value?: number; // Для volume и delta
+      value?: number; // Для volume и старого формата delta
+      valueMin?: number; // Для delta (минимальное значение)
+      valueMax?: number | null; // Для delta (максимальное значение, null = бесконечность)
       count?: number; // Для series
       timeWindowSeconds?: number; // Для series
     }>;
@@ -1529,15 +1531,26 @@ export default function Dashboard() {
 
     setAdminLoading(true);
     try {
-      const res = await fetch(`/api/users/${userName}/delete`, {
+      // Кодируем имя пользователя для URL (важно для кириллицы и специальных символов)
+      const encodedUserName = encodeURIComponent(userName);
+      const res = await fetch(`/api/users/${encodedUserName}/delete`, {
         method: "DELETE",
       });
 
       if (!res.ok) {
-        throw new Error("Ошибка удаления");
+        // Пытаемся получить детальное сообщение об ошибке
+        let errorMessage = "Ошибка удаления";
+        try {
+          const errorData = await res.json();
+          errorMessage = errorData.error || errorData.detail || errorMessage;
+        } catch {
+          // Если не удалось распарсить JSON, используем стандартное сообщение
+        }
+        throw new Error(errorMessage);
       }
 
-      setAdminMsg("Пользователь удалён");
+      const data = await res.json();
+      setAdminMsg(data.message || "Пользователь удалён");
       setTimeout(() => setAdminMsg(""), 2000);
       fetchAdminUsers();
       if (selectedUserSettings?.user === userName) {
@@ -1545,8 +1558,9 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.error("Ошибка удаления:", err);
-      setAdminMsg("Ошибка удаления");
-      setTimeout(() => setAdminMsg(""), 2000);
+      const errorMessage = err instanceof Error ? err.message : "Ошибка удаления";
+      setAdminMsg(errorMessage);
+      setTimeout(() => setAdminMsg(""), 3000);
     } finally {
       setAdminLoading(false);
     }
@@ -2966,7 +2980,8 @@ export default function Dashboard() {
               }`}>
                 <div className="flex items-center gap-2 mb-1">
                   <h2 className="text-xl font-bold text-white">Интеграция с Telegram</h2>
-                  <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Настройте уведомления через Telegram бота. После настройки вы будете получать сообщения о найденных стрелах в реальном времени.">
+                  <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <title>Настройте уведомления через Telegram бота. После настройки вы будете получать сообщения о найденных стрелах в реальном времени.</title>
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                 </div>
@@ -3212,7 +3227,8 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
                     <h2 className="text-xl font-bold text-white">Формат отправки детекта</h2>
-                    <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Настройте формат сообщений, которые будут отправляться в Telegram при обнаружении стрелы. Используйте вставки для добавления данных о детекте (дельта, объём, биржа и т.д.).">
+                    <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <title>Настройте формат сообщений, которые будут отправляться в Telegram при обнаружении стрелы. Используйте вставки для добавления данных о детекте (дельта, объём, биржа и т.д.).</title>
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
@@ -3479,7 +3495,7 @@ export default function Dashboard() {
                         >
                           <EmojiPicker
                             onEmojiClick={(emojiData) => insertEmoji(emojiData, "messageTemplate", false)}
-                            theme="dark"
+                            theme={"dark" as any}
                             width={350}
                             height={400}
                             previewConfig={{
@@ -3598,7 +3614,8 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
                     <h2 className="text-xl font-bold text-white">Условные форматы сообщений</h2>
-                    <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Создайте дополнительные шаблоны сообщений, которые будут использоваться при выполнении определённых условий (например, большой объём или дельта). Все подходящие шаблоны будут отправлены одновременно.">
+                    <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <title>Создайте дополнительные шаблоны сообщений, которые будут использоваться при выполнении определённых условий (например, большой объём или дельта). Все подходящие шаблоны будут отправлены одновременно.</title>
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
@@ -4071,7 +4088,7 @@ export default function Dashboard() {
                                 >
                                   <EmojiPicker
                                     onEmojiClick={(emojiData) => insertEmoji(emojiData, `conditionalTemplate_${index}`, true)}
-                                    theme="dark"
+                                    theme={"dark" as any}
                                     width={350}
                                     height={400}
                                     previewConfig={{
@@ -4207,7 +4224,8 @@ export default function Dashboard() {
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
                       <h2 className="text-xl font-bold text-white">Фильтры по биржам</h2>
-                      <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Выберите биржи для мониторинга и настройте параметры детектирования для каждой биржи отдельно (Spot и Futures). Можно включить/выключить биржи и настроить минимальные значения дельты, объёма и тени свечи.">
+                      <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <title>Выберите биржи для мониторинга и настройте параметры детектирования для каждой биржи отдельно (Spot и Futures). Можно включить/выключить биржи и настроить минимальные значения дельты, объёма и тени свечи.</title>
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                       </svg>
                     </div>
@@ -4820,7 +4838,8 @@ export default function Dashboard() {
               <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
                 <div className="flex items-center gap-2 mb-1">
                   <h2 className="text-xl font-bold text-white">Чёрный список монет</h2>
-                  <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Добавьте монеты в чёрный список, чтобы исключить их из детектирования. Монеты из этого списка не будут отслеживаться, даже если они соответствуют всем критериям детектирования.">
+                  <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <title>Добавьте монеты в чёрный список, чтобы исключить их из детектирования. Монеты из этого списка не будут отслеживаться, даже если они соответствуют всем критериям детектирования.</title>
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                 </div>

@@ -2,6 +2,8 @@
 WebSocket обработчик для Bitget
 Краткая упрощённая версия для демонстрации стандарта
 """
+import ssl
+import certifi
 import asyncio
 import math
 import random
@@ -226,7 +228,10 @@ async def start(
     
     # Получаем callback для подсчёта трейдов, если передан
     on_trade = kwargs.get('on_trade', None)
-    _session = aiohttp.ClientSession()
+    # Создаём сессию с SSL сертификатами из certifi
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+    _session = aiohttp.ClientSession(connector=connector)
     _builder = CandleBuilder(maxlen=config.memory_max_candles_per_symbol, on_trade=on_trade)
     
     # Проверяем конфигурацию и получаем символы только для включенных рынков

@@ -1,6 +1,8 @@
 """
 WebSocket обработчик для Hyperliquid
 """
+import ssl
+import certifi
 import asyncio
 import math
 from typing import Awaitable, Callable, List
@@ -339,8 +341,10 @@ async def start(
     """
     global _builder, _tasks, _spot_tasks, _linear_tasks, _session
     
-    # Создаём сессию
-    _session = aiohttp.ClientSession()
+    # Создаём сессию с SSL сертификатами из certifi
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+    _session = aiohttp.ClientSession(connector=connector)
     
     # Получаем callback для подсчёта трейдов, если передан
     on_trade = kwargs.get('on_trade', None)

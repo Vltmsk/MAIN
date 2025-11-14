@@ -1,6 +1,8 @@
 """
 Получение списка торговых символов с Bybit API
 """
+import ssl
+import certifi
 import aiohttp
 from typing import List
 
@@ -36,7 +38,10 @@ async def fetch_symbols(market: str) -> List[str]:
     }
     
     try:
-        async with aiohttp.ClientSession() as session:
+        # Используем сертификаты из certifi для безопасных SSL подключений
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        async with aiohttp.ClientSession(connector=connector) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status != 200:
                     return []

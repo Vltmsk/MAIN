@@ -1,6 +1,8 @@
 """
 Получение списка торговых символов с Hyperliquid API
 """
+import ssl
+import certifi
 import aiohttp
 import json
 from typing import List
@@ -27,7 +29,10 @@ async def fetch_symbols(market: str) -> List[str]:
         Список символов (например, ["BTC", "ETH"] или ["BTC/USDC:USDC"])
     """
     try:
-        async with aiohttp.ClientSession() as session:
+        # Используем сертификаты из certifi для безопасных SSL подключений
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        async with aiohttp.ClientSession(connector=connector) as session:
             # Hyperliquid использует POST запросы для получения информации
             # Для спота используем spotMeta, для перпов - meta
             if market == "spot":

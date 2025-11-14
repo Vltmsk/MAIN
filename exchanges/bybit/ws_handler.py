@@ -1,6 +1,8 @@
 """
 WebSocket обработчик для Bybit
 """
+import ssl
+import certifi
 import asyncio
 from typing import Awaitable, Callable, List
 import aiohttp
@@ -189,8 +191,10 @@ async def start(
     # Создаём CandleBuilder
     _builder = CandleBuilder(maxlen=config.memory_max_candles_per_symbol, on_trade=on_trade)
     
-    # Создаём сессию
-    _session = aiohttp.ClientSession()
+    # Создаём сессию с SSL сертификатами из certifi
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+    _session = aiohttp.ClientSession(connector=connector)
     
     # Проверяем конфигурацию и получаем символы только для включенных рынков
     fetch_spot = config.exchanges.bybit_spot

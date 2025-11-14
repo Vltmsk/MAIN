@@ -1,6 +1,8 @@
 """
 Получение списка торговых символов с Bitget API
 """
+import ssl
+import certifi
 import aiohttp
 from typing import List
 
@@ -22,7 +24,10 @@ async def fetch_symbols(market: str) -> List[str]:
         url = f"{BITGET_REST_BASE}/api/v2/spot/public/symbols"
         
         try:
-            async with aiohttp.ClientSession() as session:
+            # Используем сертификаты из certifi для безопасных SSL подключений
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     if resp.status != 200:
                         return []
@@ -53,7 +58,10 @@ async def fetch_symbols(market: str) -> List[str]:
         
         for url in endpoints:
             try:
-                async with aiohttp.ClientSession() as session:
+                # Используем сертификаты из certifi для безопасных SSL подключений
+                ssl_context = ssl.create_default_context(cafile=certifi.where())
+                connector = aiohttp.TCPConnector(ssl=ssl_context)
+                async with aiohttp.ClientSession(connector=connector) as session:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                         if resp.status != 200:
                             continue

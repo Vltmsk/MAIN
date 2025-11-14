@@ -2,6 +2,8 @@
 WebSocket обработчик для Binance
 Binance предоставляет уже готовые 1-секундные свечи через Kline streams
 """
+import ssl
+import certifi
 import asyncio
 from typing import Awaitable, Callable, List
 import aiohttp
@@ -350,8 +352,10 @@ async def start(
     """
     global _builder, _tasks, _spot_tasks, _linear_tasks, _session
     
-    # Создаём сессию
-    _session = aiohttp.ClientSession()
+    # Создаём сессию с SSL сертификатами из certifi
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+    _session = aiohttp.ClientSession(connector=connector)
     
     # Получаем callback для подсчёта трейдов, если передан
     # Для Binance трейды не обрабатываются через CandleBuilder (свечи уже готовые),
