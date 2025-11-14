@@ -1,0 +1,1781 @@
+"""
+Модуль для работы с базой данных SQLite
+"""
+import sqlite3
+import os
+import hashlib
+import json
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
+# Путь к базе данных
+DB_PATH = Path(__file__).parent / "detected_alerts.db"
+
+
+class Database:
+    """Класс для работы с базой данных SQLite"""
+    
+    def __init__(self, db_path: Optional[Path] = None):
+        """
+        Инициализация подключения к БД
+        
+        Args:
+            db_path: Путь к файлу БД (по умолчанию detected_alerts.db в папке BD)
+        """
+        self.db_path = db_path or DB_PATH
+        self._ensure_db_directory()
+        self._init_database()
+    
+    def _ensure_db_directory(self):
+        """Создаёт директорию для БД, если её нет"""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    def _get_connection(self) -> sqlite3.Connection:
+        """
+        Создаёт новое подключение к БД
+        
+        Returns:
+            sqlite3.Connection: Подключение к БД
+        """
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row  # Для доступа к колонкам по имени
+        return conn
+    
+    def _init_database(self):
+        """Инициализирует БД: создаёт все таблицы, если их нет"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Таблица пользователей
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user TEXT UNIQUE NOT NULL,
+                    password_hash TEXT DEFAULT NULL,
+                    tg_token TEXT DEFAULT '',
+                    chat_id TEXT DEFAULT '',
+                    options_json TEXT DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Таблица белого списка логинов
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS registration_whitelist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Миграция: добавляем поле password_hash если его нет
+            try:
+                cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT NULL")
+                logger.info("Добавлено поле password_hash в таблицу users")
+            except sqlite3.OperationalError:
+                # Колонка уже существует, это нормально
+                pass
+            
+            # Таблица стрел (alerts) - уникальные стрелы без user_id
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts INTEGER NOT NULL,
+                    exchange TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    delta REAL NOT NULL,
+                    wick_pct REAL NOT NULL,
+                    volume_usdt REAL NOT NULL,
+                    meta TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(ts, exchange, market, symbol, delta, wick_pct, volume_usdt)
+                )
+            """)
+            
+            # Таблица связи пользователей со стрелами (user_alerts)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alert_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    UNIQUE(alert_id, user_id)
+                )
+            """)
+            
+            # Миграция: проверяем, есть ли старые данные с user_id в alerts
+            try:
+                cursor.execute("PRAGMA table_info(alerts)")
+                columns = [row[1] for row in cursor.fetchall()]
+                has_user_id_column = 'user_id' in columns
+                
+                if has_user_id_column:
+                    # Выполняем миграцию данных
+                    logger.info("Начинаем миграцию данных: разделение alerts и user_alerts")
+                    
+                    # Создаём временную таблицу для старых данных
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS alerts_old_backup AS
+                        SELECT * FROM alerts WHERE 1=0
+                    """)
+                    
+                    # Копируем старые данные
+                    cursor.execute("""
+                        INSERT INTO alerts_old_backup
+                        SELECT * FROM alerts
+                    """)
+                    
+                    # Создаём новую таблицу без user_id
+                    cursor.execute("""
+                        CREATE TABLE alerts_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            ts INTEGER NOT NULL,
+                            exchange TEXT NOT NULL,
+                            market TEXT NOT NULL,
+                            symbol TEXT NOT NULL,
+                            delta REAL NOT NULL,
+                            wick_pct REAL NOT NULL,
+                            volume_usdt REAL NOT NULL,
+                            meta TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(ts, exchange, market, symbol, delta, wick_pct, volume_usdt)
+                        )
+                    """)
+                    
+                    # Получаем все уникальные стрелы из старых данных и вставляем в новую таблицу
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO alerts_new 
+                        (id, ts, exchange, market, symbol, delta, wick_pct, volume_usdt, meta, created_at)
+                        SELECT DISTINCT 
+                            id, ts, exchange, market, symbol, delta, wick_pct, volume_usdt, meta, created_at
+                        FROM alerts_old_backup
+                        WHERE user_id IS NOT NULL
+                    """)
+                    
+                    # Удаляем старую таблицу и переименовываем новую
+                    cursor.execute("DROP TABLE alerts")
+                    cursor.execute("ALTER TABLE alerts_new RENAME TO alerts")
+                    
+                    # Создаём связи в user_alerts
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO user_alerts (alert_id, user_id, created_at)
+                        SELECT 
+                            a.id AS alert_id,
+                            a_old.user_id,
+                            a_old.created_at
+                        FROM alerts_old_backup a_old
+                        INNER JOIN alerts a ON 
+                            a.ts = a_old.ts AND
+                            a.exchange = a_old.exchange AND
+                            a.market = a_old.market AND
+                            a.symbol = a_old.symbol AND
+                            a.delta = a_old.delta AND
+                            a.wick_pct = a_old.wick_pct AND
+                            a.volume_usdt = a_old.volume_usdt
+                        WHERE a_old.user_id IS NOT NULL
+                    """)
+                    
+                    # Удаляем временную таблицу
+                    cursor.execute("DROP TABLE IF EXISTS alerts_old_backup")
+                    
+                    logger.info("Миграция данных завершена успешно")
+            except Exception as e:
+                logger.warning(f"Ошибка при миграции данных (возможно, миграция уже выполнена): {e}")
+                # Продолжаем работу - возможно, миграция уже была выполнена
+            
+            # Таблица ошибок
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS errors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    exchange TEXT,
+                    error_type TEXT NOT NULL,
+                    error_message TEXT NOT NULL,
+                    connection_id TEXT,
+                    market TEXT,
+                    symbol TEXT,
+                    stack_trace TEXT
+                )
+            """)
+            
+            # Таблица настроек бирж - чёрные списки символов
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS exchange_blacklists (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    exchange TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(exchange, market, symbol)
+                )
+            """)
+            
+            # Таблица алиасов символов
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS symbol_aliases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    exchange TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    original_symbol TEXT NOT NULL,
+                    alias TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(exchange, market, original_symbol, alias)
+                )
+            """)
+            
+            # Таблица статистики бирж и рынков
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS exchange_statistics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    exchange TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    symbols_count INTEGER NOT NULL DEFAULT 0,
+                    ws_connections INTEGER NOT NULL DEFAULT 0,
+                    batches_per_ws INTEGER DEFAULT NULL,
+                    reconnects INTEGER NOT NULL DEFAULT 0,
+                    candles_count INTEGER NOT NULL DEFAULT 0,
+                    last_candle_time TIMESTAMP,
+                    ticks_per_second REAL DEFAULT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(exchange, market)
+                )
+            """)
+            
+            # Создаём индексы через отдельные команды (для совместимости)
+            # SQLite не поддерживает INDEX в CREATE TABLE напрямую, создаём отдельно
+            # Гарантируем, что все существующие пользователи находятся в белом списке
+            cursor.execute("""
+                INSERT OR IGNORE INTO registration_whitelist (username)
+                SELECT user FROM users
+            """)
+            cursor.execute("""
+                INSERT OR IGNORE INTO registration_whitelist (username)
+                VALUES (?)
+            """, ("Влад",))
+
+            indexes = [
+                # Индексы для alerts - оптимизация частых запросов
+                ("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts)",),
+                ("CREATE INDEX IF NOT EXISTS idx_alerts_exchange ON alerts(exchange)",),
+                ("CREATE INDEX IF NOT EXISTS idx_alerts_market ON alerts(market)",),
+                ("CREATE INDEX IF NOT EXISTS idx_alerts_symbol ON alerts(symbol)",),
+                ("CREATE INDEX IF NOT EXISTS idx_alerts_exchange_market ON alerts(exchange, market)",),
+                # Составной индекс для запросов статистики по времени и бирже
+                ("CREATE INDEX IF NOT EXISTS idx_alerts_ts_exchange_market ON alerts(ts, exchange, market)",),
+                # Индексы для user_alerts
+                ("CREATE INDEX IF NOT EXISTS idx_user_alerts_alert_id ON user_alerts(alert_id)",),
+                ("CREATE INDEX IF NOT EXISTS idx_user_alerts_user_id ON user_alerts(user_id)",),
+                ("CREATE INDEX IF NOT EXISTS idx_user_alerts_alert_user ON user_alerts(alert_id, user_id)",),
+                # Индекс для быстрого поиска пользователей по имени
+                ("CREATE INDEX IF NOT EXISTS idx_users_user ON users(user)",),
+                # Индексы для errors
+                ("CREATE INDEX IF NOT EXISTS idx_errors_timestamp ON errors(timestamp)",),
+                ("CREATE INDEX IF NOT EXISTS idx_errors_exchange ON errors(exchange)",),
+                ("CREATE INDEX IF NOT EXISTS idx_errors_error_type ON errors(error_type)",),
+                # Составной индекс для фильтрации ошибок по времени и бирже
+                ("CREATE INDEX IF NOT EXISTS idx_errors_timestamp_exchange ON errors(timestamp, exchange)",),
+                # Индексы для exchange_statistics
+                ("CREATE INDEX IF NOT EXISTS idx_exchange_statistics_exchange ON exchange_statistics(exchange)",),
+                ("CREATE INDEX IF NOT EXISTS idx_exchange_statistics_market ON exchange_statistics(market)",),
+                ("CREATE INDEX IF NOT EXISTS idx_exchange_statistics_exchange_market ON exchange_statistics(exchange, market)",),
+                # Индексы для registration_whitelist
+                ("CREATE INDEX IF NOT EXISTS idx_registration_whitelist_username ON registration_whitelist(username)",),
+                # Индексы для exchange_blacklists - для быстрой проверки
+                ("CREATE INDEX IF NOT EXISTS idx_exchange_blacklists_exchange_market_symbol ON exchange_blacklists(exchange, market, symbol)",),
+                # Индексы для symbol_aliases
+                ("CREATE INDEX IF NOT EXISTS idx_symbol_aliases_exchange_market_symbol ON symbol_aliases(exchange, market, original_symbol)",),
+            ]
+            
+            for index_sql in indexes:
+                cursor.execute(index_sql[0])
+            
+            conn.commit()
+            logger.info(f"База данных инициализирована: {self.db_path}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при инициализации БД: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    # ==================== РАБОТА С ПОЛЬЗОВАТЕЛЯМИ ====================
+    
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        """Хеширует пароль используя SHA-256"""
+        return hashlib.sha256(password.encode('utf-8')).hexdigest()
+    
+    @staticmethod
+    def _verify_password(password: str, password_hash: str) -> bool:
+        """Проверяет пароль против хеша"""
+        return Database._hash_password(password) == password_hash
+    
+    def register_user(self, user: str, password: str, tg_token: str = "", 
+                     chat_id: str = "", options_json: str = "{}") -> int:
+        """
+        Регистрирует нового пользователя
+        
+        Args:
+            user: Имя пользователя (уникальное)
+            password: Пароль пользователя
+            tg_token: Telegram токен
+            chat_id: Telegram Chat ID
+            options_json: JSON строка с настройками (thresholds, exchanges)
+            
+        Returns:
+            int: ID созданного пользователя
+            
+        Raises:
+            ValueError: Если пользователь уже существует
+        """
+        whitelisted_username = self.get_whitelisted_username(user)
+        if not whitelisted_username:
+            raise ValueError("Регистрация для этого логина не разрешена. Обратитесь к администратору.")
+
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Используем каноничное имя пользователя из белого списка
+            normalized_user = whitelisted_username
+
+            # Проверяем, существует ли пользователь (без учета регистра для лучшей проверки)
+            cursor.execute("SELECT id, user FROM users WHERE LOWER(user) = LOWER(?)", (normalized_user,))
+            existing = cursor.fetchone()
+            if existing:
+                existing_username = existing[1] if len(existing) > 1 else user
+                raise ValueError(f"Пользователь с логином '{existing_username}' уже зарегистрирован")
+            
+            # Дополнительная проверка точного совпадения (на случай если регистр отличается)
+            cursor.execute("SELECT id FROM users WHERE user = ?", (normalized_user,))
+            if cursor.fetchone():
+                raise ValueError(f"Пользователь '{normalized_user}' уже зарегистрирован")
+            
+            # Хешируем пароль
+            password_hash = self._hash_password(password)
+            
+            # Создаём нового пользователя
+            cursor.execute("""
+                INSERT INTO users (user, password_hash, tg_token, chat_id, options_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (normalized_user, password_hash, tg_token, chat_id, options_json))
+            conn.commit()
+            user_id = cursor.lastrowid
+            logger.info(f"Зарегистрирован новый пользователь {normalized_user} (ID: {user_id})")
+            return user_id
+        except ValueError:
+            # Пробрасываем ValueError как есть (пользователь уже существует)
+            raise
+        except sqlite3.IntegrityError as e:
+            # Перехватываем ошибку уникальности от SQLite
+            conn.rollback()
+            logger.warning(f"Попытка регистрации существующего пользователя {normalized_user}: {e}")
+            raise ValueError(f"Пользователь '{normalized_user}' уже зарегистрирован")
+        except Exception as e:
+            logger.error(f"Ошибка при регистрации пользователя {normalized_user}: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def authenticate_user(self, user: str, password: str) -> Optional[Dict[str, Any]]:
+        """
+        Проверяет аутентификацию пользователя
+        
+        ВАЖНО: Эта функция ТОЛЬКО читает данные из базы, НЕ обновляет их.
+        При входе пользователя его настройки (tg_token, chat_id, options_json) 
+        остаются неизменными.
+        
+        Args:
+            user: Имя пользователя
+            password: Пароль пользователя
+            
+        Returns:
+            Dict с данными пользователя или None если неверный логин/пароль
+        """
+        whitelisted_username = self.get_whitelisted_username(user)
+        if not whitelisted_username:
+            logger.warning(f"Попытка входа с логином '{user}', отсутствующим в белом списке")
+            return None
+
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            # ТОЛЬКО SELECT - никаких UPDATE или INSERT
+            cursor.execute("SELECT * FROM users WHERE user = ?", (whitelisted_username,))
+            row = cursor.fetchone()
+            
+            if not row:
+                logger.warning(f"Попытка входа: пользователь '{whitelisted_username}' не найден")
+                return None
+            
+            user_data = dict(row)
+            password_hash = user_data.get('password_hash')
+            
+            # Если у пользователя есть пароль - СТРОГО проверяем его
+            if password_hash:
+                # Проверяем пароль
+                if not self._verify_password(password, password_hash):
+                    logger.warning(f"Неверный пароль для пользователя '{whitelisted_username}' - доступ запрещён")
+                    return None
+                logger.info(f"Успешная аутентификация пользователя '{whitelisted_username}' (пароль верный, данные НЕ обновляются)")
+                return user_data
+            
+            # Если у пользователя нет пароля (старый пользователь без пароля)
+            # Для обратной совместимости разрешаем вход, но логируем это
+            logger.info(f"Пользователь '{whitelisted_username}' не имеет пароля (старый пользователь), разрешаем вход (данные НЕ обновляются)")
+            return user_data
+        except Exception as e:
+            logger.error(f"Ошибка при аутентификации пользователя {whitelisted_username}: {e}", exc_info=True)
+            return None
+        finally:
+            conn.close()
+    
+    def create_user(self, user: str, tg_token: str = "", chat_id: str = "", 
+                   options_json: str = "{}") -> int:
+        """
+        Создаёт нового пользователя или обновляет существующего (БЕЗ перезаписи пароля)
+        ВНИМАНИЕ: Используйте register_user() для регистрации новых пользователей с паролем
+        
+        Args:
+            user: Имя пользователя (уникальное)
+            tg_token: Telegram токен
+            chat_id: Telegram Chat ID
+            options_json: JSON строка с настройками (thresholds, exchanges)
+            
+        Returns:
+            int: ID созданного пользователя
+        """
+        normalized_user = self._normalize_username(user)
+        if not normalized_user:
+            raise ValueError("Имя пользователя не может быть пустым")
+
+        canonical_user = self.add_login_to_whitelist(normalized_user)
+
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Проверяем, существует ли пользователь (без учета регистра)
+            cursor.execute("""
+                SELECT id, user, password_hash 
+                FROM users 
+                WHERE LOWER(user) = LOWER(?)
+            """, (canonical_user,))
+            existing_user = cursor.fetchone()
+            
+            if existing_user:
+                stored_username = existing_user["user"] if isinstance(existing_user, sqlite3.Row) else existing_user[1]
+                user_id = existing_user["id"] if isinstance(existing_user, sqlite3.Row) else existing_user[0]
+
+                # Обновляем существующего пользователя (БЕЗ изменения пароля)
+                if stored_username != canonical_user:
+                    cursor.execute("""
+                        UPDATE users 
+                        SET user = ?, tg_token = ?, chat_id = ?, options_json = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (canonical_user, tg_token, chat_id, options_json, user_id))
+                else:
+                    cursor.execute("""
+                        UPDATE users 
+                        SET tg_token = ?, chat_id = ?, options_json = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (tg_token, chat_id, options_json, user_id))
+                conn.commit()
+                logger.debug(f"Обновлён пользователь {canonical_user} (ID: {user_id}) - пароль не изменён")
+            else:
+                # Создаём нового пользователя БЕЗ пароля (для обратной совместимости)
+                cursor.execute("""
+                    INSERT INTO users (user, tg_token, chat_id, options_json, updated_at)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, (canonical_user, tg_token, chat_id, options_json))
+                conn.commit()
+                user_id = cursor.lastrowid
+                logger.debug(f"Создан пользователь {canonical_user} (ID: {user_id}) без пароля")
+            
+            return user_id
+        except Exception as e:
+            logger.error(f"Ошибка при создании пользователя {canonical_user}: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def get_user(self, user: str) -> Optional[Dict[str, Any]]:
+        """
+        Получает пользователя по имени
+        
+        Args:
+            user: Имя пользователя
+            
+        Returns:
+            Dict с данными пользователя или None
+        """
+        conn = self._get_connection()
+        try:
+            # Логируем для отладки
+            logger.debug(f"[Database] get_user called with: '{user}' (type: {type(user)}, length: {len(user)})")
+            logger.debug(f"[Database] User bytes: {user.encode('utf-8')}")
+            
+            # Получаем всех пользователей для сравнения
+            cursor = conn.cursor()
+            cursor.execute("SELECT user FROM users")
+            all_users = [row[0] for row in cursor.fetchall()]
+            logger.debug(f"[Database] All users in DB: {all_users}")
+            
+            # Выполняем поиск
+            cursor.execute("SELECT * FROM users WHERE user = ?", (user,))
+            row = cursor.fetchone()
+            
+            if row:
+                user_dict = dict(row)
+                logger.debug(f"[Database] User found: '{user_dict['user']}' (id: {user_dict.get('id')})")
+                return user_dict
+            else:
+                logger.warning(f"[Database] User '{user}' not found. Available users: {all_users}")
+                # Попробуем найти без учета регистра (для отладки)
+                cursor.execute("SELECT * FROM users WHERE LOWER(user) = LOWER(?)", (user,))
+                row_case_insensitive = cursor.fetchone()
+                if row_case_insensitive:
+                    found_user = dict(row_case_insensitive)
+                    logger.warning(f"[Database] Found user with different case: '{found_user['user']}' (requested: '{user}')")
+                return None
+        except Exception as e:
+            logger.error(f"Ошибка при получении пользователя {user}: {e}", exc_info=True)
+            return None
+        finally:
+            conn.close()
+    
+    def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Получает пользователя по ID
+        
+        Args:
+            user_id: ID пользователя
+            
+        Returns:
+            Dict с данными пользователя или None
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Ошибка при получении пользователя по ID {user_id}: {e}", exc_info=True)
+            return None
+        finally:
+            conn.close()
+    
+    def get_all_users(self) -> List[Dict[str, Any]]:
+        """
+        Получает всех пользователей
+        
+        Returns:
+            List[Dict]: Список всех пользователей
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users ORDER BY created_at DESC")
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка при получении всех пользователей: {e}", exc_info=True)
+            return []
+        finally:
+            conn.close()
+    
+    def update_user_password(self, user: str, password: str) -> bool:
+        """
+        Устанавливает или обновляет пароль для существующего пользователя
+        
+        Args:
+            user: Имя пользователя
+            password: Новый пароль
+            
+        Returns:
+            bool: True если пароль успешно установлен, False если пользователь не найден
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Проверяем, существует ли пользователь
+            cursor.execute("SELECT id FROM users WHERE user = ?", (user,))
+            if not cursor.fetchone():
+                logger.warning(f"Попытка установить пароль для несуществующего пользователя '{user}'")
+                return False
+            
+            # Хешируем пароль
+            password_hash = self._hash_password(password)
+            
+            # Обновляем пароль
+            cursor.execute("""
+                UPDATE users 
+                SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user = ?
+            """, (password_hash, user))
+            conn.commit()
+            logger.info(f"Пароль успешно установлен для пользователя '{user}'")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при установке пароля для пользователя {user}: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def update_user_settings(self, user: str, tg_token: str = None, 
+                            chat_id: str = None, options_json: str = None):
+        """
+        Обновляет настройки пользователя
+        
+        Args:
+            user: Имя пользователя
+            tg_token: Новый Telegram токен (опционально)
+            chat_id: Новый Chat ID (опционально)
+            options_json: Новые настройки в JSON (опционально)
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Собираем только те поля, которые нужно обновить
+            updates = []
+            params = []
+            
+            if tg_token is not None:
+                updates.append("tg_token = ?")
+                params.append(tg_token)
+            if chat_id is not None:
+                updates.append("chat_id = ?")
+                params.append(chat_id)
+            if options_json is not None:
+                updates.append("options_json = ?")
+                params.append(options_json)
+            
+            if not updates:
+                return  # Нечего обновлять
+            
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(user)
+            
+            sql = f"UPDATE users SET {', '.join(updates)} WHERE user = ?"
+            cursor.execute(sql, params)
+            conn.commit()
+            logger.debug(f"Обновлены настройки пользователя {user}")
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении настроек пользователя {user}: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def update_user_timezone(
+        self,
+        user: str,
+        timezone: str,
+        timezone_offset_minutes: Optional[int] = None,
+        timezone_offset_formatted: Optional[str] = None,
+        timezone_client_locale: Optional[str] = None,
+        source: str = "login_auto_detect",
+    ) -> bool:
+        """
+        Обновляет информацию о временной зоне пользователя в options_json.
+
+        Args:
+            user: Имя пользователя
+            timezone: Идентификатор временной зоны (например, "Europe/Moscow")
+            timezone_offset_minutes: Смещение в минутах относительно UTC
+            timezone_offset_formatted: Строковое представление смещения (например, "+03:00")
+            timezone_client_locale: Локаль браузера пользователя
+            source: Источник обновления (по умолчанию login_auto_detect)
+
+        Returns:
+            bool: True если данные были обновлены, False если изменений нет
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT options_json FROM users WHERE user = ?",
+                (user,),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                logger.warning(f"Попытка обновления временной зоны для несуществующего пользователя '{user}'")
+                return False
+
+            raw_options = row["options_json"] if isinstance(row, sqlite3.Row) else row[0]
+            options: Dict[str, Any] = {}
+
+            if raw_options:
+                try:
+                    options = json.loads(raw_options)
+                    if not isinstance(options, dict):
+                        logger.warning(f"options_json пользователя '{user}' не является объектом, перезаписываем")
+                        options = {}
+                except json.JSONDecodeError as decode_error:
+                    logger.warning(
+                        f"Не удалось распарсить options_json пользователя '{user}': {decode_error}. "
+                        "Создаём новый объект настроек."
+                    )
+                    options = {}
+
+            # Подготовка данных о временной зоне
+            options_updated = dict(options)  # Копия для сравнения
+            options_updated["timezone"] = timezone
+
+            if timezone_offset_minutes is not None:
+                options_updated["timezone_offset_minutes"] = timezone_offset_minutes
+            else:
+                options_updated.pop("timezone_offset_minutes", None)
+
+            if timezone_offset_formatted:
+                options_updated["timezone_offset_formatted"] = timezone_offset_formatted
+            else:
+                options_updated.pop("timezone_offset_formatted", None)
+
+            if timezone_client_locale:
+                options_updated["timezone_locale"] = timezone_client_locale
+            else:
+                options_updated.pop("timezone_locale", None)
+
+            timezone_meta = options_updated.get("timezone_meta")
+            if not isinstance(timezone_meta, dict):
+                timezone_meta = {}
+            timezone_meta.update(
+                {
+                    "detected_at": datetime.utcnow().isoformat(),
+                    "source": source,
+                }
+            )
+            options_updated["timezone_meta"] = timezone_meta
+
+            serialized_new = json.dumps(options_updated, ensure_ascii=False)
+            serialized_old = json.dumps(options, ensure_ascii=False)
+
+            if serialized_new == serialized_old:
+                logger.debug(f"Временная зона пользователя '{user}' не изменилась, обновление не требуется")
+                return False
+
+            cursor.execute(
+                """
+                UPDATE users
+                SET options_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user = ?
+                """,
+                (serialized_new, user),
+            )
+            conn.commit()
+            logger.info(
+                f"Обновлена временная зона пользователя '{user}' на '{timezone}' "
+                f"(offset: {timezone_offset_formatted or timezone_offset_minutes})"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении временной зоны пользователя {user}: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def delete_user(self, user: str):
+        """
+        Удаляет пользователя и соответствующий логин из белого списка
+        
+        Args:
+            user: Имя пользователя
+        """
+        canonical = self.get_whitelisted_username(user)
+        normalized = self._normalize_username(user)
+        target_user = canonical or normalized
+
+        if not target_user:
+            raise ValueError("Имя пользователя не может быть пустым")
+
+        conn = self._get_connection()
+        deleted_rows = 0
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM users WHERE LOWER(user) = LOWER(?)", (target_user,))
+            deleted_rows = cursor.rowcount
+            conn.commit()
+            logger.debug(f"Удалён пользователь {target_user} (записей в users: {deleted_rows})")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении пользователя {target_user}: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        try:
+            removed_from_whitelist = self.remove_login_from_whitelist(target_user)
+        except ValueError:
+            removed_from_whitelist = False
+        return {
+            "user": target_user,
+            "removed_from_users": deleted_rows > 0,
+            "removed_from_whitelist": removed_from_whitelist,
+        }
+
+    # ==================== РАБОТА С БЕЛЫМ СПИСКОМ ====================
+
+    def _normalize_username(self, username: str) -> str:
+        """Обрезает пробелы вокруг логина."""
+        return username.strip()
+
+    def get_whitelisted_username(self, username: str) -> Optional[str]:
+        """
+        Возвращает каноничное имя пользователя из белого списка (без учёта регистра).
+        """
+        normalized = self._normalize_username(username)
+        if not normalized:
+            return None
+
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT username FROM registration_whitelist WHERE username = ? COLLATE NOCASE",
+                (normalized,),
+            )
+            row = cursor.fetchone()
+            return row["username"] if row else None
+        except Exception as e:
+            logger.error(f"Ошибка при получении логина из белого списка: {e}", exc_info=True)
+            return None
+        finally:
+            conn.close()
+
+    def is_login_whitelisted(self, username: str) -> bool:
+        """
+        Проверяет, находится ли логин в белом списке.
+        """
+        return self.get_whitelisted_username(username) is not None
+
+    def add_login_to_whitelist(self, username: str) -> str:
+        """
+        Добавляет логин в белый список.
+
+        Args:
+            username: Логин пользователя
+
+        Returns:
+            Каноничное имя пользователя, сохранённое в белом списке.
+        """
+        normalized = self._normalize_username(username)
+        if not normalized:
+            raise ValueError("Логин не может быть пустым")
+
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            existing = self.get_whitelisted_username(normalized)
+            if existing:
+                return existing
+
+            cursor.execute(
+                "INSERT INTO registration_whitelist (username) VALUES (?)",
+                (normalized,),
+            )
+            conn.commit()
+            logger.info(f"Добавлен логин '{normalized}' в белый список")
+            return normalized
+        except ValueError:
+            raise
+        except sqlite3.IntegrityError:
+            # На всякий случай возвращаем каноничное имя, если логин уже существовал (без учёта регистра)
+            existing = self.get_whitelisted_username(normalized)
+            if existing:
+                return existing
+            raise ValueError(f"Логин '{normalized}' уже существует в белом списке")
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении логина '{normalized}' в белый список: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def remove_login_from_whitelist(self, username: str) -> bool:
+        """
+        Удаляет логин из белого списка.
+
+        Returns:
+            bool: True если логин был удалён.
+        """
+        normalized = self._normalize_username(username)
+        if not normalized:
+            raise ValueError("Логин не может быть пустым")
+
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM registration_whitelist WHERE username = ? COLLATE NOCASE",
+                (normalized,),
+            )
+            deleted = cursor.rowcount > 0
+            if deleted:
+                conn.commit()
+                logger.info(f"Логин '{normalized}' удалён из белого списка")
+            else:
+                conn.rollback()
+            return deleted
+        except Exception as e:
+            logger.error(f"Ошибка при удалении логина '{normalized}' из белого списка: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_whitelist(self) -> List[Dict[str, Any]]:
+        """
+        Возвращает все логины из белого списка.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT username, created_at
+                FROM registration_whitelist
+                ORDER BY created_at DESC, username ASC
+            """)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error("Ошибка при получении белого списка: %s", e, exc_info=True)
+            return []
+        finally:
+            conn.close()
+    
+    # ==================== РАБОТА СО СТРЕЛАМИ (ALERTS) ====================
+    
+    def add_alert(self, ts: int, exchange: str, market: str, symbol: str,
+                 delta: float, wick_pct: float, volume_usdt: float,
+                 meta: Optional[str] = None, user_id: Optional[int] = None) -> int:
+        """
+        Добавляет новую стрелу в БД или связывает существующую с пользователем
+        
+        Args:
+            ts: Timestamp в миллисекундах
+            exchange: Название биржи
+            market: Тип рынка (spot/linear)
+            symbol: Торговая пара
+            delta: Изменение цены в процентах
+            wick_pct: Процент тени свечи
+            volume_usdt: Объём в USDT
+            meta: Дополнительная метаинформация (JSON строка)
+            user_id: ID пользователя, для которого обнаружена стрела
+            
+        Returns:
+            int: ID созданной или найденной записи в alerts
+        """
+        if user_id is None:
+            raise ValueError("user_id обязателен для добавления стрелы")
+        
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Проверяем, существует ли уже такая стрела по уникальному ключу
+            cursor.execute("""
+                SELECT id FROM alerts 
+                WHERE ts = ? AND exchange = ? AND market = ? AND symbol = ? 
+                  AND delta = ? AND wick_pct = ? AND volume_usdt = ?
+            """, (ts, exchange, market, symbol, delta, wick_pct, volume_usdt))
+            
+            existing_alert = cursor.fetchone()
+            
+            if existing_alert:
+                # Стрела уже существует, используем её ID
+                alert_id = existing_alert[0]
+                logger.debug(f"Найдена существующая стрела (ID: {alert_id}): {exchange} {market} {symbol} (delta: {delta}%)")
+            else:
+                # Создаём новую стрелу
+                cursor.execute("""
+                    INSERT INTO alerts 
+                    (ts, exchange, market, symbol, delta, wick_pct, volume_usdt, meta)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (ts, exchange, market, symbol, delta, wick_pct, volume_usdt, meta))
+                alert_id = cursor.lastrowid
+                logger.debug(f"Создана новая стрела (ID: {alert_id}): {exchange} {market} {symbol} (delta: {delta}%)")
+            
+            # Создаём связь пользователя со стрелой (если её ещё нет)
+            cursor.execute("""
+                INSERT OR IGNORE INTO user_alerts (alert_id, user_id)
+                VALUES (?, ?)
+            """, (alert_id, user_id))
+            
+            conn.commit()
+            return alert_id
+        except sqlite3.IntegrityError as e:
+            # Это может быть из-за UNIQUE constraint в user_alerts - это нормально
+            if "UNIQUE constraint failed" in str(e):
+                logger.debug(f"Связь пользователя {user_id} со стрелой {alert_id} уже существует")
+                conn.rollback()
+                # Возвращаем alert_id, даже если связь уже есть
+                return alert_id
+            else:
+                logger.error(f"Ошибка целостности при добавлении стрелы: {e}", exc_info=True)
+                conn.rollback()
+                raise
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении стрелы: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def get_alerts(self, exchange: Optional[str] = None, market: Optional[str] = None,
+                  symbol: Optional[str] = None, user_id: Optional[int] = None,
+                  ts_from: Optional[int] = None, ts_to: Optional[int] = None,
+                  delta_min: Optional[float] = None, delta_max: Optional[float] = None,
+                  volume_min: Optional[float] = None, volume_max: Optional[float] = None,
+                  limit: Optional[int] = None, offset: Optional[int] = None,
+                  order_by: str = "ts DESC") -> List[Dict[str, Any]]:
+        """
+        Получает стрелы с фильтрацией
+        
+        Args:
+            exchange: Фильтр по бирже
+            market: Фильтр по рынку
+            symbol: Фильтр по символу
+            user_id: Фильтр по пользователю (если None, возвращает все стрелы)
+            ts_from: Начало временного диапазона (timestamp в мс)
+            ts_to: Конец временного диапазона (timestamp в мс)
+            delta_min: Минимальная дельта
+            delta_max: Максимальная дельта
+            volume_min: Минимальный объём
+            volume_max: Максимальный объём
+            limit: Лимит записей
+            offset: Смещение для пагинации
+            order_by: Поле для сортировки (по умолчанию ts DESC)
+            
+        Returns:
+            List[Dict]: Список стрел (с полем user_id для обратной совместимости)
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            conditions = []
+            params = []
+            
+            # Если user_id указан, используем JOIN с user_alerts
+            if user_id is not None:
+                join_clause = "INNER JOIN user_alerts ua ON a.id = ua.alert_id"
+                conditions.append("ua.user_id = ?")
+                params.append(user_id)
+            else:
+                join_clause = ""
+            
+            # Условия для фильтрации по полям alerts
+            if exchange:
+                conditions.append("a.exchange = ?")
+                params.append(exchange)
+            if market:
+                conditions.append("a.market = ?")
+                params.append(market)
+            if symbol:
+                conditions.append("a.symbol = ?")
+                params.append(symbol)
+            if ts_from is not None:
+                conditions.append("a.ts >= ?")
+                params.append(ts_from)
+            if ts_to is not None:
+                conditions.append("a.ts <= ?")
+                params.append(ts_to)
+            if delta_min is not None:
+                conditions.append("a.delta >= ?")
+                params.append(delta_min)
+            if delta_max is not None:
+                conditions.append("a.delta <= ?")
+                params.append(delta_max)
+            if volume_min is not None:
+                conditions.append("a.volume_usdt >= ?")
+                params.append(volume_min)
+            if volume_max is not None:
+                conditions.append("a.volume_usdt <= ?")
+                params.append(volume_max)
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            limit_clause = f"LIMIT {limit}" if limit else ""
+            offset_clause = f"OFFSET {offset}" if offset else ""
+            
+            # Если user_id указан, возвращаем user_id для обратной совместимости
+            if user_id is not None:
+                select_clause = """
+                    SELECT a.id, a.ts, a.exchange, a.market, a.symbol, a.delta, 
+                           a.wick_pct, a.volume_usdt, a.meta, a.created_at,
+                           ua.user_id
+                    FROM alerts a
+                """
+            else:
+                # Если user_id не указан, возвращаем все стрелы без user_id
+                select_clause = """
+                    SELECT a.id, a.ts, a.exchange, a.market, a.symbol, a.delta, 
+                           a.wick_pct, a.volume_usdt, a.meta, a.created_at,
+                           NULL as user_id
+                    FROM alerts a
+                """
+            
+            # Формируем ORDER BY с алиасом таблицы
+            order_by_clause = order_by
+            if "ts" in order_by:
+                order_by_clause = order_by.replace("ts", "a.ts")
+            elif "created_at" in order_by:
+                order_by_clause = order_by.replace("created_at", "a.created_at")
+            elif "delta" in order_by:
+                order_by_clause = order_by.replace("delta", "a.delta")
+            elif "volume_usdt" in order_by:
+                order_by_clause = order_by.replace("volume_usdt", "a.volume_usdt")
+            
+            sql = f"""
+                {select_clause}
+                {join_clause}
+                {where_clause}
+                ORDER BY {order_by_clause}
+                {limit_clause}
+                {offset_clause}
+            """
+            
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка при получении стрел: {e}", exc_info=True)
+            return []
+        finally:
+            conn.close()
+    
+    def clear_alerts(self, exchange: Optional[str] = None, market: Optional[str] = None,
+                     user_id: Optional[int] = None) -> int:
+        """
+        Очищает стрелы (удаляет связи user_alerts или сами стрелы)
+        
+        Args:
+            exchange: Если указано, удаляет только для этой биржи
+            market: Если указано, удаляет только для этого рынка (spot/linear)
+            user_id: Если указано, удаляет только связи для этого пользователя (без удаления самих стрел)
+            
+        Returns:
+            int: Количество удалённых записей
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            if user_id is not None:
+                # Удаляем только связи пользователя со стрелами (не сами стрелы)
+                conditions = ["ua.user_id = ?"]
+                params = [user_id]
+                
+                # Добавляем фильтры по бирже и рынку через JOIN
+                join_clause = "INNER JOIN alerts a ON ua.alert_id = a.id"
+                if exchange:
+                    conditions.append("a.exchange = ?")
+                    params.append(exchange)
+                if market:
+                    conditions.append("a.market = ?")
+                    params.append(market)
+                
+                where_clause = "WHERE " + " AND ".join(conditions)
+                
+                # Получаем количество связей для удаления
+                count_query = f"SELECT COUNT(*) FROM user_alerts ua {join_clause} {where_clause}"
+                cursor.execute(count_query, params)
+                count = cursor.fetchone()[0]
+                
+                # Удаляем связи
+                delete_query = f"DELETE FROM user_alerts WHERE id IN (SELECT ua.id FROM user_alerts ua {join_clause} {where_clause})"
+                cursor.execute(delete_query, params)
+            else:
+                # Удаляем все стрелы (и связи через CASCADE)
+                conditions = []
+                params = []
+                
+                if exchange:
+                    conditions.append("exchange = ?")
+                    params.append(exchange)
+                if market:
+                    conditions.append("market = ?")
+                    params.append(market)
+                
+                where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+                
+                # Получаем количество стрел для удаления
+                count_query = f"SELECT COUNT(*) FROM alerts {where_clause}"
+                cursor.execute(count_query, params)
+                count = cursor.fetchone()[0]
+                
+                # Удаляем стрелы (связи удалятся автоматически через CASCADE)
+                delete_query = f"DELETE FROM alerts {where_clause}"
+                cursor.execute(delete_query, params)
+            
+            conn.commit()
+            logger.info(f"Очищено {count} записей" + 
+                       (f" (exchange={exchange}, market={market}, user_id={user_id})" if exchange or market or user_id is not None else ""))
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"Ошибка при очистке alerts: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def delete_user_spikes(self, user: str) -> int:
+        """
+        Удаляет всю статистику стрел для указанного пользователя
+        
+        Args:
+            user: Имя пользователя
+            
+        Returns:
+            int: Количество удалённых связей (user_alerts)
+        """
+        user_data = self.get_user(user)
+        if not user_data:
+            raise ValueError(f"Пользователь '{user}' не найден")
+        
+        user_id = user_data["id"]
+        return self.clear_alerts(user_id=user_id)
+    
+    def get_alerts_count(self, exchange: Optional[str] = None, market: Optional[str] = None,
+                        symbol: Optional[str] = None, user_id: Optional[int] = None,
+                        ts_from: Optional[int] = None, ts_to: Optional[int] = None) -> int:
+        """
+        Получает количество стрел с фильтрацией
+        
+        Args:
+            exchange: Фильтр по бирже
+            market: Фильтр по рынку
+            symbol: Фильтр по символу
+            user_id: Фильтр по пользователю (если None, считает все стрелы)
+            ts_from: Начало временного диапазона
+            ts_to: Конец временного диапазона
+            
+        Returns:
+            int: Количество записей
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            conditions = []
+            params = []
+            
+            # Если user_id указан, используем JOIN с user_alerts
+            if user_id is not None:
+                join_clause = "INNER JOIN user_alerts ua ON a.id = ua.alert_id"
+                conditions.append("ua.user_id = ?")
+                params.append(user_id)
+            else:
+                join_clause = ""
+            
+            # Условия для фильтрации по полям alerts
+            if exchange:
+                conditions.append("a.exchange = ?")
+                params.append(exchange)
+            if market:
+                conditions.append("a.market = ?")
+                params.append(market)
+            if symbol:
+                conditions.append("a.symbol = ?")
+                params.append(symbol)
+            if ts_from is not None:
+                conditions.append("a.ts >= ?")
+                params.append(ts_from)
+            if ts_to is not None:
+                conditions.append("a.ts <= ?")
+                params.append(ts_to)
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            
+            sql = f"SELECT COUNT(DISTINCT a.id) FROM alerts a {join_clause} {where_clause}"
+            cursor.execute(sql, params)
+            return cursor.fetchone()[0]
+        except Exception as e:
+            logger.error(f"Ошибка при подсчёте стрел: {e}", exc_info=True)
+            return 0
+        finally:
+            conn.close()
+    
+    # ==================== РАБОТА С ОШИБКАМИ ====================
+    
+    def add_error(self, error_type: str, error_message: str,
+                 exchange: Optional[str] = None, connection_id: Optional[str] = None,
+                 market: Optional[str] = None, symbol: Optional[str] = None,
+                 stack_trace: Optional[str] = None):
+        """
+        Добавляет ошибку в БД
+        
+        Args:
+            error_type: Тип ошибки (например, "reconnect", "websocket_error", "critical")
+            error_message: Сообщение об ошибке
+            exchange: Название биржи
+            connection_id: ID соединения
+            market: Тип рынка
+            symbol: Торговая пара
+            stack_trace: Стек трейс ошибки
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO errors 
+                (error_type, error_message, exchange, connection_id, market, symbol, stack_trace)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (error_type, error_message, exchange, connection_id, market, symbol, stack_trace))
+            conn.commit()
+            logger.debug(f"Добавлена ошибка: {error_type} - {exchange}")
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении ошибки в БД: {e}", exc_info=True)
+            conn.rollback()
+        finally:
+            conn.close()
+    
+    def get_errors(self, exchange: Optional[str] = None,
+                  error_type: Optional[str] = None,
+                  timestamp_from: Optional[str] = None,
+                  timestamp_to: Optional[str] = None,
+                  limit: Optional[int] = None,
+                  order_by: str = "timestamp DESC") -> List[Dict[str, Any]]:
+        """
+        Получает ошибки с фильтрацией
+        
+        Args:
+            exchange: Фильтр по бирже
+            error_type: Фильтр по типу ошибки
+            timestamp_from: Начало временного диапазона
+            timestamp_to: Конец временного диапазона
+            limit: Лимит записей
+            order_by: Поле для сортировки
+            
+        Returns:
+            List[Dict]: Список ошибок
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            conditions = []
+            params = []
+            
+            if exchange:
+                conditions.append("exchange = ?")
+                params.append(exchange)
+            if error_type:
+                conditions.append("error_type = ?")
+                params.append(error_type)
+            if timestamp_from:
+                conditions.append("timestamp >= ?")
+                params.append(timestamp_from)
+            if timestamp_to:
+                conditions.append("timestamp <= ?")
+                params.append(timestamp_to)
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            limit_clause = f"LIMIT {limit}" if limit else ""
+            
+            sql = f"""
+                SELECT * FROM errors
+                {where_clause}
+                ORDER BY {order_by}
+                {limit_clause}
+            """
+            
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка при получении ошибок: {e}", exc_info=True)
+            return []
+        finally:
+            conn.close()
+    
+    def delete_error(self, error_id: int) -> bool:
+        """
+        Удаляет ошибку по ID
+        
+        Args:
+            error_id: ID ошибки для удаления
+            
+        Returns:
+            bool: True если ошибка была удалена, False если не найдена
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM errors WHERE id = ?", (error_id,))
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            if deleted:
+                logger.info(f"Удалена ошибка с ID {error_id}")
+            else:
+                logger.warning(f"Ошибка с ID {error_id} не найдена")
+            return deleted
+        except Exception as e:
+            logger.error(f"Ошибка при удалении ошибки {error_id}: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def delete_all_errors(self) -> int:
+        """
+        Удаляет все ошибки из БД
+        
+        Returns:
+            int: Количество удалённых ошибок
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            # Получаем количество ошибок перед удалением
+            cursor.execute("SELECT COUNT(*) FROM errors")
+            count = cursor.fetchone()[0]
+            
+            # Удаляем все ошибки
+            cursor.execute("DELETE FROM errors")
+            conn.commit()
+            logger.info(f"Удалено всех ошибок: {count}")
+            return count
+        except Exception as e:
+            logger.error(f"Ошибка при удалении всех ошибок: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    # ==================== РАБОТА С ЧЁРНЫМИ СПИСКАМИ ====================
+    
+    def add_to_blacklist(self, exchange: str, market: str, symbol: str):
+        """
+        Добавляет символ в чёрный список биржи
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка (spot/linear)
+            symbol: Торговая пара
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO exchange_blacklists (exchange, market, symbol)
+                VALUES (?, ?, ?)
+            """, (exchange, market, symbol))
+            conn.commit()
+            logger.debug(f"Добавлен в чёрный список: {exchange} {market} {symbol}")
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении в чёрный список: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def remove_from_blacklist(self, exchange: str, market: str, symbol: str):
+        """
+        Удаляет символ из чёрного списка
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка
+            symbol: Торговая пара
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM exchange_blacklists
+                WHERE exchange = ? AND market = ? AND symbol = ?
+            """, (exchange, market, symbol))
+            conn.commit()
+            logger.debug(f"Удалён из чёрного списка: {exchange} {market} {symbol}")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении из чёрного списка: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def get_blacklist(self, exchange: Optional[str] = None,
+                     market: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Получает чёрный список
+        
+        Args:
+            exchange: Фильтр по бирже
+            market: Фильтр по рынку
+            
+        Returns:
+            List[Dict]: Список символов в чёрном списке
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            conditions = []
+            params = []
+            
+            if exchange:
+                conditions.append("exchange = ?")
+                params.append(exchange)
+            if market:
+                conditions.append("market = ?")
+                params.append(market)
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            
+            sql = f"SELECT * FROM exchange_blacklists {where_clause} ORDER BY exchange, market, symbol"
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка при получении чёрного списка: {e}", exc_info=True)
+            return []
+        finally:
+            conn.close()
+    
+    def is_blacklisted(self, exchange: str, market: str, symbol: str) -> bool:
+        """
+        Проверяет, находится ли символ в чёрном списке
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка
+            symbol: Торговая пара
+            
+        Returns:
+            bool: True если символ в чёрном списке
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM exchange_blacklists
+                WHERE exchange = ? AND market = ? AND symbol = ?
+            """, (exchange, market, symbol))
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Ошибка при проверке чёрного списка: {e}", exc_info=True)
+            return False
+        finally:
+            conn.close()
+    
+    # ==================== РАБОТА С АЛИАСАМИ ====================
+    
+    def add_alias(self, exchange: str, market: str, original_symbol: str, alias: str):
+        """
+        Добавляет алиас для символа
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка
+            original_symbol: Оригинальное название символа
+            alias: Алиас
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO symbol_aliases 
+                (exchange, market, original_symbol, alias)
+                VALUES (?, ?, ?, ?)
+            """, (exchange, market, original_symbol, alias))
+            conn.commit()
+            logger.debug(f"Добавлен алиас: {exchange} {market} {original_symbol} -> {alias}")
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении алиаса: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def get_alias(self, exchange: str, market: str, symbol: str) -> Optional[str]:
+        """
+        Получает алиас для символа, если он существует
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка
+            symbol: Торговая пара
+            
+        Returns:
+            str: Алиас или None
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT alias FROM symbol_aliases
+                WHERE exchange = ? AND market = ? AND original_symbol = ?
+            """, (exchange, market, symbol))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Ошибка при получении алиаса: {e}", exc_info=True)
+            return None
+        finally:
+            conn.close()
+    
+    def get_all_aliases(self, exchange: Optional[str] = None,
+                       market: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Получает все алиасы
+        
+        Args:
+            exchange: Фильтр по бирже
+            market: Фильтр по рынку
+            
+        Returns:
+            List[Dict]: Список алиасов
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            conditions = []
+            params = []
+            
+            if exchange:
+                conditions.append("exchange = ?")
+                params.append(exchange)
+            if market:
+                conditions.append("market = ?")
+                params.append(market)
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            
+            sql = f"SELECT * FROM symbol_aliases {where_clause} ORDER BY exchange, market, original_symbol"
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка при получении алиасов: {e}", exc_info=True)
+            return []
+        finally:
+            conn.close()
+    
+    # ==================== РАБОТА СО СТАТИСТИКОЙ БИРЖ ====================
+    
+    def upsert_exchange_statistics(
+        self,
+        exchange: str,
+        market: str,
+        symbols_count: int,
+        ws_connections: int,
+        batches_per_ws: Optional[int] = None,
+        reconnects: int = 0,
+        candles_count: int = 0,
+        last_candle_time: Optional[str] = None,
+        ticks_per_second: Optional[float] = None,
+    ):
+        """
+        Сохраняет или обновляет статистику биржи и рынка.
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка (spot/linear)
+            symbols_count: Количество торговых пар
+            ws_connections: Количество WebSocket-подключений
+            batches_per_ws: Количество батчей внутри одного вебсокета (если есть)
+            reconnects: Количество реконнектов
+            candles_count: Количество собранных свечей
+            last_candle_time: Время последней собранной свечи (TIMESTAMP строка)
+            ticks_per_second: Среднее количество входящих сообщений в секунду
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO exchange_statistics 
+                (exchange, market, symbols_count, ws_connections, batches_per_ws, 
+                 reconnects, candles_count, last_candle_time, ticks_per_second, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (
+                exchange,
+                market,
+                symbols_count,
+                ws_connections,
+                batches_per_ws,
+                reconnects,
+                candles_count,
+                last_candle_time,
+                ticks_per_second,
+            ))
+            conn.commit()
+            logger.debug(f"Обновлена статистика: {exchange} {market}")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении статистики {exchange} {market}: {e}", exc_info=True)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def get_exchange_statistics(
+        self,
+        exchange: Optional[str] = None,
+        market: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Получает статистику бирж и рынков.
+        
+        Args:
+            exchange: Фильтр по бирже (опционально)
+            market: Фильтр по рынку (опционально)
+            
+        Returns:
+            List[Dict]: Список статистики
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            conditions = []
+            params = []
+            
+            if exchange:
+                conditions.append("exchange = ?")
+                params.append(exchange)
+            if market:
+                conditions.append("market = ?")
+                params.append(market)
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            
+            sql = f"""
+                SELECT * FROM exchange_statistics
+                {where_clause}
+                ORDER BY exchange, market
+            """
+            
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка при получении статистики: {e}", exc_info=True)
+            return []
+        finally:
+            conn.close()
+
+
+# Глобальный экземпляр БД для использования в приложении
+db = Database()
+

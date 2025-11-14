@@ -1,0 +1,376 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Анимации */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+@keyframes gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes ripple {
+  0% {
+    transform: scale(0);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
+/* Утилиты для анимаций */
+.animate-fade-in {
+  animation: fadeIn 0.5s ease-out;
+}
+
+.animate-slide-in {
+  animation: slideIn 0.4s ease-out;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.3s ease-out;
+}
+
+.animate-pulse-slow {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Glassmorphism эффект */
+.glass {
+  background: rgba(39, 39, 42, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative;
+  z-index: 1;
+}
+
+.glass-strong {
+  background: rgba(39, 39, 42, 0.9);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  position: relative;
+  z-index: 1;
+}
+
+/* Gradient borders */
+.gradient-border {
+  position: relative;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(59, 130, 246, 0.1));
+  border: 1px solid transparent;
+  isolation: isolate;
+}
+
+.gradient-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.5), rgba(59, 130, 246, 0.5));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.gradient-border:hover::before {
+  opacity: 1;
+}
+
+/* Hover glow эффекты */
+.hover-glow {
+  transition: all 0.3s ease;
+}
+
+.hover-glow:hover {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+  transform: translateY(-2px);
+}
+
+.hover-glow-blue:hover {
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+}
+
+.hover-glow-purple:hover {
+  box-shadow: 0 0 20px rgba(168, 85, 247, 0.3);
+}
+
+/* Smooth scale для карточек */
+.card-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-hover:hover {
+  transform: scale(1.02);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+/* Ripple effect для кнопок */
+.ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.ripple:active::after {
+  width: 300px;
+  height: 300px;
+}
+
+/* Skeleton loader */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(39, 39, 42, 0.8) 0%,
+    rgba(63, 63, 70, 0.8) 50%,
+    rgba(39, 39, 42, 0.8) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Градиентный текст */
+.gradient-text {
+  background: linear-gradient(135deg, #10b981, #3b82f6, #a855f7);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: gradient 3s ease infinite;
+}
+
+/* Focus glow для инпутов */
+.input-focus:focus {
+  outline: none;
+  border-color: rgba(16, 185, 129, 0.5);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+}
+
+/* Scroll reveal */
+.scroll-reveal {
+  opacity: 0;
+  transform: translateY(30px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+.scroll-reveal.revealed {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Плавные переходы */
+.smooth-transition {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Адаптивность для мобильных устройств */
+@media (max-width: 768px) {
+  /* Улучшение touch-взаимодействия */
+  button, a {
+    min-height: 44px; /* Минимальный размер для удобного нажатия */
+    min-width: 44px;
+  }
+
+  /* Улучшение читаемости текста на маленьких экранах */
+  body {
+    font-size: 14px;
+  }
+
+  /* Адаптивные таблицы - горизонтальный скролл */
+  .table-responsive {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Улучшение отступов для форм */
+  input, textarea, select {
+    font-size: 16px; /* Предотвращает зум на iOS */
+  }
+}
+
+/* Улучшение для очень маленьких экранов */
+@media (max-width: 480px) {
+  /* Уменьшение padding в карточках */
+  .glass-strong, .glass {
+    padding: 1rem;
+  }
+}
+
+/* Активный индикатор для навигации */
+.nav-active {
+  position: relative;
+}
+
+.nav-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #10b981, #3b82f6);
+  animation: slideIn 0.3s ease;
+}
+
+/* Улучшенные тени */
+.shadow-emerald {
+  box-shadow: 0 4px 14px 0 rgba(16, 185, 129, 0.2);
+}
+
+.shadow-blue {
+  box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.2);
+}
+
+.shadow-purple {
+  box-shadow: 0 4px 14px 0 rgba(168, 85, 247, 0.2);
+}
+
+/* Анимация для статусов */
+.status-pulse {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* Плавающая анимация */
+.float-animation {
+  animation: float 4s ease-in-out infinite;
+}
+
+/* Градиентный фон */
+.gradient-bg {
+  background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 50%, #0a0a0a 100%);
+  background-size: 200% 200%;
+  animation: gradient 10s ease infinite;
+}
+
+/* Улучшенные hover эффекты для таблиц */
+.table-row-hover {
+  transition: all 0.2s ease;
+}
+
+.table-row-hover:hover {
+  background: rgba(16, 185, 129, 0.05);
+  box-shadow: inset 4px 0 0 rgba(16, 185, 129, 0.5);
+}
+
+/* Placeholder для редактора шаблона */
+.template-editor.template-placeholder {
+  color: #71717a;
+  opacity: 0.7;
+}
+
+.template-editor.template-placeholder:focus {
+  color: #ffffff;
+  opacity: 1;
+}

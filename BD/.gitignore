@@ -1,0 +1,6 @@
+# Игнорируем файл базы данных
+detected_alerts.db
+detected_alerts.db-journal
+*.db
+*.db-journal
+
