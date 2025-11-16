@@ -422,18 +422,17 @@ class Database:
             user_data = dict(row)
             password_hash = user_data.get('password_hash')
             
-            # Если у пользователя есть пароль - СТРОГО проверяем его
-            if password_hash:
-                # Проверяем пароль
-                if not self._verify_password(password, password_hash):
-                    logger.warning(f"Неверный пароль для пользователя '{whitelisted_username}' - доступ запрещён")
-                    return None
-                logger.info(f"Успешная аутентификация пользователя '{whitelisted_username}' (пароль верный, данные НЕ обновляются)")
-                return user_data
+            # Пароль обязателен для всех пользователей - проверяем его строго
+            if not password_hash:
+                logger.warning(f"Пользователь '{whitelisted_username}' не имеет пароля - доступ запрещён. Необходимо зарегистрироваться или установить пароль.")
+                return None
             
-            # Если у пользователя нет пароля (старый пользователь без пароля)
-            # Для обратной совместимости разрешаем вход, но логируем это
-            logger.info(f"Пользователь '{whitelisted_username}' не имеет пароля (старый пользователь), разрешаем вход (данные НЕ обновляются)")
+            # Проверяем пароль
+            if not self._verify_password(password, password_hash):
+                logger.warning(f"Неверный пароль для пользователя '{whitelisted_username}' - доступ запрещён")
+                return None
+            
+            logger.info(f"Успешная аутентификация пользователя '{whitelisted_username}' (пароль верный, данные НЕ обновляются)")
             return user_data
         except Exception as e:
             logger.error(f"Ошибка при аутентификации пользователя {whitelisted_username}: {e}", exc_info=True)
@@ -800,8 +799,11 @@ class Database:
         Args:
             user: Имя пользователя
         """
+        # Сначала пытаемся найти каноничное имя пользователя из белого списка
         canonical = self.get_whitelisted_username(user)
         normalized = self._normalize_username(user)
+        
+        # Используем каноничное имя, если найдено, иначе нормализованное
         target_user = canonical or normalized
 
         if not target_user:
@@ -811,8 +813,22 @@ class Database:
         deleted_rows = 0
         try:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM users WHERE LOWER(user) = LOWER(?)", (target_user,))
-            deleted_rows = cursor.rowcount
+            
+            # Сначала находим точное имя пользователя в базе (с учетом регистра)
+            cursor.execute("SELECT user FROM users WHERE LOWER(user) = LOWER(?)", (target_user,))
+            existing_user = cursor.fetchone()
+            
+            if existing_user:
+                # Используем точное имя из базы для удаления
+                exact_username = existing_user[0] if isinstance(existing_user, sqlite3.Row) else existing_user[0]
+                cursor.execute("DELETE FROM users WHERE user = ?", (exact_username,))
+                deleted_rows = cursor.rowcount
+                # Обновляем target_user на точное имя из базы
+                target_user = exact_username
+            else:
+                # Пользователь не найден
+                logger.warning(f"Пользователь '{target_user}' не найден в базе данных")
+            
             conn.commit()
             logger.debug(f"Удалён пользователь {target_user} (записей в users: {deleted_rows})")
         except Exception as e:
@@ -822,10 +838,16 @@ class Database:
         finally:
             conn.close()
 
-        try:
-            removed_from_whitelist = self.remove_login_from_whitelist(target_user)
-        except ValueError:
-            removed_from_whitelist = False
+        # Удаляем из белого списка, используя точное имя пользователя
+        removed_from_whitelist = False
+        if deleted_rows > 0:
+            try:
+                removed_from_whitelist = self.remove_login_from_whitelist(target_user)
+            except ValueError:
+                # Если не удалось удалить из белого списка, это не критично
+                logger.warning(f"Не удалось удалить '{target_user}' из белого списка")
+                removed_from_whitelist = False
+        
         return {
             "user": target_user,
             "removed_from_users": deleted_rows > 0,

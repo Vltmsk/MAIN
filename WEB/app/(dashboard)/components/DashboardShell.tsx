@@ -2022,7 +2022,9 @@ export default function Dashboard() {
   }
 
   // Подсчитываем активные подключения (spot или linear считаются отдельно)
-  const activeExchanges = exchanges.filter(e => e.status === "active").length;
+  // Активные - это все биржи, которые получают свечи (не "inactive")
+  // Т.е. статус "active" или "problems" - оба считаются активными
+  const activeExchanges = exchanges.filter(e => e.status !== "inactive").length;
   const totalCandles = exchanges.reduce((sum, e) => sum + e.candles, 0);
 
   const formatNumber = (num: number) => {
