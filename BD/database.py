@@ -500,18 +500,33 @@ class Database:
 
         conn = await self._get_connection()
         try:
-            # Проверяем, существует ли пользователь (без учета регистра)
-            async with conn.execute("""
-                SELECT id, user, password_hash 
-                FROM users 
-                WHERE LOWER(user) = LOWER(?)
-            """, (normalized_user,)) as cursor:
-                existing_user = await cursor.fetchone()
+            # Сначала получаем всех пользователей для поиска
+            async with conn.execute("SELECT id, user, password_hash FROM users") as cursor:
+                all_users = await cursor.fetchall()
+            
+            # Пытаемся найти точное совпадение сначала
+            existing_user = None
+            stored_username = None
+            user_id = None
+            
+            for row in all_users:
+                db_user_id = row[0] if isinstance(row, aiosqlite.Row) else row[0]
+                db_username = row[1] if isinstance(row, aiosqlite.Row) else row[1]
+                
+                # Точное совпадение
+                if db_username == normalized_user:
+                    existing_user = row
+                    stored_username = db_username
+                    user_id = db_user_id
+                    break
+                # Совпадение без учета регистра (для кириллицы)
+                elif db_username.lower() == normalized_user.lower():
+                    existing_user = row
+                    stored_username = db_username
+                    user_id = db_user_id
+                    break
             
             if existing_user:
-                stored_username = existing_user["user"] if isinstance(existing_user, aiosqlite.Row) else existing_user[1]
-                user_id = existing_user["id"] if isinstance(existing_user, aiosqlite.Row) else existing_user[0]
-
                 # Обновляем существующего пользователя (БЕЗ изменения пароля)
                 if stored_username != normalized_user:
                     await conn.execute("""

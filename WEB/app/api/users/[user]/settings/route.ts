@@ -8,13 +8,17 @@ export async function POST(
 ) {
   try {
     const { user } = await params;
-    // Безопасно декодируем имя пользователя из URL (может быть уже декодировано в Next.js 13+)
-    let decodedUser: string;
-    try {
-      decodedUser = decodeURIComponent(user);
-    } catch {
-      decodedUser = user;
+    // Next.js автоматически декодирует параметры маршрута, поэтому используем user как есть
+    // Но для безопасности проверяем, что это строка
+    const decodedUser = typeof user === 'string' ? user.trim() : String(user).trim();
+    
+    if (!decodedUser) {
+      return NextResponse.json(
+        { error: "Имя пользователя не может быть пустым" },
+        { status: 400 }
+      );
     }
+    
     const body = await request.json();
     const res = await fetch(`${API_URL}/api/users/${encodeURIComponent(decodedUser)}/settings`, {
       method: "POST",

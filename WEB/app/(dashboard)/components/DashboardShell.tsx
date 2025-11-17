@@ -1374,7 +1374,10 @@ export default function Dashboard() {
 
     setAdminLoading(true);
     try {
-      const res = await fetch(`/api/users/${adminForm}/settings`, {
+      // Кодируем имя пользователя для URL (важно для кириллицы и специальных символов)
+      const trimmedUserName = adminForm.trim();
+      const encodedUserName = encodeURIComponent(trimmedUserName);
+      const res = await fetch(`/api/users/${encodedUserName}/settings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1392,7 +1395,7 @@ export default function Dashboard() {
         throw new Error(error.detail || "Ошибка создания пользователя");
       }
 
-      setAdminMsg(`Пользователь "${adminForm}" успешно создан!`);
+      setAdminMsg(`Пользователь "${trimmedUserName}" успешно создан!`);
       setTimeout(() => setAdminMsg(""), 3000);
       setAdminForm(""); // Очищаем форму
       fetchAdminUsers();

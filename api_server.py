@@ -339,15 +339,34 @@ async def login_user(request: Request, user: str, login_data: UserLogin):
 async def create_or_update_user(user: str, user_data: UserCreate):
     """Создаёт или обновляет пользователя"""
     try:
+        # FastAPI автоматически декодирует параметры пути, но на случай двойного кодирования
+        # пытаемся декодировать еще раз. Если уже декодировано, unquote вернет исходное значение
+        try:
+            decoded_user = unquote(user)
+            # Если декодирование не изменило строку, значит она уже была декодирована
+            if decoded_user == user:
+                decoded_user = user
+        except Exception:
+            # Если ошибка декодирования, используем исходное значение
+            decoded_user = user
+        
+        # Убираем лишние пробелы
+        decoded_user = decoded_user.strip()
+        
+        if not decoded_user:
+            raise HTTPException(status_code=400, detail="Имя пользователя не может быть пустым")
+        
+        logger.info(f"Создание/обновление пользователя: исходный параметр='{user}', декодированный='{decoded_user}'")
+        
         user_id = await db.create_user(
-            user=user,
+            user=decoded_user,
             tg_token=user_data.tg_token or "",
             chat_id=user_data.chat_id or "",
             options_json=user_data.options_json or "{}"
         )
         # Получаем точное имя пользователя из базы
-        user_info = await db.get_user(user)
-        canonical_user = user_info["user"] if user_info else user.strip()
+        user_info = await db.get_user(decoded_user)
+        canonical_user = user_info["user"] if user_info else decoded_user
         
         # Инвалидируем кэш детектора стрел, чтобы применить новые настройки сразу
         try:
