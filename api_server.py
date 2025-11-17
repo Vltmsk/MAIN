@@ -419,71 +419,76 @@ async def get_user(user: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def _delete_user_internal(user: str):
+    """Внутренняя функция для удаления пользователя (используется обоими маршрутами)"""
+    # FastAPI автоматически декодирует параметры пути, но на случай двойного кодирования
+    # пытаемся декодировать еще раз. Если уже декодировано, unquote вернет исходное значение
+    try:
+        decoded_user = unquote(user)
+        # Если декодирование не изменило строку, значит она уже была декодирована
+        if decoded_user == user:
+            decoded_user = user
+    except Exception:
+        # Если ошибка декодирования, используем исходное значение
+        decoded_user = user
+    
+    # Убираем лишние пробелы
+    decoded_user = decoded_user.strip()
+    
+    if not decoded_user:
+        raise HTTPException(status_code=400, detail="Имя пользователя не может быть пустым")
+    
+    # Логируем детальную информацию для отладки
+    logger.info(f"Попытка удаления пользователя:")
+    logger.info(f"  - Исходный параметр: '{user}' (type: {type(user)}, length: {len(user)})")
+    logger.info(f"  - Декодированный: '{decoded_user}' (type: {type(decoded_user)}, length: {len(decoded_user)})")
+    logger.info(f"  - Байты исходного: {user.encode('utf-8')}")
+    logger.info(f"  - Байты декодированного: {decoded_user.encode('utf-8')}")
+    
+    if decoded_user.lower() in {"stats", "влад"}:
+        raise HTTPException(status_code=403, detail=f"Пользователя '{decoded_user}' нельзя удалить")
+
+    # Получаем user_id перед удалением для очистки данных трекера
+    logger.info(f"Вызов db.get_user('{decoded_user}')...")
+    user_data = await db.get_user(decoded_user)
+    user_id = user_data.get("id") if user_data else None
+    
+    # Логируем результат поиска
+    if user_data:
+        logger.info(f"Пользователь найден в БД через get_user: id={user_id}, имя='{user_data.get('user')}'")
+        logger.info(f"  - Сравнение: запрошено '{decoded_user}' vs найдено '{user_data.get('user')}'")
+        logger.info(f"  - Совпадают: {decoded_user == user_data.get('user')}")
+    else:
+        logger.warning(f"Пользователь '{decoded_user}' не найден в БД через get_user")
+        # Получаем всех пользователей для отладки
+        all_users = await db.get_all_users()
+        logger.warning(f"  - Доступные пользователи в БД: {[u['user'] for u in all_users]}")
+
+    result = await db.delete_user(decoded_user)
+    
+    # Если пользователь не найден, возвращаем 404
+    if not result["removed_from_users"]:
+        logger.warning(f"Пользователь '{decoded_user}' не найден. Результат: {result}")
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Пользователь '{result['user']}' не найден"
+        )
+    
+    # Очищаем данные трекера для удалённого пользователя
+    if user_id and result.get("removed_from_users"):
+        from core.spike_detector import spike_detector
+        spike_detector.cleanup_user_data(user_id)
+    
+    message = f"Пользователь '{result['user']}' удалён"
+
+    return {"message": message, **result}
+
+
 @app.delete("/api/users/{user}")
 async def delete_user(user: str):
     """Удаляет пользователя"""
     try:
-        # FastAPI автоматически декодирует параметры пути, но на случай двойного кодирования
-        # пытаемся декодировать еще раз. Если уже декодировано, unquote вернет исходное значение
-        try:
-            decoded_user = unquote(user)
-            # Если декодирование не изменило строку, значит она уже была декодирована
-            if decoded_user == user:
-                decoded_user = user
-        except Exception:
-            # Если ошибка декодирования, используем исходное значение
-            decoded_user = user
-        
-        # Убираем лишние пробелы
-        decoded_user = decoded_user.strip()
-        
-        if not decoded_user:
-            raise HTTPException(status_code=400, detail="Имя пользователя не может быть пустым")
-        
-        # Логируем детальную информацию для отладки
-        logger.info(f"Попытка удаления пользователя:")
-        logger.info(f"  - Исходный параметр: '{user}' (type: {type(user)}, length: {len(user)})")
-        logger.info(f"  - Декодированный: '{decoded_user}' (type: {type(decoded_user)}, length: {len(decoded_user)})")
-        logger.info(f"  - Байты исходного: {user.encode('utf-8')}")
-        logger.info(f"  - Байты декодированного: {decoded_user.encode('utf-8')}")
-        
-        if decoded_user.lower() in {"stats", "влад"}:
-            raise HTTPException(status_code=403, detail=f"Пользователя '{decoded_user}' нельзя удалить")
-
-        # Получаем user_id перед удалением для очистки данных трекера
-        logger.info(f"Вызов db.get_user('{decoded_user}')...")
-        user_data = await db.get_user(decoded_user)
-        user_id = user_data.get("id") if user_data else None
-        
-        # Логируем результат поиска
-        if user_data:
-            logger.info(f"Пользователь найден в БД через get_user: id={user_id}, имя='{user_data.get('user')}'")
-            logger.info(f"  - Сравнение: запрошено '{decoded_user}' vs найдено '{user_data.get('user')}'")
-            logger.info(f"  - Совпадают: {decoded_user == user_data.get('user')}")
-        else:
-            logger.warning(f"Пользователь '{decoded_user}' не найден в БД через get_user")
-            # Получаем всех пользователей для отладки
-            all_users = await db.get_all_users()
-            logger.warning(f"  - Доступные пользователи в БД: {[u['user'] for u in all_users]}")
-
-        result = await db.delete_user(decoded_user)
-        
-        # Если пользователь не найден, возвращаем 404
-        if not result["removed_from_users"]:
-            logger.warning(f"Пользователь '{decoded_user}' не найден. Результат: {result}")
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Пользователь '{result['user']}' не найден"
-            )
-        
-        # Очищаем данные трекера для удалённого пользователя
-        if user_id and result.get("removed_from_users"):
-            from core.spike_detector import spike_detector
-            spike_detector.cleanup_user_data(user_id)
-        
-        message = f"Пользователь '{result['user']}' удалён"
-
-        return {"message": message, **result}
+        return await _delete_user_internal(user)
     except HTTPException:
         raise
     except Exception as e:
@@ -492,6 +497,23 @@ async def delete_user(user: str):
             "error_type": "user_deletion_error",
             "market": "api",
             "symbol": f"/api/users/{user}",
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/users/{user}/delete")
+async def delete_user_with_delete_path(user: str):
+    """Удаляет пользователя (альтернативный путь для совместимости с клиентом)"""
+    try:
+        return await _delete_user_internal(user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при удалении пользователя {user}: {e}", exc_info=True, extra={
+            "log_to_db": True,
+            "error_type": "user_deletion_error",
+            "market": "api",
+            "symbol": f"/api/users/{user}/delete",
         })
         raise HTTPException(status_code=500, detail=str(e))
 

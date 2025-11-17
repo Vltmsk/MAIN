@@ -6,6 +6,9 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ user: string }> }
 ) {
+  // Логируем, что маршрут был вызван
+  console.log(`[Delete User API] Маршрут вызван для удаления пользователя`);
+  
   try {
     const { user } = await params;
     // Next.js автоматически декодирует параметры маршрута, поэтому используем user как есть
@@ -34,13 +37,24 @@ export async function DELETE(
     
     const encodedUser = encodeURIComponent(decodedUser);
     const backendUrl = `${API_URL}/api/users/${encodedUser}`;
-    console.log(`[Delete User API] Отправка запроса на backend: ${backendUrl} (encoded: ${encodedUser})`);
+    console.log(`[Delete User API] Отправка запроса на backend:`);
+    console.log(`  - API_URL из env: ${API_URL}`);
+    console.log(`  - Полный URL: ${backendUrl}`);
+    console.log(`  - Имя пользователя (encoded): ${encodedUser}`);
     
     const res = await fetch(backendUrl, {
       method: "DELETE",
     });
     
     console.log(`[Delete User API] Ответ от backend: status=${res.status}, ok=${res.ok}`);
+    
+    // Если ошибка, логируем больше информации
+    if (!res.ok) {
+      console.error(`[Delete User API] Ошибка подключения к backend:`);
+      console.error(`  - URL: ${backendUrl}`);
+      console.error(`  - Status: ${res.status}`);
+      console.error(`  - StatusText: ${res.statusText}`);
+    }
     
     // Проверяем статус ответа
     if (!res.ok) {
