@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [totalDetects, setTotalDetects] = useState(0);
   const [uptimeSeconds, setUptimeSeconds] = useState(0);
+  const [startTime, setStartTime] = useState<number | null>(null);
   
   // Состояния для настроек Telegram
   const [telegramChatId, setTelegramChatId] = useState("");
@@ -788,35 +789,24 @@ export default function Dashboard() {
       // Получаем статус системы и общее количество детектов
       let uptimeSecondsValue = 0;
       let totalDetectsValue = 0;
+      let startTimeValue: number | null = null;
       
       if (statusResult && statusResult.ok) {
         try {
           const statusData = await statusResult.json();
-          // Используем total_alerts из статуса для детектов
-          totalDetectsValue = statusData.total_alerts || 0;
-          // uptime_seconds пока не возвращается API, используем 0
+          // Используем alerts_since_start для детектов с момента запуска
+          totalDetectsValue = statusData.alerts_since_start || statusData.total_alerts || 0;
           uptimeSecondsValue = statusData.uptime_seconds || 0;
+          startTimeValue = statusData.start_time || null;
         } catch (e) {
           console.warn("Не удалось получить статус системы:", e);
-        }
-      }
-      
-      // Альтернативный источник для детектов - из /api/spikes/stats
-      if (spikesStatsResult && spikesStatsResult.ok) {
-        try {
-          const spikesStatsData = await spikesStatsResult.json();
-          // Используем count (а не total), так как API возвращает {"count": ...}
-          if (spikesStatsData.count !== undefined) {
-            totalDetectsValue = spikesStatsData.count;
-          }
-        } catch (e) {
-          console.warn("Не удалось получить статистику детектов:", e);
         }
       }
       
       // Устанавливаем значения
       setTotalDetects(totalDetectsValue);
       setUptimeSeconds(uptimeSecondsValue);
+      setStartTime(startTimeValue);
       
       // Используем значение для расчетов
       const uptimeSeconds = uptimeSecondsValue;
@@ -2328,7 +2318,7 @@ export default function Dashboard() {
               </div>
 
           {/* Summary Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
             {/* Детекты */}
             <div className="glass-strong border border-zinc-800 rounded-xl p-6 relative overflow-hidden card-hover gradient-border float-animation shadow-emerald animate-scale-in">
               <div className="absolute top-4 right-4 text-emerald-500 opacity-20">
@@ -2338,7 +2328,7 @@ export default function Dashboard() {
               </div>
               <div className="text-sm text-zinc-400 mb-2">Детекты</div>
               <div className="text-4xl font-bold text-white">{formatNumber(totalDetects)}</div>
-              <div className="text-xs text-zinc-500 mt-2">Всего детектов для всех пользователей</div>
+              <div className="text-xs text-zinc-500 mt-2">Детектов с момента запуска</div>
             </div>
 
             {/* Активные */}
@@ -2364,6 +2354,26 @@ export default function Dashboard() {
               <div className="text-4xl font-bold text-white">{formatNumber(totalCandles)}</div>
               <div className="text-xs text-zinc-500 mt-2">
                 Собрано данных 1s за {formatUptime(uptimeSeconds)}
+              </div>
+            </div>
+
+            {/* Время работы */}
+            <div className="glass-strong border border-zinc-800 rounded-xl p-6 relative overflow-hidden card-hover gradient-border float-animation shadow-orange animate-scale-in" style={{ animationDelay: '0.6s' }}>
+              <div className="absolute top-4 right-4 text-orange-500 opacity-20">
+                <svg className="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="text-sm text-zinc-400 mb-2">Время работы</div>
+              <div className="text-4xl font-bold text-white">{formatUptime(uptimeSeconds)}</div>
+              <div className="text-xs text-zinc-500 mt-2">
+                {startTime ? new Date(startTime * 1000).toLocaleString('ru-RU', { 
+                  day: '2-digit', 
+                  month: '2-digit', 
+                  year: 'numeric', 
+                  hour: '2-digit', 
+                  minute: '2-digit' 
+                }) : 'Неизвестно'}
               </div>
             </div>
           </div>

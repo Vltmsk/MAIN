@@ -941,13 +941,28 @@ async def get_status():
     """Получает статус системы"""
     try:
         users_count = len(await db.get_all_users())
-        total_alerts = await db.get_alerts_count()
+        
         # Вычисляем uptime как время работы API сервера
         uptime_seconds = int(time.time() - _start_time)
+        
+        # Конвертируем время запуска в формат TIMESTAMP для SQL
+        from datetime import datetime
+        start_datetime = datetime.fromtimestamp(_start_time)
+        start_timestamp_str = start_datetime.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Получаем количество детектов только с момента запуска
+        alerts_since_start = await db.get_alerts_count(created_after=start_timestamp_str)
+        
+        # Получаем общее количество детектов (для обратной совместимости)
+        total_alerts = await db.get_alerts_count()
+        
         return {
             "users": users_count,
-            "total_alerts": total_alerts,
+            "total_alerts": total_alerts,  # Все детекты (для обратной совместимости)
+            "alerts_since_start": alerts_since_start,  # Детекты с момента запуска
             "uptime_seconds": uptime_seconds,
+            "start_time": _start_time,  # Unix timestamp времени запуска
+            "start_datetime": start_timestamp_str,  # Время запуска в читаемом формате
             "status": "running"
         }
     except Exception as e:

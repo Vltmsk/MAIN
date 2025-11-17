@@ -1362,7 +1362,8 @@ class Database:
     
     async def get_alerts_count(self, exchange: Optional[str] = None, market: Optional[str] = None,
                         symbol: Optional[str] = None, user_id: Optional[int] = None,
-                        ts_from: Optional[int] = None, ts_to: Optional[int] = None) -> int:
+                        ts_from: Optional[int] = None, ts_to: Optional[int] = None,
+                        created_after: Optional[str] = None) -> int:
         """
         Получает количество стрел с фильтрацией - асинхронная версия
         
@@ -1371,8 +1372,9 @@ class Database:
             market: Фильтр по рынку
             symbol: Фильтр по символу
             user_id: Фильтр по пользователю (если None, считает все стрелы)
-            ts_from: Начало временного диапазона
-            ts_to: Конец временного диапазона
+            ts_from: Начало временного диапазона (timestamp в мс)
+            ts_to: Конец временного диапазона (timestamp в мс)
+            created_after: Фильтр по времени создания (TIMESTAMP строка, например '2025-11-17 19:00:00')
             
         Returns:
             int: Количество записей
@@ -1406,6 +1408,9 @@ class Database:
             if ts_to is not None:
                 conditions.append("a.ts <= ?")
                 params.append(ts_to)
+            if created_after:
+                conditions.append("a.created_at >= ?")
+                params.append(created_after)
             
             where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
             
