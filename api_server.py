@@ -463,6 +463,13 @@ async def delete_user(user: str):
 
         result = await db.delete_user(user)
         
+        # Если пользователь не найден ни в users, ни в whitelist, возвращаем 404
+        if not result["removed_from_users"] and not result["removed_from_whitelist"]:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Пользователь '{result['user']}' не найден"
+            )
+        
         # Очищаем данные трекера для удалённого пользователя
         if user_id and result.get("removed_from_users"):
             from core.spike_detector import spike_detector
@@ -474,8 +481,6 @@ async def delete_user(user: str):
             message = f"Пользователь '{result['user']}' удалён, но в белом списке не найден"
         elif result["removed_from_whitelist"]:
             message = f"Логин '{result['user']}' удалён из белого списка"
-        else:
-            message = f"Пользователь '{result['user']}' не найден"
 
         return {"message": message, **result}
     except HTTPException:

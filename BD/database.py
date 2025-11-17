@@ -565,7 +565,7 @@ class Database:
                 all_users = [row[0] for row in await cursor.fetchall()]
             logger.debug(f"[Database] All users in DB: {all_users}")
             
-            # Выполняем поиск
+            # Выполняем поиск сначала точный, затем без учета регистра
             async with conn.execute("SELECT * FROM users WHERE user = ?", (user,)) as cursor:
                 row = await cursor.fetchone()
             
@@ -574,14 +574,16 @@ class Database:
                 logger.debug(f"[Database] User found: '{user_dict['user']}' (id: {user_dict.get('id')})")
                 return user_dict
             else:
-                logger.warning(f"[Database] User '{user}' not found. Available users: {all_users}")
-                # Попробуем найти без учета регистра (для отладки)
+                # Попробуем найти без учета регистра
                 async with conn.execute("SELECT * FROM users WHERE LOWER(user) = LOWER(?)", (user,)) as cursor:
                     row_case_insensitive = await cursor.fetchone()
                 if row_case_insensitive:
                     found_user = dict(row_case_insensitive)
                     logger.warning(f"[Database] Found user with different case: '{found_user['user']}' (requested: '{user}')")
-                return None
+                    return found_user
+                else:
+                    logger.warning(f"[Database] User '{user}' not found. Available users: {all_users}")
+                    return None
         except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
             logger.error(f"Ошибка БД при получении пользователя {user}: {e}", exc_info=True)
             return None
@@ -846,21 +848,21 @@ class Database:
         Args:
             user: Имя пользователя
         """
-        # Сначала пытаемся найти каноничное имя пользователя из белого списка
-        canonical = await self.get_whitelisted_username(user)
         normalized = self._normalize_username(user)
-        
-        # Используем каноничное имя, если найдено, иначе нормализованное
-        target_user = canonical or normalized
-
-        if not target_user:
+        if not normalized:
             raise ValueError("Имя пользователя не может быть пустым")
 
+        # Сначала пытаемся найти каноничное имя пользователя из белого списка
+        canonical = await self.get_whitelisted_username(normalized)
+        
         conn = await self._get_connection()
         deleted_rows = 0
+        exact_username = None
         try:
-            # Сначала находим точное имя пользователя в базе (с учетом регистра)
-            async with conn.execute("SELECT id, user FROM users WHERE LOWER(user) = LOWER(?)", (target_user,)) as cursor:
+            # Находим точное имя пользователя в базе (без учета регистра)
+            # Используем каноничное имя из whitelist, если найдено, иначе ищем по normalized
+            search_name = canonical or normalized
+            async with conn.execute("SELECT id, user FROM users WHERE LOWER(user) = LOWER(?)", (search_name,)) as cursor:
                 existing_user = await cursor.fetchone()
             
             if existing_user:
@@ -869,8 +871,6 @@ class Database:
                 # Удаляем пользователя (благодаря CASCADE автоматически удалятся связи в user_alerts)
                 cursor = await conn.execute("DELETE FROM users WHERE user = ?", (exact_username,))
                 deleted_rows = cursor.rowcount
-                # Обновляем target_user на точное имя из базы
-                target_user = exact_username
                 
                 # Удаляем стрелы, которые остались без связей (если они были связаны только с этим пользователем)
                 # Это происходит автоматически благодаря CASCADE в user_alerts, но мы можем также удалить
@@ -881,37 +881,43 @@ class Database:
                 """)
                 orphaned_alerts_count = cursor2.rowcount
                 if orphaned_alerts_count > 0:
-                    logger.debug(f"Удалено {orphaned_alerts_count} стрел без связей после удаления пользователя {target_user}")
+                    logger.debug(f"Удалено {orphaned_alerts_count} стрел без связей после удаления пользователя {exact_username}")
             else:
-                # Пользователь не найден
-                logger.warning(f"Пользователь '{target_user}' не найден в базе данных")
+                # Пользователь не найден в базе данных
+                logger.warning(f"Пользователь '{canonical or normalized}' не найден в базе данных")
             
             await conn.commit()
-            logger.debug(f"Удалён пользователь {target_user} (записей в users: {deleted_rows})")
+            logger.debug(f"Удалён пользователь {exact_username or (canonical or normalized)} (записей в users: {deleted_rows})")
         except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
-            logger.error(f"Ошибка БД при удалении пользователя {target_user}: {e}", exc_info=True)
+            error_user = exact_username or canonical or normalized
+            logger.error(f"Ошибка БД при удалении пользователя {error_user}: {e}", exc_info=True)
             await conn.rollback()
             raise
         except aiosqlite.Error as e:
-            logger.error(f"Ошибка БД при удалении пользователя {target_user}: {e}", exc_info=True)
+            error_user = exact_username or canonical or normalized
+            logger.error(f"Ошибка БД при удалении пользователя {error_user}: {e}", exc_info=True)
             await conn.rollback()
             raise
         finally:
             await conn.close()
+
+        # Определяем имя пользователя для возврата и удаления из whitelist
+        # Используем точное имя из базы, если найдено, иначе каноничное из whitelist, иначе normalized
+        final_username = exact_username or canonical or normalized
 
         # Удаляем из белого списка, используя точное имя пользователя
         # Важно: удаляем из белого списка даже если пользователь не был найден в таблице users
         # (например, если он был добавлен в белый список, но еще не прошел регистрацию)
         removed_from_whitelist = False
         try:
-            removed_from_whitelist = await self.remove_login_from_whitelist(target_user)
+            removed_from_whitelist = await self.remove_login_from_whitelist(final_username)
         except ValueError:
             # Если не удалось удалить из белого списка, это не критично
-            logger.warning(f"Не удалось удалить '{target_user}' из белого списка")
+            logger.warning(f"Не удалось удалить '{final_username}' из белого списка")
             removed_from_whitelist = False
         
         return {
-            "user": target_user,
+            "user": final_username,
             "removed_from_users": deleted_rows > 0,
             "removed_from_whitelist": removed_from_whitelist,
         }
