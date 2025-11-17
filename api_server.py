@@ -404,10 +404,22 @@ async def get_user(user: str):
 async def delete_user(user: str):
     """Удаляет пользователя"""
     try:
-        # Явно декодируем параметр на случай двойного кодирования
-        decoded_user = unquote(user)
+        # FastAPI автоматически декодирует параметры пути, но на случай двойного кодирования
+        # пытаемся декодировать еще раз. Если уже декодировано, unquote вернет исходное значение
+        try:
+            decoded_user = unquote(user)
+            # Если декодирование не изменило строку, значит она уже была декодирована
+            if decoded_user == user:
+                decoded_user = user
+        except Exception:
+            # Если ошибка декодирования, используем исходное значение
+            decoded_user = user
+        
         # Убираем лишние пробелы
         decoded_user = decoded_user.strip()
+        
+        if not decoded_user:
+            raise HTTPException(status_code=400, detail="Имя пользователя не может быть пустым")
         
         logger.info(f"Попытка удаления пользователя: исходный параметр='{user}', декодированный='{decoded_user}'")
         

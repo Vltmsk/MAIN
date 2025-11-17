@@ -8,17 +8,20 @@ export async function DELETE(
 ) {
   try {
     const { user } = await params;
-    // Безопасно декодируем имя пользователя из URL (может быть уже декодировано в Next.js 13+)
-    // Если декодирование не требуется, просто вернём исходную строку
-    let decodedUser: string;
-    try {
-      decodedUser = decodeURIComponent(user);
-    } catch {
-      // Если уже декодировано или ошибка декодирования, используем исходное значение
-      decodedUser = user;
-    }
+    // Next.js автоматически декодирует параметры маршрута, поэтому используем user как есть
+    // Но для безопасности проверяем, что это строка
+    const decodedUser = typeof user === 'string' ? user.trim() : String(user).trim();
     
-    console.log(`[Delete User API] Попытка удаления: исходный параметр='${user}', декодированный='${decodedUser}', BACKEND_URL='${API_URL}'`);
+    // Логируем информацию о пользователе для отладки
+    const userBytes = new TextEncoder().encode(decodedUser);
+    console.log(`[Delete User API] Попытка удаления: "${decodedUser}" (length: ${decodedUser.length}, bytes: ${Array.from(userBytes).map(b => b.toString(16).padStart(2, '0')).join(' ')})`);
+    
+    if (!decodedUser) {
+      return NextResponse.json(
+        { error: "Имя пользователя не может быть пустым" },
+        { status: 400 }
+      );
+    }
     
     // Запрещаем удаление системных пользователей "Stats" и "Влад"
     const lowerUserName = decodedUser.toLowerCase();
@@ -31,7 +34,7 @@ export async function DELETE(
     
     const encodedUser = encodeURIComponent(decodedUser);
     const backendUrl = `${API_URL}/api/users/${encodedUser}`;
-    console.log(`[Delete User API] Отправка запроса на backend: ${backendUrl}`);
+    console.log(`[Delete User API] Отправка запроса на backend: ${backendUrl} (encoded: ${encodedUser})`);
     
     const res = await fetch(backendUrl, {
       method: "DELETE",

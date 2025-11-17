@@ -1509,20 +1509,29 @@ export default function Dashboard() {
 
   // Админ панель - удаление пользователя
   const deleteAdminUser = async (userName: string) => {
+    // Убираем пробелы в начале и конце имени пользователя
+    const trimmedUserName = userName.trim();
+    
+    if (!trimmedUserName) {
+      setAdminMsg("Имя пользователя не может быть пустым");
+      setTimeout(() => setAdminMsg(""), 3000);
+      return;
+    }
+    
     // Запрещаем удаление системных пользователей "Stats" и "Влад"
-    const lowerUserName = userName.toLowerCase();
+    const lowerUserName = trimmedUserName.toLowerCase();
     if (lowerUserName === "stats" || lowerUserName === "влад") {
-      setAdminMsg(`Нельзя удалить системного пользователя '${userName}'`);
+      setAdminMsg(`Нельзя удалить системного пользователя '${trimmedUserName}'`);
       setTimeout(() => setAdminMsg(""), 3000);
       return;
     }
 
-    if (!confirm(`Удалить пользователя "${userName}"?`)) return;
+    if (!confirm(`Удалить пользователя "${trimmedUserName}"?`)) return;
 
     setAdminLoading(true);
     try {
       // Кодируем имя пользователя для URL (важно для кириллицы и специальных символов)
-      const encodedUserName = encodeURIComponent(userName);
+      const encodedUserName = encodeURIComponent(trimmedUserName);
       const res = await fetch(`/api/users/${encodedUserName}/delete`, {
         method: "DELETE",
       });
@@ -1543,7 +1552,7 @@ export default function Dashboard() {
       setAdminMsg(data.message || "Пользователь удалён");
       setTimeout(() => setAdminMsg(""), 2000);
       fetchAdminUsers();
-      if (selectedUserSettings?.user === userName) {
+      if (selectedUserSettings?.user === trimmedUserName) {
         setSelectedUserSettings(null);
       }
     } catch (err) {
