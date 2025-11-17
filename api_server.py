@@ -5,6 +5,7 @@ import traceback
 import os
 import sqlite3
 import aiosqlite
+from urllib.parse import unquote
 from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -454,17 +455,31 @@ async def get_user(user: str):
 async def delete_user(user: str):
     """Удаляет пользователя"""
     try:
-        if user.lower() in {"stats", "влад"}:
-            raise HTTPException(status_code=403, detail=f"Пользователя '{user}' нельзя удалить")
+        # Явно декодируем параметр на случай двойного кодирования
+        decoded_user = unquote(user)
+        # Убираем лишние пробелы
+        decoded_user = decoded_user.strip()
+        
+        logger.info(f"Попытка удаления пользователя: исходный параметр='{user}', декодированный='{decoded_user}'")
+        
+        if decoded_user.lower() in {"stats", "влад"}:
+            raise HTTPException(status_code=403, detail=f"Пользователя '{decoded_user}' нельзя удалить")
 
         # Получаем user_id перед удалением для очистки данных трекера
-        user_data = await db.get_user(user)
+        user_data = await db.get_user(decoded_user)
         user_id = user_data.get("id") if user_data else None
+        
+        # Логируем результат поиска
+        if user_data:
+            logger.info(f"Пользователь найден в БД: id={user_id}, имя='{user_data.get('user')}'")
+        else:
+            logger.warning(f"Пользователь '{decoded_user}' не найден в БД через get_user")
 
-        result = await db.delete_user(user)
+        result = await db.delete_user(decoded_user)
         
         # Если пользователь не найден ни в users, ни в whitelist, возвращаем 404
         if not result["removed_from_users"] and not result["removed_from_whitelist"]:
+            logger.warning(f"Пользователь '{decoded_user}' не найден ни в users, ни в whitelist. Результат: {result}")
             raise HTTPException(
                 status_code=404, 
                 detail=f"Пользователь '{result['user']}' не найден"
