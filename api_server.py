@@ -228,10 +228,6 @@ class ErrorCreate(BaseModel):
     stack_trace: Optional[str] = None
 
 
-class WhitelistEntry(BaseModel):
-    username: str
-
-
 # ==================== ПОЛЬЗОВАТЕЛИ ====================
 
 @app.post("/api/auth/register/{user}", response_model=dict)
@@ -241,18 +237,18 @@ async def register_user(request: Request, user: str, user_data: UserRegister):
     try:
         if len(user_data.password) < 4:
             raise HTTPException(status_code=400, detail="Пароль должен быть не менее 4 символов")
-
-        canonical_user = await db.get_whitelisted_username(user)
-        if not canonical_user:
-            raise HTTPException(status_code=403, detail="Логин не одобрен администратором. Обратитесь к Владу.")
         
         user_id = await db.register_user(
-            user=canonical_user,
+            user=user,
             password=user_data.password,
             tg_token=user_data.tg_token or "",
             chat_id=user_data.chat_id or "",
             options_json=user_data.options_json or "{}"
         )
+        # Получаем точное имя пользователя из базы
+        user_info = await db.get_user(user)
+        canonical_user = user_info["user"] if user_info else user
+        
         return {"id": user_id, "user": canonical_user, "message": "User registered successfully"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -339,55 +335,6 @@ async def login_user(request: Request, user: str, login_data: UserLogin):
         handle_db_error(e, "входе пользователя", user=user, endpoint=f"login/{user}")
 
 
-@app.get("/api/auth/whitelist", response_model=dict)
-async def get_whitelist():
-    """Возвращает текущий белый список логинов"""
-    try:
-        whitelist = await db.get_whitelist()
-        return {"whitelist": whitelist}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/auth/whitelist", response_model=dict)
-async def add_to_whitelist(entry: WhitelistEntry):
-    """Добавляет логин в белый список"""
-    try:
-        username = entry.username.strip()
-        if not username:
-            raise HTTPException(status_code=400, detail="Логин не может быть пустым")
-
-        canonical = await db.add_login_to_whitelist(username)
-        return {"username": canonical, "message": f"Логин '{canonical}' добавлен в белый список"}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/api/auth/whitelist/{username}", response_model=dict)
-async def remove_from_whitelist(username: str):
-    """Удаляет логин из белого списка"""
-    try:
-        if not username:
-            raise HTTPException(status_code=400, detail="Не указан логин для удаления")
-
-        canonical = await db.get_whitelisted_username(username)
-        if not canonical:
-            raise HTTPException(status_code=404, detail="Логин не найден в белом списке")
-
-        removed = await db.remove_login_from_whitelist(canonical)
-        if not removed:
-            raise HTTPException(status_code=500, detail="Не удалось удалить логин из белого списка")
-        return {"message": f"Логин '{canonical}' удалён из белого списка"}
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/api/users/{user}/settings", response_model=dict)
 async def create_or_update_user(user: str, user_data: UserCreate):
     """Создаёт или обновляет пользователя"""
@@ -398,7 +345,9 @@ async def create_or_update_user(user: str, user_data: UserCreate):
             chat_id=user_data.chat_id or "",
             options_json=user_data.options_json or "{}"
         )
-        canonical_user = (await db.get_whitelisted_username(user)) or user.strip()
+        # Получаем точное имя пользователя из базы
+        user_info = await db.get_user(user)
+        canonical_user = user_info["user"] if user_info else user.strip()
         
         # Инвалидируем кэш детектора стрел, чтобы применить новые настройки сразу
         try:
@@ -477,9 +426,9 @@ async def delete_user(user: str):
 
         result = await db.delete_user(decoded_user)
         
-        # Если пользователь не найден ни в users, ни в whitelist, возвращаем 404
-        if not result["removed_from_users"] and not result["removed_from_whitelist"]:
-            logger.warning(f"Пользователь '{decoded_user}' не найден ни в users, ни в whitelist. Результат: {result}")
+        # Если пользователь не найден, возвращаем 404
+        if not result["removed_from_users"]:
+            logger.warning(f"Пользователь '{decoded_user}' не найден. Результат: {result}")
             raise HTTPException(
                 status_code=404, 
                 detail=f"Пользователь '{result['user']}' не найден"
@@ -490,12 +439,7 @@ async def delete_user(user: str):
             from core.spike_detector import spike_detector
             spike_detector.cleanup_user_data(user_id)
         
-        if result["removed_from_users"] and result["removed_from_whitelist"]:
-            message = f"Пользователь '{result['user']}' удалён и исключён из белого списка"
-        elif result["removed_from_users"]:
-            message = f"Пользователь '{result['user']}' удалён, но в белом списке не найден"
-        elif result["removed_from_whitelist"]:
-            message = f"Логин '{result['user']}' удалён из белого списка"
+        message = f"Пользователь '{result['user']}' удалён"
 
         return {"message": message, **result}
     except HTTPException:

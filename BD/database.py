@@ -86,14 +86,6 @@ class Database:
                 )
             """)
 
-            # Таблица белого списка логинов
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS registration_whitelist (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL COLLATE NOCASE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
             
             # Миграция: добавляем поле password_hash если его нет
             try:
@@ -102,6 +94,17 @@ class Database:
             except aiosqlite.OperationalError:
                 # Колонка уже существует, это нормально
                 pass
+            
+            # Миграция: удаляем таблицу registration_whitelist (больше не используется)
+            try:
+                async with conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='registration_whitelist'") as cursor:
+                    table_exists = await cursor.fetchone()
+                    if table_exists:
+                        await conn.execute("DROP TABLE registration_whitelist")
+                        logger.info("Удалена таблица registration_whitelist (больше не используется)")
+            except aiosqlite.OperationalError as e:
+                logger.warning(f"Ошибка при удалении таблицы registration_whitelist: {e}")
+                # Продолжаем работу, это не критично
             
             # Таблица стрел (alerts) - уникальные стрелы без user_id
             await conn.execute("""
@@ -276,15 +279,6 @@ class Database:
             
             # Создаём индексы через отдельные команды (для совместимости)
             # SQLite не поддерживает INDEX в CREATE TABLE напрямую, создаём отдельно
-            # Гарантируем, что все существующие пользователи находятся в белом списке
-            await conn.execute("""
-                INSERT OR IGNORE INTO registration_whitelist (username)
-                SELECT user FROM users
-            """)
-            await conn.execute("""
-                INSERT OR IGNORE INTO registration_whitelist (username)
-                VALUES (?)
-            """, ("Влад",))
 
             indexes = [
                 # Индексы для alerts - оптимизация частых запросов
@@ -311,8 +305,6 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_exchange_statistics_exchange ON exchange_statistics(exchange)",
                 "CREATE INDEX IF NOT EXISTS idx_exchange_statistics_market ON exchange_statistics(market)",
                 "CREATE INDEX IF NOT EXISTS idx_exchange_statistics_exchange_market ON exchange_statistics(exchange, market)",
-                # Индексы для registration_whitelist
-                "CREATE INDEX IF NOT EXISTS idx_registration_whitelist_username ON registration_whitelist(username)",
                 # Индексы для exchange_blacklists - для быстрой проверки
                 "CREATE INDEX IF NOT EXISTS idx_exchange_blacklists_exchange_market_symbol ON exchange_blacklists(exchange, market, symbol)",
                 # Индексы для symbol_aliases
@@ -364,48 +356,63 @@ class Database:
             int: ID созданного пользователя
             
         Raises:
-            ValueError: Если пользователь уже существует
+            ValueError: Если пользователь не существует или уже зарегистрирован
         """
-        whitelisted_username = await self.get_whitelisted_username(user)
-        if not whitelisted_username:
-            raise ValueError("Регистрация для этого логина не разрешена. Обратитесь к администратору.")
+        normalized_user = self._normalize_username(user)
+        if not normalized_user:
+            raise ValueError("Имя пользователя не может быть пустым")
 
         conn = await self._get_connection()
         try:
-            # Используем каноничное имя пользователя из белого списка
-            normalized_user = whitelisted_username
-
-            # Проверяем, существует ли пользователь (без учета регистра для лучшей проверки)
+            # Проверяем, существует ли пользователь в базе (должен быть создан администратором)
             async with conn.execute("SELECT id, user FROM users WHERE LOWER(user) = LOWER(?)", (normalized_user,)) as cursor:
                 existing = await cursor.fetchone()
                 if existing:
                     existing_username = existing[1] if len(existing) > 1 else user
-                    raise ValueError(f"Пользователь с логином '{existing_username}' уже зарегистрирован")
-            
+                    # Проверяем, есть ли уже пароль (т.е. уже зарегистрирован)
+                    user_id = existing[0] if isinstance(existing, aiosqlite.Row) else existing[0]
+                    async with conn.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)) as cursor2:
+                        password_row = await cursor2.fetchone()
+                        if password_row and password_row[0]:
+                            raise ValueError(f"Пользователь с логином '{existing_username}' уже зарегистрирован. Используйте страницу входа.")
+                else:
+                    raise ValueError("Регистрация для этого логина не разрешена. Обратитесь к администратору.")
+
             # Дополнительная проверка точного совпадения (на случай если регистр отличается)
-            async with conn.execute("SELECT id FROM users WHERE user = ?", (normalized_user,)) as cursor:
-                if await cursor.fetchone():
-                    raise ValueError(f"Пользователь '{normalized_user}' уже зарегистрирован")
+            async with conn.execute("SELECT id, user FROM users WHERE user = ?", (normalized_user,)) as cursor:
+                exact_match = await cursor.fetchone()
+                if exact_match:
+                    # Используем точное имя из базы
+                    exact_username = exact_match[1] if isinstance(exact_match, aiosqlite.Row) else exact_match[1]
+                    normalized_user = exact_username
+                else:
+                    # Если нет точного совпадения, используем первый найденный (с другим регистром)
+                    normalized_user = existing_username
             
             # Хешируем пароль
             password_hash = self._hash_password(password)
             
-            # Создаём нового пользователя
-            cursor = await conn.execute("""
-                INSERT INTO users (user, password_hash, tg_token, chat_id, options_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, (normalized_user, password_hash, tg_token, chat_id, options_json))
+            # Обновляем пароль и настройки для существующего пользователя
+            await conn.execute("""
+                UPDATE users 
+                SET password_hash = ?, tg_token = ?, chat_id = ?, options_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE LOWER(user) = LOWER(?)
+            """, (password_hash, tg_token, chat_id, options_json, normalized_user))
             await conn.commit()
-            user_id = cursor.lastrowid
+            
+            # Получаем ID обновлённого пользователя
+            async with conn.execute("SELECT id FROM users WHERE LOWER(user) = LOWER(?)", (normalized_user,)) as cursor:
+                row = await cursor.fetchone()
+                user_id = row[0] if row else None
+            
             logger.info(f"Зарегистрирован новый пользователь {normalized_user} (ID: {user_id})")
             return user_id
         except ValueError:
-            # Пробрасываем ValueError как есть (пользователь уже существует)
+            # Пробрасываем ValueError как есть
             raise
         except aiosqlite.IntegrityError as e:
-            # Перехватываем ошибку уникальности от SQLite
             await conn.rollback()
-            logger.warning(f"Попытка регистрации существующего пользователя {normalized_user}: {e}")
+            logger.warning(f"Ошибка при регистрации пользователя {normalized_user}: {e}")
             raise ValueError(f"Пользователь '{normalized_user}' уже зарегистрирован")
         except aiosqlite.OperationalError as e:
             logger.error(f"Ошибка БД при регистрации пользователя {normalized_user}: {e}", exc_info=True)
@@ -433,19 +440,19 @@ class Database:
         Returns:
             Dict с данными пользователя или None если неверный логин/пароль
         """
-        whitelisted_username = await self.get_whitelisted_username(user)
-        if not whitelisted_username:
-            logger.warning(f"Попытка входа с логином '{user}', отсутствующим в белом списке")
+        normalized_user = self._normalize_username(user)
+        if not normalized_user:
             return None
 
         conn = await self._get_connection()
         try:
             # ТОЛЬКО SELECT - никаких UPDATE или INSERT
-            async with conn.execute("SELECT * FROM users WHERE user = ?", (whitelisted_username,)) as cursor:
+            # Ищем пользователя без учёта регистра
+            async with conn.execute("SELECT * FROM users WHERE LOWER(user) = LOWER(?)", (normalized_user,)) as cursor:
                 row = await cursor.fetchone()
                 
                 if not row:
-                    logger.warning(f"Попытка входа: пользователь '{whitelisted_username}' не найден")
+                    logger.warning(f"Попытка входа: пользователь '{normalized_user}' не найден")
                     return None
                 
                 user_data = dict(row)
@@ -453,21 +460,21 @@ class Database:
                 
                 # Пароль обязателен для всех пользователей - проверяем его строго
                 if not password_hash:
-                    logger.warning(f"Пользователь '{whitelisted_username}' не имеет пароля - доступ запрещён. Необходимо зарегистрироваться или установить пароль.")
+                    logger.warning(f"Пользователь '{user_data.get('user')}' не имеет пароля - доступ запрещён. Необходимо зарегистрироваться или установить пароль.")
                     return None
                 
                 # Проверяем пароль
                 if not self._verify_password(password, password_hash):
-                    logger.warning(f"Неверный пароль для пользователя '{whitelisted_username}' - доступ запрещён")
+                    logger.warning(f"Неверный пароль для пользователя '{user_data.get('user')}' - доступ запрещён")
                     return None
                 
-                logger.info(f"Успешная аутентификация пользователя '{whitelisted_username}' (пароль верный, данные НЕ обновляются)")
+                logger.info(f"Успешная аутентификация пользователя '{user_data.get('user')}' (пароль верный, данные НЕ обновляются)")
                 return user_data
         except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
-            logger.error(f"Ошибка БД при аутентификации пользователя {whitelisted_username}: {e}", exc_info=True)
+            logger.error(f"Ошибка БД при аутентификации пользователя {normalized_user}: {e}", exc_info=True)
             return None
         except aiosqlite.Error as e:
-            logger.error(f"Ошибка БД при аутентификации пользователя {whitelisted_username}: {e}", exc_info=True)
+            logger.error(f"Ошибка БД при аутентификации пользователя {normalized_user}: {e}", exc_info=True)
             return None
         finally:
             await conn.close()
@@ -491,8 +498,6 @@ class Database:
         if not normalized_user:
             raise ValueError("Имя пользователя не может быть пустым")
 
-        canonical_user = await self.add_login_to_whitelist(normalized_user)
-
         conn = await self._get_connection()
         try:
             # Проверяем, существует ли пользователь (без учета регистра)
@@ -500,7 +505,7 @@ class Database:
                 SELECT id, user, password_hash 
                 FROM users 
                 WHERE LOWER(user) = LOWER(?)
-            """, (canonical_user,)) as cursor:
+            """, (normalized_user,)) as cursor:
                 existing_user = await cursor.fetchone()
             
             if existing_user:
@@ -508,12 +513,12 @@ class Database:
                 user_id = existing_user["id"] if isinstance(existing_user, aiosqlite.Row) else existing_user[0]
 
                 # Обновляем существующего пользователя (БЕЗ изменения пароля)
-                if stored_username != canonical_user:
+                if stored_username != normalized_user:
                     await conn.execute("""
                         UPDATE users 
                         SET user = ?, tg_token = ?, chat_id = ?, options_json = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
-                    """, (canonical_user, tg_token, chat_id, options_json, user_id))
+                    """, (normalized_user, tg_token, chat_id, options_json, user_id))
                 else:
                     await conn.execute("""
                         UPDATE users 
@@ -521,24 +526,24 @@ class Database:
                         WHERE id = ?
                     """, (tg_token, chat_id, options_json, user_id))
                 await conn.commit()
-                logger.debug(f"Обновлён пользователь {canonical_user} (ID: {user_id}) - пароль не изменён")
+                logger.debug(f"Обновлён пользователь {normalized_user} (ID: {user_id}) - пароль не изменён")
             else:
                 # Создаём нового пользователя БЕЗ пароля (для обратной совместимости)
                 cursor = await conn.execute("""
                     INSERT INTO users (user, tg_token, chat_id, options_json, updated_at)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, (canonical_user, tg_token, chat_id, options_json))
+                """, (normalized_user, tg_token, chat_id, options_json))
                 await conn.commit()
                 user_id = cursor.lastrowid
-                logger.debug(f"Создан пользователь {canonical_user} (ID: {user_id}) без пароля")
+                logger.debug(f"Создан пользователь {normalized_user} (ID: {user_id}) без пароля")
             
             return user_id
         except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
-            logger.error(f"Ошибка БД при создании пользователя {canonical_user}: {e}", exc_info=True)
+            logger.error(f"Ошибка БД при создании пользователя {normalized_user}: {e}", exc_info=True)
             await conn.rollback()
             raise
         except aiosqlite.Error as e:
-            logger.error(f"Ошибка БД при создании пользователя {canonical_user}: {e}", exc_info=True)
+            logger.error(f"Ошибка БД при создании пользователя {normalized_user}: {e}", exc_info=True)
             await conn.rollback()
             raise
         finally:
@@ -843,26 +848,24 @@ class Database:
     
     async def delete_user(self, user: str):
         """
-        Удаляет пользователя и соответствующий логин из белого списка
+        Удаляет пользователя
         
         Args:
             user: Имя пользователя
+            
+        Returns:
+            dict: Результат удаления с полями user и removed_from_users
         """
         normalized = self._normalize_username(user)
         if not normalized:
             raise ValueError("Имя пользователя не может быть пустым")
-
-        # Сначала пытаемся найти каноничное имя пользователя из белого списка
-        canonical = await self.get_whitelisted_username(normalized)
         
         conn = await self._get_connection()
         deleted_rows = 0
         exact_username = None
         try:
             # Находим точное имя пользователя в базе (без учета регистра)
-            # Используем каноничное имя из whitelist, если найдено, иначе ищем по normalized
-            search_name = canonical or normalized
-            async with conn.execute("SELECT id, user FROM users WHERE LOWER(user) = LOWER(?)", (search_name,)) as cursor:
+            async with conn.execute("SELECT id, user FROM users WHERE LOWER(user) = LOWER(?)", (normalized,)) as cursor:
                 existing_user = await cursor.fetchone()
             
             if existing_user:
@@ -884,183 +887,33 @@ class Database:
                     logger.debug(f"Удалено {orphaned_alerts_count} стрел без связей после удаления пользователя {exact_username}")
             else:
                 # Пользователь не найден в базе данных
-                logger.warning(f"Пользователь '{canonical or normalized}' не найден в базе данных")
+                logger.warning(f"Пользователь '{normalized}' не найден в базе данных")
             
             await conn.commit()
-            logger.debug(f"Удалён пользователь {exact_username or (canonical or normalized)} (записей в users: {deleted_rows})")
+            logger.debug(f"Удалён пользователь {exact_username or normalized} (записей в users: {deleted_rows})")
         except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
-            error_user = exact_username or canonical or normalized
+            error_user = exact_username or normalized
             logger.error(f"Ошибка БД при удалении пользователя {error_user}: {e}", exc_info=True)
             await conn.rollback()
             raise
         except aiosqlite.Error as e:
-            error_user = exact_username or canonical or normalized
+            error_user = exact_username or normalized
             logger.error(f"Ошибка БД при удалении пользователя {error_user}: {e}", exc_info=True)
             await conn.rollback()
             raise
         finally:
             await conn.close()
 
-        # Определяем имя пользователя для возврата и удаления из whitelist
-        # Используем точное имя из базы, если найдено, иначе каноничное из whitelist, иначе normalized
-        final_username = exact_username or canonical or normalized
-
-        # Удаляем из белого списка, используя точное имя пользователя
-        # Важно: удаляем из белого списка даже если пользователь не был найден в таблице users
-        # (например, если он был добавлен в белый список, но еще не прошел регистрацию)
-        removed_from_whitelist = False
-        try:
-            removed_from_whitelist = await self.remove_login_from_whitelist(final_username)
-        except ValueError:
-            # Если не удалось удалить из белого списка, это не критично
-            logger.warning(f"Не удалось удалить '{final_username}' из белого списка")
-            removed_from_whitelist = False
+        final_username = exact_username or normalized
         
         return {
             "user": final_username,
             "removed_from_users": deleted_rows > 0,
-            "removed_from_whitelist": removed_from_whitelist,
         }
-
-    # ==================== РАБОТА С БЕЛЫМ СПИСКОМ ====================
 
     def _normalize_username(self, username: str) -> str:
         """Обрезает пробелы вокруг логина."""
         return username.strip()
-
-    async def get_whitelisted_username(self, username: str) -> Optional[str]:
-        """
-        Возвращает каноничное имя пользователя из белого списка (без учёта регистра) - асинхронная версия.
-        """
-        normalized = self._normalize_username(username)
-        if not normalized:
-            return None
-
-        conn = await self._get_connection()
-        try:
-            async with conn.execute(
-                "SELECT username FROM registration_whitelist WHERE username = ? COLLATE NOCASE",
-                (normalized,),
-            ) as cursor:
-                row = await cursor.fetchone()
-                return row["username"] if row else None
-        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
-            logger.error(f"Ошибка БД при получении логина из белого списка: {e}", exc_info=True)
-            return None
-        except aiosqlite.Error as e:
-            logger.error(f"Ошибка БД при получении логина из белого списка: {e}", exc_info=True)
-            return None
-        finally:
-            await conn.close()
-
-    def is_login_whitelisted(self, username: str) -> bool:
-        """
-        Проверяет, находится ли логин в белом списке.
-        """
-        return self.get_whitelisted_username(username) is not None
-
-    async def add_login_to_whitelist(self, username: str) -> str:
-        """
-        Добавляет логин в белый список.
-
-        Args:
-            username: Логин пользователя
-
-        Returns:
-            Каноничное имя пользователя, сохранённое в белом списке.
-        """
-        normalized = self._normalize_username(username)
-        if not normalized:
-            raise ValueError("Логин не может быть пустым")
-
-        conn = await self._get_connection()
-        try:
-            existing = await self.get_whitelisted_username(normalized)
-            if existing:
-                return existing
-
-            await conn.execute(
-                "INSERT INTO registration_whitelist (username) VALUES (?)",
-                (normalized,),
-            )
-            await conn.commit()
-            logger.info(f"Добавлен логин '{normalized}' в белый список")
-            return normalized
-        except ValueError:
-            raise
-        except aiosqlite.IntegrityError:
-            # На всякий случай возвращаем каноничное имя, если логин уже существовал (без учёта регистра)
-            existing = await self.get_whitelisted_username(normalized)
-            if existing:
-                return existing
-            raise ValueError(f"Логин '{normalized}' уже существует в белом списке")
-        except aiosqlite.OperationalError as e:
-            logger.error(f"Ошибка БД при добавлении логина '{normalized}' в белый список: {e}", exc_info=True)
-            await conn.rollback()
-            raise
-        except aiosqlite.Error as e:
-            logger.error(f"Ошибка БД при добавлении логина '{normalized}' в белый список: {e}", exc_info=True)
-            await conn.rollback()
-            raise
-        finally:
-            await conn.close()
-
-    async def remove_login_from_whitelist(self, username: str) -> bool:
-        """
-        Удаляет логин из белого списка.
-
-        Returns:
-            bool: True если логин был удалён.
-        """
-        normalized = self._normalize_username(username)
-        if not normalized:
-            raise ValueError("Логин не может быть пустым")
-
-        conn = await self._get_connection()
-        try:
-            cursor = await conn.execute(
-                "DELETE FROM registration_whitelist WHERE username = ? COLLATE NOCASE",
-                (normalized,),
-            )
-            deleted = cursor.rowcount > 0
-            if deleted:
-                await conn.commit()
-                logger.info(f"Логин '{normalized}' удалён из белого списка")
-            else:
-                await conn.rollback()
-            return deleted
-        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
-            logger.error(f"Ошибка БД при удалении логина '{normalized}' из белого списка: {e}", exc_info=True)
-            await conn.rollback()
-            raise
-        except aiosqlite.Error as e:
-            logger.error(f"Ошибка БД при удалении логина '{normalized}' из белого списка: {e}", exc_info=True)
-            await conn.rollback()
-            raise
-        finally:
-            await conn.close()
-
-    async def get_whitelist(self) -> List[Dict[str, Any]]:
-        """
-        Возвращает все логины из белого списка.
-        """
-        conn = await self._get_connection()
-        try:
-            async with conn.execute("""
-                SELECT username, created_at
-                FROM registration_whitelist
-                ORDER BY created_at DESC, username ASC
-            """) as cursor:
-                rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
-        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
-            logger.error("Ошибка БД при получении белого списка: %s", e, exc_info=True)
-            return []
-        except aiosqlite.Error as e:
-            logger.error("Ошибка БД при получении белого списка: %s", e, exc_info=True)
-            return []
-        finally:
-            await conn.close()
     
     # ==================== РАБОТА СО СТРЕЛАМИ (ALERTS) ====================
     
@@ -1303,6 +1156,26 @@ class Database:
                 # Удаляем связи
                 delete_query = f"DELETE FROM user_alerts WHERE id IN (SELECT ua.id FROM user_alerts ua {join_clause} {where_clause})"
                 await conn.execute(delete_query, params)
+                
+                # Удаляем стрелы, которые остались без связей (сиротские стрелы)
+                # Это гарантирует, что если все пользователи удалят свои стрелы, в базе не останется никаких стрел
+                orphaned_conditions = ["id NOT IN (SELECT DISTINCT alert_id FROM user_alerts WHERE alert_id IS NOT NULL)"]
+                orphaned_params = []
+                
+                # Если были фильтры по бирже/рынку, применяем их и к очистке сиротских стрел
+                if exchange:
+                    orphaned_conditions.append("exchange = ?")
+                    orphaned_params.append(exchange)
+                if market:
+                    orphaned_conditions.append("market = ?")
+                    orphaned_params.append(market)
+                
+                orphaned_where = "WHERE " + " AND ".join(orphaned_conditions)
+                
+                cursor_orphaned = await conn.execute(f"DELETE FROM alerts {orphaned_where}", orphaned_params)
+                orphaned_count = cursor_orphaned.rowcount
+                if orphaned_count > 0:
+                    logger.debug(f"Удалено {orphaned_count} сиротских стрел без связей после удаления связей пользователя {user_id}")
             else:
                 # Удаляем все стрелы (и связи через CASCADE)
                 conditions = []

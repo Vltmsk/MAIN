@@ -794,8 +794,8 @@ export default function Dashboard() {
       if (statusResult && statusResult.ok) {
         try {
           const statusData = await statusResult.json();
-          // Используем alerts_since_start для детектов с момента запуска
-          totalDetectsValue = statusData.alerts_since_start || statusData.total_alerts || 0;
+          // Используем только alerts_since_start для детектов с момента запуска
+          totalDetectsValue = statusData.alerts_since_start ?? 0;
           uptimeSecondsValue = statusData.uptime_seconds || 0;
           startTimeValue = statusData.start_time || null;
         } catch (e) {

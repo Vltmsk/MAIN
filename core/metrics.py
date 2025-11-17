@@ -24,6 +24,10 @@ class Metrics:
         # Структура: ticks_counter[(exchange, market)] = {"count": int, "start_time": float}
         self._ticks_counter: Dict[tuple, Dict] = {}
         
+        # Для подсчёта свечей в секунду для Binance (candles per second)
+        # Структура: candles_counter[(exchange, market)] = {"count": int, "start_time": float}
+        self._candles_counter: Dict[tuple, Dict] = {}
+        
     def inc_candle(self, exchange: str, market: str = None):
         """Увеличить счётчик свечей."""
         current_time = time.time()
@@ -32,6 +36,16 @@ class Metrics:
             # Сохраняем время последней свечи в формате ISO timestamp
             from datetime import datetime
             self.stats[exchange][market]["last_candle_time"] = datetime.fromtimestamp(current_time).isoformat()
+            
+            # Для Binance считаем свечи в секунду (аналогично ticks для других бирж)
+            if exchange == "binance":
+                key = (exchange, market)
+                if key not in self._candles_counter:
+                    self._candles_counter[key] = {
+                        "count": 0,
+                        "start_time": time.time(),
+                    }
+                self._candles_counter[key]["count"] += 1
         else:
             # Для обратной совместимости, если market не указан
             self.stats[exchange]["total"]["candles"] += 1
@@ -91,6 +105,32 @@ class Metrics:
         ticks_per_second = counter["count"] / elapsed_time
         return ticks_per_second
     
+    def get_candles_per_second(self, exchange: str, market: str) -> Optional[float]:
+        """
+        Получить среднее количество candles per second для биржи и рынка.
+        Используется для Binance, где получаем готовые свечи, а не трейды.
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка (spot/linear)
+            
+        Returns:
+            Среднее количество candles per second или None, если данных нет
+        """
+        key = (exchange, market)
+        
+        if key not in self._candles_counter:
+            return None
+        
+        counter = self._candles_counter[key]
+        elapsed_time = time.time() - counter["start_time"]
+        
+        if elapsed_time <= 0:
+            return None
+        
+        candles_per_second = counter["count"] / elapsed_time
+        return candles_per_second
+    
     def get_stats(self) -> Dict:
         """Получить текущую статистику."""
         return {
@@ -105,4 +145,5 @@ class Metrics:
         self.total_candles = 0
         self.total_trades = 0
         self._ticks_counter.clear()
+        self._candles_counter.clear()
 

@@ -595,7 +595,11 @@ async def _save_statistics_to_db():
                     )
                     
                     # Получаем T/s
-                    ticks_per_second = metrics.get_ticks_per_second(exchange_name, market)
+                    # Для Binance используем свечи в секунду, для остальных - трейды в секунду
+                    if exchange_name == "binance":
+                        ticks_per_second = metrics.get_candles_per_second(exchange_name, market)
+                    else:
+                        ticks_per_second = metrics.get_ticks_per_second(exchange_name, market)
                     
                     # Сохраняем в БД
                     await db.upsert_exchange_statistics(

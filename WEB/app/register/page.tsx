@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function RegisterPage() {
@@ -9,37 +9,6 @@ export default function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [allowedUsers, setAllowedUsers] = useState<string[]>([]);
-  const [whitelistLoaded, setWhitelistLoaded] = useState(false);
-  const [whitelistLoadError, setWhitelistLoadError] = useState("");
-
-  useEffect(() => {
-    const loadWhitelist = async () => {
-      try {
-        const res = await fetch("/api/auth/whitelist");
-        if (!res.ok) {
-          const fallback = await res.text().catch(() => "");
-          throw new Error(fallback || "Не удалось получить белый список");
-        }
-        const data = await res.json();
-        const list = Array.isArray(data.whitelist)
-          ? data.whitelist
-              .map((entry: { username?: string }) => entry?.username)
-              .filter((username: string | undefined): username is string => Boolean(username))
-          : [];
-        setAllowedUsers(list);
-        setWhitelistLoadError("");
-      } catch (err) {
-        console.error("Ошибка загрузки белого списка:", err);
-        setAllowedUsers([]);
-        setWhitelistLoadError("Не удалось загрузить список разрешённых логинов. Попробуйте обновить страницу или обратитесь к администратору.");
-      } finally {
-        setWhitelistLoaded(true);
-      }
-    };
-
-    loadWhitelist();
-  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,29 +21,6 @@ export default function RegisterPage() {
         return;
       }
 
-      if (!whitelistLoaded) {
-        setError("Список разрешённых логинов ещё загружается. Попробуйте позже.");
-        return;
-      }
-
-      if (allowedUsers.length === 0) {
-        setError("Регистрация недоступна. Обратитесь к администратору.");
-        return;
-      }
-
-      // Проверка, что пользователь в списке разрешённых (без учёта регистра)
-      const matchedUser = allowedUsers.find(
-        (user) => user.toLowerCase() === login.toLowerCase()
-      );
-
-      if (!matchedUser) {
-        setError("Логин не в списке разрешённых пользователей");
-        return;
-      }
-
-      // Нормализуем имя пользователя - используем правильную версию из белого списка
-      const normalizedLogin = matchedUser;
-
       // Проверка пароля
       if (password.length < 4) {
         setError("Пароль должен быть не менее 4 символов");
@@ -85,6 +31,9 @@ export default function RegisterPage() {
         setError("Пароли не совпадают");
         return;
       }
+
+      // Используем введённый логин (сервер сам проверит существование пользователя в БД)
+      const normalizedLogin = login.trim();
 
       // Регистрация пользователя
       const response = await fetch(`/api/auth/register/${encodeURIComponent(normalizedLogin)}`, {
@@ -167,11 +116,6 @@ export default function RegisterPage() {
 
           {/* Форма */}
           <form onSubmit={handleSubmit} className="space-y-4 relative z-10">
-            {whitelistLoadError && (
-              <div className="bg-amber-500/20 border border-amber-500/50 text-amber-300 px-4 py-3 rounded-lg text-sm animate-fade-in relative z-10">
-                {whitelistLoadError}
-              </div>
-            )}
             {error && (
               <div className="bg-red-500/20 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg text-sm animate-fade-in relative z-10">
                 {error}

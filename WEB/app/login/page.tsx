@@ -8,37 +8,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [allowedUsers, setAllowedUsers] = useState<string[]>([]);
-  const [whitelistLoaded, setWhitelistLoaded] = useState(false);
-  const [whitelistLoadError, setWhitelistLoadError] = useState("");
-
-  useEffect(() => {
-    const loadWhitelist = async () => {
-      try {
-        const res = await fetch("/api/auth/whitelist");
-        if (!res.ok) {
-          const fallback = await res.text().catch(() => "");
-          throw new Error(fallback || "Не удалось получить белый список");
-        }
-        const data = await res.json();
-        const list = Array.isArray(data.whitelist)
-          ? data.whitelist
-              .map((entry: { username?: string }) => entry?.username)
-              .filter((username: string | undefined): username is string => Boolean(username))
-          : [];
-        setAllowedUsers(list);
-        setWhitelistLoadError("");
-      } catch (err) {
-        console.error("Ошибка загрузки белого списка:", err);
-        setAllowedUsers([]);
-        setWhitelistLoadError("Не удалось загрузить список разрешённых логинов. Попробуйте обновить страницу или обратитесь к администратору.");
-      } finally {
-        setWhitelistLoaded(true);
-      }
-    };
-
-    loadWhitelist();
-  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,26 +17,6 @@ export default function LoginPage() {
     try {
       if (!login || !password) {
         setError("Заполните все поля");
-        return;
-      }
-
-      if (!whitelistLoaded) {
-        setError("Список разрешённых логинов ещё загружается. Попробуйте позже.");
-        return;
-      }
-
-      if (allowedUsers.length === 0) {
-        setError("Вход временно недоступен. Обратитесь к администратору.");
-        return;
-      }
-
-      // Проверка, что пользователь в списке разрешённых (без учёта регистра)
-      const matchedUser = allowedUsers.find(
-        (user) => user.toLowerCase() === login.toLowerCase()
-      );
-
-      if (!matchedUser) {
-        setError("Неверный логин или пароль");
         return;
       }
 
@@ -82,8 +31,8 @@ export default function LoginPage() {
         return;
       }
 
-      // Нормализуем имя пользователя - используем правильную версию из белого списка
-      const normalizedLogin = matchedUser;
+      // Используем введённый логин (сервер сам проверит существование пользователя)
+      const normalizedLogin = login.trim();
 
       const detectTimezone = () => {
         try {
@@ -196,11 +145,6 @@ export default function LoginPage() {
 
           {/* Форма */}
           <form onSubmit={handleSubmit} className="space-y-4 relative z-10">
-            {whitelistLoadError && (
-              <div className="bg-amber-500/20 border border-amber-500/50 text-amber-300 px-4 py-3 rounded-lg text-sm animate-fade-in relative z-10">
-                {whitelistLoadError}
-              </div>
-            )}
             {error && (
               <div className="bg-red-500/20 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg text-sm animate-fade-in relative z-10">
                 {error}
