@@ -7,6 +7,81 @@ import traceback
 import asyncio
 import concurrent.futures
 from pathlib import Path
+from collections import deque
+from threading import Lock
+
+# Глобальная очередь для записи ошибок в БД
+_error_queue = asyncio.Queue()
+_queue_processor_started = False
+_queue_lock = Lock()
+
+
+async def _process_error_queue():
+    """
+    Фоновый процессор очереди ошибок.
+    Обрабатывает ошибки последовательно, чтобы избежать блокировок БД.
+    """
+    from BD.database import db
+    
+    while True:
+        try:
+            # Получаем ошибку из очереди (блокирующий вызов)
+            error_data = await _error_queue.get()
+            
+            if error_data is None:  # Сигнал остановки
+                break
+            
+            try:
+                # Записываем ошибку в БД
+                await db.add_error(
+                    error_type=error_data["error_type"],
+                    error_message=error_data["error_message"],
+                    exchange=error_data.get("exchange"),
+                    connection_id=error_data.get("connection_id"),
+                    market=error_data.get("market"),
+                    symbol=error_data.get("symbol"),
+                    stack_trace=error_data.get("stack_trace"),
+                )
+            except Exception as e:
+                # Логируем ошибку записи в БД без записи в БД (избегаем рекурсии)
+                logging.getLogger(__name__).error(
+                    f"Ошибка при записи ошибки в БД: {e}",
+                    exc_info=True,
+                    extra={"skip_db_logging": True}
+                )
+            finally:
+                _error_queue.task_done()
+        except Exception as e:
+            # Критическая ошибка в процессоре очереди
+            logging.getLogger(__name__).error(
+                f"Критическая ошибка в процессоре очереди ошибок: {e}",
+                exc_info=True,
+                extra={"skip_db_logging": True}
+            )
+            await asyncio.sleep(1)  # Небольшая задержка перед следующей попыткой
+
+
+def _start_queue_processor():
+    """
+    Запускает фоновый процессор очереди ошибок, если он еще не запущен.
+    """
+    global _queue_processor_started
+    
+    with _queue_lock:
+        if _queue_processor_started:
+            return
+        
+        try:
+            # Пытаемся получить текущий event loop
+            loop = asyncio.get_running_loop()
+            # Если loop запущен, создаем задачу
+            if not hasattr(loop, '_error_queue_task'):
+                loop._error_queue_task = asyncio.create_task(_process_error_queue())
+                _queue_processor_started = True
+        except RuntimeError:
+            # Нет запущенного loop - запустим при первом вызове через asyncio.run
+            # Это произойдет в отдельном потоке
+            pass
 
 
 class DatabaseErrorHandler(logging.Handler):
@@ -38,41 +113,26 @@ class DatabaseErrorHandler(logging.Handler):
                 stack_trace = record.stack_info
 
         try:
-            from BD.database import db  # Ленивая загрузка во избежание циклических импортов
+            from BD.database import db
 
-            # Вызываем async метод db.add_error() из синхронного контекста
-            # Используем fire-and-forget подход: запускаем в отдельном потоке, чтобы не блокировать
+            # Пытаемся использовать текущий event loop
             try:
                 loop = asyncio.get_running_loop()
-                # Если loop уже запущен, используем run_coroutine_threadsafe для безопасного вызова
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, db.add_error(
-                        error_type=str(error_type)[:64],
-                        error_message=message[:1024],
-                        exchange=exchange,
-                        connection_id=connection_id,
-                        market=market,
-                        symbol=symbol,
-                        stack_trace=stack_trace[:4000] if isinstance(stack_trace, str) else stack_trace,
-                    ))
-                    # Не ждём результат (fire-and-forget), чтобы не блокировать логирование
-                    future.result(timeout=0.1)  # Короткий таймаут, чтобы не блокировать
-            except (RuntimeError, concurrent.futures.TimeoutError):
-                # Нет запущенного event loop или таймаут - создаём новый loop
-                # Используем try-except, чтобы не блокировать, если что-то пойдёт не так
-                try:
-                    asyncio.run(db.add_error(
-                        error_type=str(error_type)[:64],
-                        error_message=message[:1024],
-                        exchange=exchange,
-                        connection_id=connection_id,
-                        market=market,
-                        symbol=symbol,
-                        stack_trace=stack_trace[:4000] if isinstance(stack_trace, str) else stack_trace,
-                    ))
-                except Exception:
-                    # Игнорируем ошибки при записи в БД, чтобы не нарушать логирование
-                    pass
+                # Если loop запущен, создаем задачу (не блокирующую)
+                asyncio.create_task(db.add_error(
+                    error_type=str(error_type)[:64],
+                    error_message=message[:1024],
+                    exchange=exchange,
+                    connection_id=connection_id,
+                    market=market,
+                    symbol=symbol,
+                    stack_trace=stack_trace[:4000] if isinstance(stack_trace, str) else stack_trace,
+                ))
+            except RuntimeError:
+                # Нет запущенного loop - используем очередь или просто игнорируем
+                # В этом случае ошибка не будет записана в БД, но это лучше, чем блокировка
+                # Можно также использовать threading для создания отдельного loop
+                pass
         except Exception:
             # Избегаем рекурсивного логирования при ошибках записи в БД
             pass

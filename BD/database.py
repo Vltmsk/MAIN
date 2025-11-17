@@ -55,21 +55,27 @@ class Database:
         if not self._initialized:
             await self.initialize()
         
-        conn = await aiosqlite.connect(str(self.db_path))
+        conn = await aiosqlite.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = aiosqlite.Row  # Для доступа к колонкам по имени
         # Убеждаемся, что SQLite использует UTF-8 для работы с кириллицей
         await conn.execute("PRAGMA encoding = 'UTF-8'")
         # Включаем WAL режим для лучшей конкурентности
         await conn.execute("PRAGMA journal_mode = WAL")
+        # Устанавливаем busy_timeout для автоматического ожидания разблокировки (30 секунд)
+        await conn.execute("PRAGMA busy_timeout = 30000")
+        # Оптимизация для конкурентных записей
+        await conn.execute("PRAGMA synchronous = NORMAL")
         return conn
     
     async def _init_database(self):
         """Инициализирует БД: создаёт все таблицы, если их нет"""
         # Создаём подключение напрямую, без проверки инициализации
-        conn = await aiosqlite.connect(str(self.db_path))
+        conn = await aiosqlite.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA encoding = 'UTF-8'")
         await conn.execute("PRAGMA journal_mode = WAL")
+        await conn.execute("PRAGMA busy_timeout = 30000")
+        await conn.execute("PRAGMA synchronous = NORMAL")
         try:
             
             # Таблица пользователей
@@ -1346,9 +1352,9 @@ class Database:
     async def add_error(self, error_type: str, error_message: str,
                  exchange: Optional[str] = None, connection_id: Optional[str] = None,
                  market: Optional[str] = None, symbol: Optional[str] = None,
-                 stack_trace: Optional[str] = None):
+                 stack_trace: Optional[str] = None, max_retries: int = 3):
         """
-        Добавляет ошибку в БД - асинхронная версия
+        Добавляет ошибку в БД - асинхронная версия с retry механизмом
         
         Args:
             error_type: Тип ошибки (например, "reconnect", "websocket_error", "critical")
@@ -1358,24 +1364,82 @@ class Database:
             market: Тип рынка
             symbol: Торговая пара
             stack_trace: Стек трейс ошибки
+            max_retries: Максимальное количество попыток при блокировке БД
         """
-        conn = await self._get_connection()
-        try:
-            await conn.execute("""
-                INSERT INTO errors 
-                (error_type, error_message, exchange, connection_id, market, symbol, stack_trace)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (error_type, error_message, exchange, connection_id, market, symbol, stack_trace))
-            await conn.commit()
-            logger.debug(f"Добавлена ошибка: {error_type} - {exchange}")
-        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
-            logger.error(f"Ошибка БД при добавлении ошибки в БД: {e}", exc_info=True)
-            await conn.rollback()
-        except aiosqlite.Error as e:
-            logger.error(f"Ошибка БД при добавлении ошибки в БД: {e}", exc_info=True)
-            await conn.rollback()
-        finally:
-            await conn.close()
+        last_error = None
+        for attempt in range(max_retries):
+            conn = None
+            try:
+                conn = await self._get_connection()
+                await conn.execute("""
+                    INSERT INTO errors 
+                    (error_type, error_message, exchange, connection_id, market, symbol, stack_trace)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (error_type, error_message, exchange, connection_id, market, symbol, stack_trace))
+                await conn.commit()
+                logger.debug(f"Добавлена ошибка: {error_type} - {exchange}")
+                return  # Успешно добавлено
+            except aiosqlite.OperationalError as e:
+                last_error = e
+                if conn:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                
+                # Если это ошибка блокировки и есть еще попытки
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    # Экспоненциальная задержка: 0.1s, 0.2s, 0.4s
+                    delay = 0.1 * (2 ** attempt)
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    # Если это не блокировка или закончились попытки - логируем
+                    logger.error(
+                        f"Ошибка БД при добавлении ошибки в БД (попытка {attempt + 1}/{max_retries}): {e}",
+                        exc_info=True,
+                        extra={"skip_db_logging": True}  # Избегаем рекурсии
+                    )
+                    break
+            except aiosqlite.IntegrityError as e:
+                last_error = e
+                if conn:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                logger.error(
+                    f"Ошибка целостности БД при добавлении ошибки: {e}",
+                    exc_info=True,
+                    extra={"skip_db_logging": True}
+                )
+                break
+            except aiosqlite.Error as e:
+                last_error = e
+                if conn:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                logger.error(
+                    f"Ошибка БД при добавлении ошибки в БД: {e}",
+                    exc_info=True,
+                    extra={"skip_db_logging": True}
+                )
+                break
+            finally:
+                if conn:
+                    try:
+                        await conn.close()
+                    except Exception:
+                        pass
+        
+        # Если все попытки исчерпаны, логируем финальную ошибку
+        if last_error:
+            logger.error(
+                f"Не удалось добавить ошибку в БД после {max_retries} попыток: {last_error}",
+                extra={"skip_db_logging": True}
+            )
     
     async def get_errors(self, exchange: Optional[str] = None,
                   error_type: Optional[str] = None,
