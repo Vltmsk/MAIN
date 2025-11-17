@@ -391,12 +391,12 @@ class Database:
             password_hash = self._hash_password(password)
             
             # Создаём нового пользователя
-            await conn.execute("""
+            cursor = await conn.execute("""
                 INSERT INTO users (user, password_hash, tg_token, chat_id, options_json, updated_at)
                 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """, (normalized_user, password_hash, tg_token, chat_id, options_json))
             await conn.commit()
-            user_id = conn.lastrowid
+            user_id = cursor.lastrowid
             logger.info(f"Зарегистрирован новый пользователь {normalized_user} (ID: {user_id})")
             return user_id
         except ValueError:
@@ -524,12 +524,12 @@ class Database:
                 logger.debug(f"Обновлён пользователь {canonical_user} (ID: {user_id}) - пароль не изменён")
             else:
                 # Создаём нового пользователя БЕЗ пароля (для обратной совместимости)
-                await conn.execute("""
+                cursor = await conn.execute("""
                     INSERT INTO users (user, tg_token, chat_id, options_json, updated_at)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """, (canonical_user, tg_token, chat_id, options_json))
                 await conn.commit()
-                user_id = conn.lastrowid
+                user_id = cursor.lastrowid
                 logger.debug(f"Создан пользователь {canonical_user} (ID: {user_id}) без пароля")
             
             return user_id
@@ -1103,12 +1103,12 @@ class Database:
                 logger.debug(f"Найдена существующая стрела (ID: {alert_id}): {exchange} {market} {symbol} (delta: {delta}%)")
             else:
                 # Создаём новую стрелу
-                await conn.execute("""
+                cursor = await conn.execute("""
                     INSERT INTO alerts 
                     (ts, exchange, market, symbol, delta, wick_pct, volume_usdt, meta)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (ts, exchange, market, symbol, delta, wick_pct, volume_usdt, meta))
-                alert_id = conn.lastrowid
+                alert_id = cursor.lastrowid
                 logger.debug(f"Создана новая стрела (ID: {alert_id}): {exchange} {market} {symbol} (delta: {delta}%)")
             
             # Создаём связь пользователя со стрелой (если её ещё нет)
