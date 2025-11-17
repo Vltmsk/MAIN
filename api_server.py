@@ -662,10 +662,9 @@ async def get_user_spikes_stats(
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Для пользователя "Stats" получаем все стрелы без фильтрации по user_id
-        # Для остальных пользователей - только их стрелы
-        is_stats_user = user.lower() == "stats"
-        user_id = None if is_stats_user else user_data["id"]
+        # Получаем стрелы для конкретного пользователя (включая "Stats")
+        # Общая статистика показывает только стрелы, пойманные фильтрами пользователя "Stats"
+        user_id = user_data["id"]
         
         # Получаем все стрелы пользователя за указанный период (по умолчанию 30 дней)
         if ts_from is None:
