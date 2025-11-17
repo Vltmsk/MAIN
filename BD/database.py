@@ -570,25 +570,29 @@ class Database:
                 all_users = [row[0] for row in await cursor.fetchall()]
             logger.debug(f"[Database] All users in DB: {all_users}")
             
-            # Выполняем поиск сначала точный, затем без учета регистра
+            # Выполняем поиск сначала точный
             async with conn.execute("SELECT * FROM users WHERE user = ?", (user,)) as cursor:
                 row = await cursor.fetchone()
             
             if row:
                 user_dict = dict(row)
-                logger.debug(f"[Database] User found: '{user_dict['user']}' (id: {user_dict.get('id')})")
+                logger.debug(f"[Database] User found (exact match): '{user_dict['user']}' (id: {user_dict.get('id')})")
                 return user_dict
             else:
-                # Попробуем найти без учета регистра
-                async with conn.execute("SELECT * FROM users WHERE LOWER(user) = LOWER(?)", (user,)) as cursor:
-                    row_case_insensitive = await cursor.fetchone()
-                if row_case_insensitive:
-                    found_user = dict(row_case_insensitive)
-                    logger.warning(f"[Database] Found user with different case: '{found_user['user']}' (requested: '{user}')")
-                    return found_user
-                else:
-                    logger.warning(f"[Database] User '{user}' not found. Available users: {all_users}")
-                    return None
+                # Попробуем найти без учета регистра вручную (для корректной работы с кириллицей)
+                logger.debug(f"[Database] No exact match, trying case-insensitive search for '{user}'")
+                for db_username in all_users:
+                    if db_username.lower() == user.lower():
+                        # Нашли совпадение, получаем полные данные
+                        async with conn.execute("SELECT * FROM users WHERE user = ?", (db_username,)) as cursor:
+                            row_case_insensitive = await cursor.fetchone()
+                        if row_case_insensitive:
+                            found_user = dict(row_case_insensitive)
+                            logger.warning(f"[Database] Found user with different case: '{found_user['user']}' (requested: '{user}')")
+                            return found_user
+                
+                logger.warning(f"[Database] User '{user}' not found. Available users: {all_users}")
+                return None
         except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
             logger.error(f"Ошибка БД при получении пользователя {user}: {e}", exc_info=True)
             return None
@@ -860,17 +864,39 @@ class Database:
         if not normalized:
             raise ValueError("Имя пользователя не может быть пустым")
         
+        # Логируем для отладки
+        logger.info(f"[Database] delete_user called with: '{normalized}' (type: {type(normalized)}, length: {len(normalized)})")
+        logger.info(f"[Database] User bytes: {normalized.encode('utf-8')}")
+        
         conn = await self._get_connection()
         deleted_rows = 0
         exact_username = None
         try:
-            # Находим точное имя пользователя в базе (без учета регистра)
-            async with conn.execute("SELECT id, user FROM users WHERE LOWER(user) = LOWER(?)", (normalized,)) as cursor:
+            # Сначала получаем всех пользователей для отладки
+            async with conn.execute("SELECT id, user FROM users") as cursor:
+                all_users = await cursor.fetchall()
+            all_usernames = [row[1] if isinstance(row, aiosqlite.Row) else row[1] for row in all_users]
+            logger.info(f"[Database] All users in DB: {all_usernames}")
+            
+            # Пытаемся найти точное совпадение сначала
+            async with conn.execute("SELECT id, user FROM users WHERE user = ?", (normalized,)) as cursor:
                 existing_user = await cursor.fetchone()
             
             if existing_user:
                 exact_username = existing_user[1] if isinstance(existing_user, aiosqlite.Row) else existing_user[1]
-                
+                logger.info(f"[Database] Found exact match: '{exact_username}'")
+            else:
+                # Если точного совпадения нет, пробуем найти без учета регистра
+                # Но для кириллицы LOWER() может работать некорректно, поэтому
+                # пробуем найти вручную, сравнивая нормализованные версии
+                logger.info(f"[Database] No exact match found, trying case-insensitive search")
+                for db_username in all_usernames:
+                    if db_username.lower() == normalized.lower():
+                        exact_username = db_username
+                        logger.info(f"[Database] Found case-insensitive match: '{exact_username}'")
+                        break
+            
+            if exact_username:
                 # Удаляем пользователя (благодаря CASCADE автоматически удалятся связи в user_alerts)
                 cursor = await conn.execute("DELETE FROM users WHERE user = ?", (exact_username,))
                 deleted_rows = cursor.rowcount
@@ -887,7 +913,7 @@ class Database:
                     logger.debug(f"Удалено {orphaned_alerts_count} стрел без связей после удаления пользователя {exact_username}")
             else:
                 # Пользователь не найден в базе данных
-                logger.warning(f"Пользователь '{normalized}' не найден в базе данных")
+                logger.warning(f"Пользователь '{normalized}' не найден в базе данных. Доступные пользователи: {all_usernames}")
             
             await conn.commit()
             logger.debug(f"Удалён пользователь {exact_username or normalized} (записей в users: {deleted_rows})")

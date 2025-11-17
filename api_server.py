@@ -421,20 +421,31 @@ async def delete_user(user: str):
         if not decoded_user:
             raise HTTPException(status_code=400, detail="Имя пользователя не может быть пустым")
         
-        logger.info(f"Попытка удаления пользователя: исходный параметр='{user}', декодированный='{decoded_user}'")
+        # Логируем детальную информацию для отладки
+        logger.info(f"Попытка удаления пользователя:")
+        logger.info(f"  - Исходный параметр: '{user}' (type: {type(user)}, length: {len(user)})")
+        logger.info(f"  - Декодированный: '{decoded_user}' (type: {type(decoded_user)}, length: {len(decoded_user)})")
+        logger.info(f"  - Байты исходного: {user.encode('utf-8')}")
+        logger.info(f"  - Байты декодированного: {decoded_user.encode('utf-8')}")
         
         if decoded_user.lower() in {"stats", "влад"}:
             raise HTTPException(status_code=403, detail=f"Пользователя '{decoded_user}' нельзя удалить")
 
         # Получаем user_id перед удалением для очистки данных трекера
+        logger.info(f"Вызов db.get_user('{decoded_user}')...")
         user_data = await db.get_user(decoded_user)
         user_id = user_data.get("id") if user_data else None
         
         # Логируем результат поиска
         if user_data:
-            logger.info(f"Пользователь найден в БД: id={user_id}, имя='{user_data.get('user')}'")
+            logger.info(f"Пользователь найден в БД через get_user: id={user_id}, имя='{user_data.get('user')}'")
+            logger.info(f"  - Сравнение: запрошено '{decoded_user}' vs найдено '{user_data.get('user')}'")
+            logger.info(f"  - Совпадают: {decoded_user == user_data.get('user')}")
         else:
             logger.warning(f"Пользователь '{decoded_user}' не найден в БД через get_user")
+            # Получаем всех пользователей для отладки
+            all_users = await db.get_all_users()
+            logger.warning(f"  - Доступные пользователи в БД: {[u['user'] for u in all_users]}")
 
         result = await db.delete_user(decoded_user)
         
