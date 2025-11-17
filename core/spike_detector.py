@@ -24,6 +24,12 @@ class SpikeDetector:
         # Трекер серий стрел: {user_id: {exchange_market_symbol: [{"timestamp": float, "delta": float, "volume_usdt": float}]}}
         # Хранит временные метки и параметры последних стрел для каждой пары exchange+market+symbol для каждого пользователя
         self._series_tracker: Dict[int, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
+        
+        # Настройки для управления памятью
+        self._max_spikes_per_symbol = 1000  # Максимальное количество записей на символ
+        self._ttl_seconds = 3600  # TTL: 1 час
+        self._last_cleanup_time = time.time()  # Время последней очистки
+        self._cleanup_interval = 3600  # Интервал периодической очистки: 1 час
     
     def _get_users(self) -> List[Dict]:
         """
@@ -41,12 +47,28 @@ class SpikeDetector:
         
         # Обновляем кэш
         try:
-            users = db.get_all_users()
+            import asyncio
+            # Проверяем, есть ли уже запущенный event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # Если loop уже запущен, создаём новый loop в отдельном потоке
+                # Это безопаснее, чем пытаться использовать существующий loop из синхронного контекста
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, db.get_all_users())
+                    users = future.result()
+            except RuntimeError:
+                # Нет запущенного event loop, можем использовать asyncio.run()
+                users = asyncio.run(db.get_all_users())
             self._users_cache = users
             self._cache_timestamp = current_time
             return users
         except Exception as e:
-            logger.error(f"Ошибка при получении пользователей: {e}", exc_info=True)
+            logger.error(f"Ошибка при получении пользователей: {e}", exc_info=True, extra={
+                "log_to_db": True,
+                "error_type": "spike_detector_db_error",
+                "market": "spike_detector",
+            })
             return self._users_cache or []
     
     def _parse_user_options(self, options_json: str) -> Dict:
@@ -85,8 +107,12 @@ class SpikeDetector:
                 },
                 "exchangeSettings": exchange_settings
             }
-        except Exception as e:
-            logger.warning(f"Ошибка парсинга options_json: {e}, настройки не применятся")
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            logger.warning(f"Ошибка парсинга options_json: {e}, настройки не применятся", extra={
+                "log_to_db": True,
+                "error_type": "spike_detector_parse_error",
+                "market": "spike_detector",
+            })
             return self._get_default_options()
     
     def _get_default_options(self) -> Dict:
@@ -379,12 +405,16 @@ class SpikeDetector:
         }
         self._series_tracker[user_id][key].append(spike_data)
         
-        # Очищаем старые записи (старше 1 часа) для экономии памяти
-        hour_ago = current_time - 3600
-        self._series_tracker[user_id][key] = [
-            spike for spike in self._series_tracker[user_id][key] 
-            if spike.get("timestamp", 0) >= hour_ago
-        ]
+        # Очищаем старые записи (TTL) для экономии памяти
+        ttl_threshold = current_time - self._ttl_seconds
+        spikes = self._series_tracker[user_id][key]
+        spikes = [spike for spike in spikes if spike.get("timestamp", 0) >= ttl_threshold]
+        
+        # Ограничиваем максимальный размер (оставляем последние N записей)
+        if len(spikes) > self._max_spikes_per_symbol:
+            spikes = spikes[-self._max_spikes_per_symbol:]
+        
+        self._series_tracker[user_id][key] = spikes
     
     def detect_spike(self, candle: Candle) -> List[Dict]:
         """
@@ -397,6 +427,9 @@ class SpikeDetector:
             List[Dict]: Список детектированных стрел с информацией о пользователях
             Формат: [{"user_id": int, "user_name": str, "delta": float, "wick_pct": float, "volume_usdt": float}, ...]
         """
+        # Периодическая очистка старых данных
+        self._cleanup_old_data()
+        
         detected_spikes = []
         
         # Получаем всех пользователей
@@ -469,6 +502,71 @@ class SpikeDetector:
         """Сбрасывает кэш пользователей"""
         self._users_cache = None
         self._cache_timestamp = 0.0
+    
+    def _cleanup_old_data(self):
+        """
+        Периодическая очистка старых данных:
+        - Удаляет записи старше TTL
+        - Удаляет данные для несуществующих пользователей
+        """
+        current_time = time.time()
+        
+        # Периодическая очистка: раз в час
+        if current_time - self._last_cleanup_time < self._cleanup_interval:
+            return
+        
+        self._last_cleanup_time = current_time
+        ttl_threshold = current_time - self._ttl_seconds
+        
+        # Получаем список существующих пользователей
+        try:
+            users = self._get_users()
+            existing_user_ids = {user["id"] for user in users}
+        except Exception as e:
+            logger.warning(f"Ошибка при получении пользователей для очистки трекера: {e}")
+            existing_user_ids = set()
+        
+        # Очищаем данные для несуществующих пользователей
+        user_ids_to_remove = []
+        for user_id in self._series_tracker.keys():
+            if user_id not in existing_user_ids:
+                user_ids_to_remove.append(user_id)
+        
+        for user_id in user_ids_to_remove:
+            del self._series_tracker[user_id]
+            logger.debug(f"Удалены данные трекера для несуществующего пользователя ID={user_id}")
+        
+        # Очищаем старые записи (TTL) и ограничиваем размер для существующих пользователей
+        for user_id in list(self._series_tracker.keys()):
+            for key in list(self._series_tracker[user_id].keys()):
+                spikes = self._series_tracker[user_id][key]
+                # Фильтруем по TTL
+                spikes = [spike for spike in spikes if spike.get("timestamp", 0) >= ttl_threshold]
+                # Ограничиваем размер
+                if len(spikes) > self._max_spikes_per_symbol:
+                    spikes = spikes[-self._max_spikes_per_symbol:]
+                
+                if spikes:
+                    self._series_tracker[user_id][key] = spikes
+                else:
+                    # Удаляем пустые ключи
+                    del self._series_tracker[user_id][key]
+            
+            # Удаляем пустые записи пользователей
+            if not self._series_tracker[user_id]:
+                del self._series_tracker[user_id]
+    
+    def cleanup_user_data(self, user_id: int):
+        """
+        Очищает данные трекера для указанного пользователя.
+        Вызывается при удалении пользователя.
+        
+        Args:
+            user_id: ID пользователя для очистки
+        """
+        if user_id in self._series_tracker:
+            del self._series_tracker[user_id]
+            logger.debug(f"Очищены данные трекера для пользователя ID={user_id}")
 
 
 # Глобальный экземпляр детектора

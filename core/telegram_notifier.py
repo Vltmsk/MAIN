@@ -79,6 +79,7 @@ class TelegramNotifier:
                             pass
         except Exception as e:
             logger.debug(f"Не удалось получить emoji ID через Bot API: {e}")
+            # Не логируем в БД - это не критичная ошибка
         
         # Если не удалось получить, возвращаем None (будет использован fallback)
         _emoji_id_cache[cache_key] = None
@@ -152,15 +153,30 @@ class TelegramNotifier:
                         return False, error_msg
         except asyncio.TimeoutError:
             error_msg = "Таймаут при подключении к Telegram API (проверьте интернет-соединение)"
-            logger.error(error_msg)
+            logger.error(error_msg, extra={
+                "log_to_db": True,
+                "error_type": "telegram_timeout",
+                "market": "telegram",
+                "symbol": chat_id,
+            })
             return False, error_msg
         except aiohttp.ClientError as e:
             error_msg = f"Ошибка сети при отправке в Telegram: {str(e)}"
-            logger.error(error_msg)
+            logger.error(error_msg, extra={
+                "log_to_db": True,
+                "error_type": "telegram_network_error",
+                "market": "telegram",
+                "symbol": chat_id,
+            })
             return False, error_msg
         except Exception as e:
             error_msg = f"Неожиданная ошибка при отправке в Telegram: {str(e)}"
-            logger.error(error_msg, exc_info=True)
+            logger.error(error_msg, exc_info=True, extra={
+                "log_to_db": True,
+                "error_type": "telegram_error",
+                "market": "telegram",
+                "symbol": chat_id,
+            })
             return False, error_msg
     
     @staticmethod
@@ -246,7 +262,11 @@ class TelegramNotifier:
                 logger.warning(f"Неизвестный тип условия: {cond_type}")
                 return False
         except Exception as e:
-            logger.warning(f"Ошибка при проверке условия: {e}")
+            logger.warning(f"Ошибка при проверке условия: {e}", extra={
+                "log_to_db": True,
+                "error_type": "template_condition_error",
+                "market": "telegram",
+            })
             return False
     
     @staticmethod
@@ -308,7 +328,11 @@ class TelegramNotifier:
                                 "chatId": chat_id
                             })
                 except Exception as e:
-                    logger.warning(f"Ошибка при обработке условного шаблона: {e}")
+                    logger.warning(f"Ошибка при обработке условного шаблона: {e}", extra={
+                        "log_to_db": True,
+                        "error_type": "template_processing_error",
+                        "market": "telegram",
+                    })
                     continue
         
         # Если найдены подходящие условные шаблоны, возвращаем их
@@ -373,6 +397,7 @@ class TelegramNotifier:
             time_str = dt_local.strftime("%Y-%m-%d %H:%M:%S")
         except Exception as e:
             logger.debug(f"Ошибка при форматировании времени: {e}, используем UTC")
+            # Не логируем в БД - это не критичная ошибка, есть fallback
             time_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
         
         # Определяем направление стрелы с использованием кастомных emoji

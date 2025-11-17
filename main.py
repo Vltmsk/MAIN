@@ -5,6 +5,8 @@ import asyncio
 import importlib
 import json
 import time
+import aiosqlite
+import aiohttp
 from typing import Dict, List, Callable, Awaitable, Optional
 from core.candle_builder import CandleBuilder, Candle
 from core.logger import setup_root_logger, get_logger
@@ -53,11 +55,65 @@ ADAPTERS: Dict[str, str] = {
     "hyperliquid": "exchanges.hyperliquid.ws_handler",
 }
 
-# Глобальные переменные
-_all_tasks: List[asyncio.Task] = []
-_builder: CandleBuilder | None = None
-_reconnect_logged: Dict[str, float] = {}  # Для отслеживания дубликатов реконнектов: {key: timestamp}
-_exchange_start_times: Dict[str, float] = {}  # Время старта биржи: {exchange: timestamp}
+
+class ExchangeManager:
+    """Класс для управления состоянием бирж и задач"""
+    
+    def __init__(self):
+        """Инициализация менеджера"""
+        self._all_tasks: List[asyncio.Task] = []
+        self._reconnect_logged: Dict[str, float] = {}  # Для отслеживания дубликатов реконнектов: {key: timestamp}
+        self._exchange_start_times: Dict[str, float] = {}  # Время старта биржи: {exchange: timestamp}
+    
+    def add_tasks(self, tasks: List[asyncio.Task]) -> None:
+        """Добавляет задачи в список"""
+        self._all_tasks.extend(tasks)
+    
+    def add_task(self, task: asyncio.Task) -> None:
+        """Добавляет одну задачу в список"""
+        self._all_tasks.append(task)
+    
+    def get_all_tasks(self) -> List[asyncio.Task]:
+        """Возвращает все задачи"""
+        return self._all_tasks
+    
+    def get_tasks_count(self) -> int:
+        """Возвращает количество задач"""
+        return len(self._all_tasks)
+    
+    def set_exchange_start_time(self, exchange_name: str, start_time: float) -> None:
+        """Устанавливает время старта биржи"""
+        self._exchange_start_times[exchange_name] = start_time
+    
+    def get_exchange_start_time(self, exchange_name: str, default: float) -> float:
+        """Получает время старта биржи"""
+        return self._exchange_start_times.get(exchange_name, default)
+    
+    def log_reconnect(self, reconnect_key: str, timestamp: float) -> None:
+        """Логирует реконнект с временной меткой"""
+        self._reconnect_logged[reconnect_key] = timestamp
+    
+    def get_last_reconnect_time(self, reconnect_key: str) -> float:
+        """Получает время последнего реконнекта"""
+        return self._reconnect_logged.get(reconnect_key, 0)
+    
+    def cleanup_old_reconnects(self, current_time: float, max_age: float = 10.0) -> None:
+        """Очищает старые записи о реконнектах"""
+        if len(self._reconnect_logged) > 100:
+            self._reconnect_logged = {
+                key: ts for key, ts in self._reconnect_logged.items()
+                if current_time - ts < max_age
+            }
+    
+    def clear_state(self) -> None:
+        """Очищает все состояние (для перезапуска)"""
+        self._all_tasks.clear()
+        self._reconnect_logged.clear()
+        self._exchange_start_times.clear()
+
+
+# Глобальный экземпляр менеджера бирж
+exchange_manager = ExchangeManager()
 
 
 async def on_candle(candle: Candle) -> None:
@@ -70,7 +126,7 @@ async def on_candle(candle: Candle) -> None:
     # Для Bitget начинаем считать свечи только через 15 секунд после старта
     if candle.exchange == "bitget":
         current_time = time.time()
-        start_time = _exchange_start_times.get(candle.exchange, current_time)
+        start_time = exchange_manager.get_exchange_start_time(candle.exchange, current_time)
         
         # Если прошло менее 15 секунд, не считаем свечу
         if current_time - start_time < 15.0:
@@ -95,14 +151,14 @@ async def on_candle(candle: Candle) -> None:
                 volume_usdt = spike_info["volume_usdt"]
                 
                 # Получаем информацию о пользователе для отправки уведомления
-                user_data = db.get_user_by_id(user_id)
+                user_data = await db.get_user_by_id(user_id)
                 if not user_data:
                     logger.warning(f"Пользователь с ID {user_id} не найден")
                     continue
                 
                 # Сохраняем стрелу в БД
                 try:
-                    alert_id = db.add_alert(
+                    alert_id = await db.add_alert(
                         ts=candle.ts_ms,
                         exchange=candle.exchange,
                         market=candle.market,
@@ -114,8 +170,24 @@ async def on_candle(candle: Candle) -> None:
                         user_id=user_id
                     )
                     logger.debug(f"Стрела сохранена в БД (ID: {alert_id}) для пользователя {user_name}")
+                except aiosqlite.IntegrityError as e:
+                    logger.warning(f"Стрела уже существует в БД для пользователя {user_name}: {e}")
+                except aiosqlite.OperationalError as e:
+                    logger.error(f"Ошибка БД при сохранении стрелы для пользователя {user_name}: {e}", exc_info=True, extra={
+                        "log_to_db": True,
+                        "error_type": "db_operational_error",
+                        "exchange": candle.exchange,
+                        "market": candle.market,
+                        "symbol": candle.symbol,
+                    })
                 except Exception as e:
-                    logger.error(f"Ошибка при сохранении стрелы в БД: {e}", exc_info=True)
+                    logger.error(f"Неожиданная ошибка при сохранении стрелы в БД для пользователя {user_name}: {e}", exc_info=True, extra={
+                        "log_to_db": True,
+                        "error_type": "db_error",
+                        "exchange": candle.exchange,
+                        "market": candle.market,
+                        "symbol": candle.symbol,
+                    })
                 
                 # Отправляем уведомление в Telegram, если настроено
                 tg_token = user_data.get("tg_token", "")
@@ -132,8 +204,10 @@ async def on_candle(candle: Candle) -> None:
                         message_template = options.get("messageTemplate")
                         conditional_templates = options.get("conditionalTemplates")
                         user_timezone = options.get("timezone", "UTC")  # Получаем timezone пользователя
-                except Exception as e:
-                    logger.debug(f"Не удалось загрузить шаблон сообщения для пользователя {user_name}: {e}")
+                except json.JSONDecodeError as e:
+                    logger.debug(f"Ошибка парсинга JSON для пользователя {user_name}: {e}")
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Ошибка обработки настроек для пользователя {user_name}: {e}")
                 
                 if tg_token and chat_id:
                     try:
@@ -163,9 +237,22 @@ async def on_candle(candle: Candle) -> None:
                                     "symbol": candle.symbol,
                                 },
                             )
+                    except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                        # Эти ошибки уже обработаны в telegram_notifier, но логируем для полноты
+                        logger.error(
+                            f"Ошибка сети/таймаут при отправке уведомления пользователю {user_name}: {e}",
+                            exc_info=True,
+                            extra={
+                                "log_to_db": True,
+                                "error_type": "telegram_network_error",
+                                "exchange": candle.exchange,
+                                "market": candle.market,
+                                "symbol": candle.symbol,
+                            },
+                        )
                     except Exception as e:
                         logger.error(
-                            f"Ошибка при отправке уведомления пользователю {user_name}: {e}",
+                            f"Неожиданная ошибка при отправке уведомления пользователю {user_name}: {e}",
                             exc_info=True,
                             extra={
                                 "log_to_db": True,
@@ -179,7 +266,13 @@ async def on_candle(candle: Candle) -> None:
                     logger.debug(f"Пользователь {user_name} не настроил Telegram (нет token или chat_id)")
     
     except Exception as e:
-        logger.error(f"Ошибка при детекте стрел: {e}", exc_info=True)
+        logger.error(f"Ошибка при детекте стрел: {e}", exc_info=True, extra={
+            "log_to_db": True,
+            "error_type": "spike_detection_error",
+            "exchange": candle.exchange if 'candle' in locals() else "unknown",
+            "market": candle.market if 'candle' in locals() else "unknown",
+            "symbol": candle.symbol if 'candle' in locals() else "unknown",
+        })
 
 
 async def on_error(error: dict) -> None:
@@ -200,10 +293,8 @@ async def on_error(error: dict) -> None:
         # Проверяем, не логировали ли мы этот реконнект недавно
         current_time = time.time()
         
-        global _reconnect_logged
-        
         # Логируем только если этот реконнект не был залогирован в последние 0.5 секунды
-        last_logged = _reconnect_logged.get(reconnect_key, 0)
+        last_logged = exchange_manager.get_last_reconnect_time(reconnect_key)
         if current_time - last_logged >= 0.5:
             logger.info(
                 f"РЕКОННЕКТ: {exchange.upper()} {market} {connection_id}",
@@ -215,12 +306,10 @@ async def on_error(error: dict) -> None:
                     "connection_id": connection_id,
                 },
             )
-            _reconnect_logged[reconnect_key] = current_time
+            exchange_manager.log_reconnect(reconnect_key, current_time)
             
             # Периодически очищаем старые записи (старше 10 секунд), только после добавления
-            if len(_reconnect_logged) > 100:  # Очищаем только если накопилось много записей
-                _reconnect_logged = {key: ts for key, ts in _reconnect_logged.items() 
-                                    if current_time - ts < 10}
+            exchange_manager.cleanup_old_reconnects(current_time, max_age=10.0)
     else:
         metrics.inc_error(exchange)
         error_message = error.get("error") or error.get("message") or str(error)
@@ -269,7 +358,7 @@ async def start_exchange(exchange_name: str) -> None:
         logger.info(f"Запуск биржи: {exchange_name} (рынки: {', '.join(enabled_markets)})")
         
         # Запоминаем время старта биржи
-        _exchange_start_times[exchange_name] = time.time()
+        exchange_manager.set_exchange_start_time(exchange_name, time.time())
         
         # Получаем модуль адаптера
         adapter_path = ADAPTERS[exchange_name]
@@ -289,15 +378,27 @@ async def start_exchange(exchange_name: str) -> None:
         )
         
         # Сохраняем задачи
-        _all_tasks.extend(tasks)
+        exchange_manager.add_tasks(tasks)
         logger.info(f"Биржа {exchange_name} запущена: {len(tasks)} задач создано")
         
     except ImportError as e:
-        logger.error(f"Не удалось импортировать модуль {exchange_name}: {e}")
+        logger.error(f"Не удалось импортировать модуль {exchange_name}: {e}", extra={
+            "log_to_db": True,
+            "error_type": "exchange_import_error",
+            "exchange": exchange_name,
+        })
     except AttributeError as e:
-        logger.error(f"Модуль {exchange_name} не содержит функцию start(): {e}")
+        logger.error(f"Модуль {exchange_name} не содержит функцию start(): {e}", extra={
+            "log_to_db": True,
+            "error_type": "exchange_attribute_error",
+            "exchange": exchange_name,
+        })
     except Exception as e:
-        logger.error(f"Ошибка при запуске {exchange_name}: {e}", exc_info=True)
+        logger.error(f"Неожиданная ошибка при запуске {exchange_name}: {e}", exc_info=True, extra={
+            "log_to_db": True,
+            "error_type": "exchange_start_error",
+            "exchange": exchange_name,
+        })
 
 
 async def stop_all_exchanges() -> None:
@@ -305,13 +406,14 @@ async def stop_all_exchanges() -> None:
     logger.info("Остановка всех бирж...")
     
     # Останавливаем все задачи
-    for task in _all_tasks:
+    all_tasks = exchange_manager.get_all_tasks()
+    for task in all_tasks:
         task.cancel()
     
-    if _all_tasks:
+    if all_tasks:
         try:
             await asyncio.wait_for(
-                asyncio.gather(*_all_tasks, return_exceptions=True),
+                asyncio.gather(*all_tasks, return_exceptions=True),
                 timeout=5.0
             )
         except asyncio.TimeoutError:
@@ -496,7 +598,7 @@ async def _save_statistics_to_db():
                     ticks_per_second = metrics.get_ticks_per_second(exchange_name, market)
                     
                     # Сохраняем в БД
-                    db.upsert_exchange_statistics(
+                    await db.upsert_exchange_statistics(
                         exchange=exchange_name,
                         market=market,
                         symbols_count=active_symbols,
@@ -611,18 +713,18 @@ async def main():
         if isinstance(result, Exception):
             logger.error(f"Ошибка при запуске биржи {exchange_name}: {result}", exc_info=result)
     
-    logger.info(f"Всего создано задач: {len(_all_tasks)}")
+    logger.info(f"Всего создано задач: {exchange_manager.get_tasks_count()}")
     
     # Запускаем вывод статистики
     logger.info("Запуск задачи вывода статистики...")
     stats_task = asyncio.create_task(print_statistics())
-    _all_tasks.append(stats_task)
+    exchange_manager.add_task(stats_task)
     logger.info("Задача статистики запущена. Первый вывод через 5 секунд.")
     
     # Запускаем обновление статистики в БД
     logger.info("Запуск задачи обновления статистики в БД...")
     db_stats_task = asyncio.create_task(update_statistics_to_db())
-    _all_tasks.append(db_stats_task)
+    exchange_manager.add_task(db_stats_task)
     logger.info("Задача обновления статистики в БД запущена. Первое обновление через 5 секунд, затем каждые 15 секунд.")
     
     # Ожидание

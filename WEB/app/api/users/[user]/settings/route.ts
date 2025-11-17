@@ -8,8 +8,13 @@ export async function POST(
 ) {
   try {
     const { user } = await params;
-    // Декодируем имя пользователя из URL (может быть закодировано)
-    const decodedUser = decodeURIComponent(user);
+    // Безопасно декодируем имя пользователя из URL (может быть уже декодировано в Next.js 13+)
+    let decodedUser: string;
+    try {
+      decodedUser = decodeURIComponent(user);
+    } catch {
+      decodedUser = user;
+    }
     const body = await request.json();
     const res = await fetch(`${API_URL}/api/users/${encodeURIComponent(decodedUser)}/settings`, {
       method: "POST",

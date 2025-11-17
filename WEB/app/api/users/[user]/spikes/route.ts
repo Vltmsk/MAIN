@@ -8,8 +8,15 @@ export async function DELETE(
 ) {
   try {
     const { user } = await params;
-    // Декодируем имя пользователя из URL (может быть закодировано)
-    const decodedUser = decodeURIComponent(user);
+    // Безопасно декодируем имя пользователя из URL (может быть уже декодировано в Next.js 13+)
+    // Если декодирование не требуется, просто вернём исходную строку
+    let decodedUser: string;
+    try {
+      decodedUser = decodeURIComponent(user);
+    } catch {
+      // Если уже декодировано или ошибка декодирования, используем исходное значение
+      decodedUser = user;
+    }
     const res = await fetch(`${API_URL}/api/users/${encodeURIComponent(decodedUser)}/spikes`, {
       method: "DELETE",
     });

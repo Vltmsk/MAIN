@@ -8,8 +8,13 @@ export async function GET(
 ) {
   try {
     const { user } = await params;
-    // Декодируем имя пользователя из URL (может быть закодировано)
-    const decodedUser = decodeURIComponent(user);
+    // Безопасно декодируем имя пользователя из URL (может быть уже декодировано в Next.js 13+)
+    let decodedUser: string;
+    try {
+      decodedUser = decodeURIComponent(user);
+    } catch {
+      decodedUser = user;
+    }
     const res = await fetch(`${API_URL}/api/users/${encodeURIComponent(decodedUser)}/spikes/stats`);
     if (!res.ok) {
       return NextResponse.json(

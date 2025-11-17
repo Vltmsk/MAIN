@@ -4,6 +4,8 @@
 import logging
 import logging.handlers
 import traceback
+import asyncio
+import concurrent.futures
 from pathlib import Path
 
 
@@ -38,15 +40,39 @@ class DatabaseErrorHandler(logging.Handler):
         try:
             from BD.database import db  # Ленивая загрузка во избежание циклических импортов
 
-            db.add_error(
-                error_type=str(error_type)[:64],
-                error_message=message[:1024],
-                exchange=exchange,
-                connection_id=connection_id,
-                market=market,
-                symbol=symbol,
-                stack_trace=stack_trace[:4000] if isinstance(stack_trace, str) else stack_trace,
-            )
+            # Вызываем async метод db.add_error() из синхронного контекста
+            # Используем fire-and-forget подход: запускаем в отдельном потоке, чтобы не блокировать
+            try:
+                loop = asyncio.get_running_loop()
+                # Если loop уже запущен, используем run_coroutine_threadsafe для безопасного вызова
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, db.add_error(
+                        error_type=str(error_type)[:64],
+                        error_message=message[:1024],
+                        exchange=exchange,
+                        connection_id=connection_id,
+                        market=market,
+                        symbol=symbol,
+                        stack_trace=stack_trace[:4000] if isinstance(stack_trace, str) else stack_trace,
+                    ))
+                    # Не ждём результат (fire-and-forget), чтобы не блокировать логирование
+                    future.result(timeout=0.1)  # Короткий таймаут, чтобы не блокировать
+            except (RuntimeError, concurrent.futures.TimeoutError):
+                # Нет запущенного event loop или таймаут - создаём новый loop
+                # Используем try-except, чтобы не блокировать, если что-то пойдёт не так
+                try:
+                    asyncio.run(db.add_error(
+                        error_type=str(error_type)[:64],
+                        error_message=message[:1024],
+                        exchange=exchange,
+                        connection_id=connection_id,
+                        market=market,
+                        symbol=symbol,
+                        stack_trace=stack_trace[:4000] if isinstance(stack_trace, str) else stack_trace,
+                    ))
+                except Exception:
+                    # Игнорируем ошибки при записи в БД, чтобы не нарушать логирование
+                    pass
         except Exception:
             # Избегаем рекурсивного логирования при ошибках записи в БД
             pass

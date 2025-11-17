@@ -3,18 +3,32 @@ FastAPI сервер для работы с базой данных и пред�
 """
 import traceback
 import os
+import sqlite3
+import aiosqlite
 from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from BD.database import db
 import time
 from core.logger import get_logger, setup_root_logger
+from core.db_error_handler import handle_db_error
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 setup_root_logger("INFO")
 logger = get_logger(__name__)
 
+# Инициализация rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="Crypto Spikes API", version="1.0.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Время запуска API сервера для расчета uptime
 _start_time = time.time()
@@ -53,8 +67,80 @@ app.add_middleware(
 )
 
 
+# Централизованная обработка ошибок
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Обработка ошибок валидации Pydantic"""
+    logger.warning(
+        f"Ошибка валидации на {request.method} {request.url.path}: {exc.errors()}",
+        extra={
+            "log_to_db": False,  # Ошибки валидации не критичны
+            "error_type": "validation_error",
+            "market": "api",
+            "symbol": request.url.path,
+        },
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": exc.body},
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Обработка HTTP исключений"""
+    # Логируем только критические ошибки (500+)
+    if exc.status_code >= 500:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        logger.error(
+            f"HTTPException {exc.status_code} на {request.method} {request.url.path}: {detail}",
+            exc_info=True,
+            extra={
+                "log_to_db": True,
+                "error_type": "api_exception",
+                "market": "api",
+                "symbol": request.url.path,
+                "stack_trace": detail,
+            },
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Централизованная обработка всех необработанных исключений"""
+    # Не перехватываем критические системные исключения
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        raise exc
+    
+    stack = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    logger.error(
+        f"Необработанная ошибка на {request.method} {request.url.path}: {exc}",
+        exc_info=True,
+        extra={
+            "log_to_db": True,
+            "error_type": "api_exception",
+            "market": "api",
+            "symbol": request.url.path,
+            "stack_trace": stack,
+        },
+    )
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Внутренняя ошибка сервера. Ошибка залогирована в админ панель.",
+            "error_type": "internal_server_error"
+        },
+    )
+
+
 @app.middleware("http")
 async def log_api_errors(request: Request, call_next):
+    """Middleware для логирования ошибок API"""
     try:
         response = await call_next(request)
         if response.status_code >= 500:
@@ -68,33 +154,8 @@ async def log_api_errors(request: Request, call_next):
                 },
             )
         return response
-    except HTTPException as exc:
-        if exc.status_code >= 500:
-            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-            logger.error(
-                f"HTTPException {exc.status_code} на {request.method} {request.url.path}: {detail}",
-                extra={
-                    "log_to_db": True,
-                    "error_type": "api_exception",
-                    "market": "api",
-                    "symbol": request.url.path,
-                    "stack_trace": detail,
-                },
-            )
-        raise
     except Exception as exc:
-        stack = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        logger.error(
-            f"Необработанная ошибка на {request.method} {request.url.path}: {exc}",
-            exc_info=True,
-            extra={
-                "log_to_db": True,
-                "error_type": "api_exception",
-                "market": "api",
-                "symbol": request.url.path,
-                "stack_trace": stack,
-            },
-        )
+        # Исключения обрабатываются централизованными handlers
         raise
 
 
@@ -173,17 +234,18 @@ class WhitelistEntry(BaseModel):
 # ==================== ПОЛЬЗОВАТЕЛИ ====================
 
 @app.post("/api/auth/register/{user}", response_model=dict)
-async def register_user(user: str, user_data: UserRegister):
+@limiter.limit("5/minute")  # Ограничение: 5 попыток в минуту с одного IP
+async def register_user(request: Request, user: str, user_data: UserRegister):
     """Регистрирует нового пользователя"""
     try:
         if len(user_data.password) < 4:
             raise HTTPException(status_code=400, detail="Пароль должен быть не менее 4 символов")
 
-        canonical_user = db.get_whitelisted_username(user)
+        canonical_user = await db.get_whitelisted_username(user)
         if not canonical_user:
             raise HTTPException(status_code=403, detail="Логин не одобрен администратором. Обратитесь к Владу.")
         
-        user_id = db.register_user(
+        user_id = await db.register_user(
             user=canonical_user,
             password=user_data.password,
             tg_token=user_data.tg_token or "",
@@ -193,12 +255,16 @@ async def register_user(user: str, user_data: UserRegister):
         return {"id": user_id, "user": canonical_user, "message": "User registered successfully"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except (sqlite3.IntegrityError, sqlite3.OperationalError, sqlite3.Error,
+            aiosqlite.IntegrityError, aiosqlite.OperationalError, aiosqlite.Error) as e:
+        handle_db_error(e, "регистрации пользователя", user=user, endpoint=f"register/{user}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_db_error(e, "регистрации пользователя", user=user, endpoint=f"register/{user}")
 
 
 @app.post("/api/auth/login/{user}", response_model=dict)
-async def login_user(user: str, login_data: UserLogin):
+@limiter.limit("5/minute")  # Ограничение: 5 попыток в минуту с одного IP
+async def login_user(request: Request, user: str, login_data: UserLogin):
     """
     Аутентифицирует пользователя
     
@@ -211,7 +277,7 @@ async def login_user(user: str, login_data: UserLogin):
             raise HTTPException(status_code=400, detail="Пароль не может быть пустым")
         
         # ТОЛЬКО проверка пароля и чтение данных - никаких обновлений
-        user_data = db.authenticate_user(user, login_data.password)
+        user_data = await db.authenticate_user(user, login_data.password)
         if not user_data:
             # Пользователь не найден или пароль неверный
             raise HTTPException(status_code=401, detail="Неверный логин или пароль")
@@ -221,7 +287,7 @@ async def login_user(user: str, login_data: UserLogin):
         # Обновляем временную зону, если пришла от клиента
         if login_data.timezone:
             try:
-                db.update_user_timezone(
+                await db.update_user_timezone(
                     user=canonical_user,
                     timezone=login_data.timezone,
                     timezone_offset_minutes=login_data.timezone_offset_minutes,
@@ -229,9 +295,30 @@ async def login_user(user: str, login_data: UserLogin):
                     timezone_client_locale=login_data.timezone_client_locale,
                     source="login_auto_detect",
                 )
+            except (sqlite3.OperationalError, sqlite3.IntegrityError, aiosqlite.OperationalError, aiosqlite.IntegrityError) as tz_error:
+                # Не прерываем вход, но логируем ошибку БД
+                logger.warning(
+                    f"Не удалось обновить временную зону пользователя '{user}': {tz_error}",
+                    exc_info=True,
+                    extra={
+                        "log_to_db": True,
+                        "error_type": "timezone_update_error",
+                        "market": "api",
+                        "symbol": f"login/{user}",
+                    },
+                )
             except Exception as tz_error:
                 # Не прерываем вход, но логируем ошибку
-                print(f"[Backend] Не удалось обновить временную зону пользователя '{user}': {tz_error}")
+                logger.warning(
+                    f"Не удалось обновить временную зону пользователя '{user}': {tz_error}",
+                    exc_info=True,
+                    extra={
+                        "log_to_db": False,  # Не критично
+                        "error_type": "timezone_update_warning",
+                        "market": "api",
+                        "symbol": f"login/{user}",
+                    },
+                )
         
         # Возвращаем данные пользователя (без пароля)
         return {
@@ -244,15 +331,18 @@ async def login_user(user: str, login_data: UserLogin):
         }
     except HTTPException:
         raise
+    except (sqlite3.IntegrityError, sqlite3.OperationalError, sqlite3.Error,
+            aiosqlite.IntegrityError, aiosqlite.OperationalError, aiosqlite.Error) as e:
+        handle_db_error(e, "входе пользователя", user=user, endpoint=f"login/{user}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_db_error(e, "входе пользователя", user=user, endpoint=f"login/{user}")
 
 
 @app.get("/api/auth/whitelist", response_model=dict)
 async def get_whitelist():
     """Возвращает текущий белый список логинов"""
     try:
-        whitelist = db.get_whitelist()
+        whitelist = await db.get_whitelist()
         return {"whitelist": whitelist}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -266,7 +356,7 @@ async def add_to_whitelist(entry: WhitelistEntry):
         if not username:
             raise HTTPException(status_code=400, detail="Логин не может быть пустым")
 
-        canonical = db.add_login_to_whitelist(username)
+        canonical = await db.add_login_to_whitelist(username)
         return {"username": canonical, "message": f"Логин '{canonical}' добавлен в белый список"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -281,11 +371,11 @@ async def remove_from_whitelist(username: str):
         if not username:
             raise HTTPException(status_code=400, detail="Не указан логин для удаления")
 
-        canonical = db.get_whitelisted_username(username)
+        canonical = await db.get_whitelisted_username(username)
         if not canonical:
             raise HTTPException(status_code=404, detail="Логин не найден в белом списке")
 
-        removed = db.remove_login_from_whitelist(canonical)
+        removed = await db.remove_login_from_whitelist(canonical)
         if not removed:
             raise HTTPException(status_code=500, detail="Не удалось удалить логин из белого списка")
         return {"message": f"Логин '{canonical}' удалён из белого списка"}
@@ -301,13 +391,13 @@ async def remove_from_whitelist(username: str):
 async def create_or_update_user(user: str, user_data: UserCreate):
     """Создаёт или обновляет пользователя"""
     try:
-        user_id = db.create_user(
+        user_id = await db.create_user(
             user=user,
             tg_token=user_data.tg_token or "",
             chat_id=user_data.chat_id or "",
             options_json=user_data.options_json or "{}"
         )
-        canonical_user = db.get_whitelisted_username(user) or user.strip()
+        canonical_user = (await db.get_whitelisted_username(user)) or user.strip()
         
         # Инвалидируем кэш детектора стрел, чтобы применить новые настройки сразу
         try:
@@ -326,7 +416,7 @@ async def create_or_update_user(user: str, user_data: UserCreate):
 async def get_all_users():
     """Получает всех пользователей"""
     try:
-        users = db.get_all_users()
+        users = await db.get_all_users()
         return {"users": users}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -341,10 +431,10 @@ async def get_user(user: str):
         print(f"[Backend] User bytes: {user.encode('utf-8')}")
         
         # Получаем всех пользователей для отладки
-        all_users = db.get_all_users()
+        all_users = await db.get_all_users()
         print(f"[Backend] All users in DB: {[u['user'] for u in all_users]}")
         
-        user_data = db.get_user(user)
+        user_data = await db.get_user(user)
         if not user_data:
             print(f"[Backend] User '{user}' not found in database")
             raise HTTPException(status_code=404, detail="User not found")
@@ -367,7 +457,17 @@ async def delete_user(user: str):
         if user.lower() in {"stats", "влад"}:
             raise HTTPException(status_code=403, detail=f"Пользователя '{user}' нельзя удалить")
 
-        result = db.delete_user(user)
+        # Получаем user_id перед удалением для очистки данных трекера
+        user_data = await db.get_user(user)
+        user_id = user_data.get("id") if user_data else None
+
+        result = await db.delete_user(user)
+        
+        # Очищаем данные трекера для удалённого пользователя
+        if user_id and result.get("removed_from_users"):
+            from core.spike_detector import spike_detector
+            spike_detector.cleanup_user_data(user_id)
+        
         if result["removed_from_users"] and result["removed_from_whitelist"]:
             message = f"Пользователь '{result['user']}' удалён и исключён из белого списка"
         elif result["removed_from_users"]:
@@ -378,7 +478,15 @@ async def delete_user(user: str):
             message = f"Пользователь '{result['user']}' не найден"
 
         return {"message": message, **result}
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Ошибка при удалении пользователя {user}: {e}", exc_info=True, extra={
+            "log_to_db": True,
+            "error_type": "user_deletion_error",
+            "market": "api",
+            "symbol": f"/api/users/{user}",
+        })
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -386,7 +494,7 @@ async def delete_user(user: str):
 async def test_telegram(user: str):
     """Отправляет тестовое сообщение в Telegram пользователю"""
     try:
-        user_data = db.get_user(user)
+        user_data = await db.get_user(user)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
         
@@ -425,7 +533,7 @@ async def test_telegram(user: str):
 async def create_alert(alert: AlertCreate):
     """Создаёт новую стрелу"""
     try:
-        alert_id = db.add_alert(
+        alert_id = await db.add_alert(
             ts=alert.ts,
             exchange=alert.exchange,
             market=alert.market,
@@ -460,11 +568,11 @@ async def get_spikes(
     try:
         user_id = None
         if user:
-            user_data = db.get_user(user)
+            user_data = await db.get_user(user)
             if user_data:
                 user_id = user_data["id"]
         
-        alerts = db.get_alerts(
+        alerts = await db.get_alerts(
             exchange=exchange,
             market=market,
             symbol=symbol,
@@ -495,11 +603,11 @@ async def get_spikes_stats(
     try:
         user_id = None
         if user:
-            user_data = db.get_user(user)
+            user_data = await db.get_user(user)
             if user_data:
                 user_id = user_data["id"]
         
-        count = db.get_alerts_count(
+        count = await db.get_alerts_count(
             exchange=exchange,
             market=market,
             user_id=user_id,
@@ -522,7 +630,7 @@ async def get_user_spikes_stats(
 ):
     """Получает подробную статистику по стрелам конкретного пользователя"""
     try:
-        user_data = db.get_user(user)
+        user_data = await db.get_user(user)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
         
@@ -538,7 +646,7 @@ async def get_user_spikes_stats(
             ts_from = int((time.time() - days_value * 24 * 60 * 60) * 1000)
         
         # Получаем все стрелы для статистики (без лимита)
-        alerts = db.get_alerts(
+        alerts = await db.get_alerts(
             exchange=exchange,
             market=market,
             user_id=user_id,
@@ -669,14 +777,14 @@ async def get_user_spikes_by_symbol(
 ):
     """Получает все стрелы пользователя по конкретной монете"""
     try:
-        user_data = db.get_user(user)
+        user_data = await db.get_user(user)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
         
         user_id = user_data["id"]
         
         # Получаем все стрелы пользователя по символу
-        alerts = db.get_alerts(
+        alerts = await db.get_alerts(
             exchange=exchange,
             market=market,
             symbol=symbol,
@@ -703,11 +811,12 @@ async def get_user_spikes_by_symbol(
 async def delete_user_spikes(user: str):
     """Удаляет всю статистику стрел пользователя"""
     try:
-        user_data = db.get_user(user)
+        user_data = await db.get_user(user)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
         
-        deleted_count = db.delete_user_spikes(user)
+        # Удаляем все связи пользователя со стрелами (для всех пользователей, включая "Stats")
+        deleted_count = await db.delete_user_spikes(user)
         return {
             "message": f"Удалено {deleted_count} записей статистики стрел для пользователя '{user}'",
             "deleted_count": deleted_count
@@ -726,7 +835,7 @@ async def delete_user_spikes(user: str):
 async def create_error(error: ErrorCreate):
     """Логирует ошибку"""
     try:
-        db.add_error(
+        await db.add_error(
             error_type=error.error_type,
             error_message=error.error_message,
             exchange=error.exchange,
@@ -748,7 +857,7 @@ async def get_errors(
 ):
     """Получает ошибки"""
     try:
-        errors = db.get_errors(
+        errors = await db.get_errors(
             exchange=exchange,
             error_type=error_type,
             limit=limit
@@ -769,7 +878,7 @@ async def delete_error(error_id: int, user: Optional[str] = Query(None)):
                 detail="Удаление логов ошибок доступно только для пользователя 'Влад'"
             )
         
-        deleted = db.delete_error(error_id)
+        deleted = await db.delete_error(error_id)
         if deleted:
             return {"message": f"Ошибка с ID {error_id} удалена", "deleted": True}
         else:
@@ -791,7 +900,7 @@ async def delete_all_errors(user: Optional[str] = Query(None)):
                 detail="Удаление всех логов ошибок доступно только для пользователя 'Влад'"
             )
         
-        count = db.delete_all_errors()
+        count = await db.delete_all_errors()
         return {"message": f"Удалено ошибок: {count}", "deleted_count": count}
     except HTTPException:
         raise
@@ -811,8 +920,8 @@ async def health_check():
 async def get_status():
     """Получает статус системы"""
     try:
-        users_count = len(db.get_all_users())
-        total_alerts = db.get_alerts_count()
+        users_count = len(await db.get_all_users())
+        total_alerts = await db.get_alerts_count()
         # Вычисляем uptime как время работы API сервера
         uptime_seconds = int(time.time() - _start_time)
         return {
@@ -829,11 +938,11 @@ async def get_status():
 async def get_metrics():
     """Получает метрики системы"""
     try:
-        users_count = len(db.get_all_users())
-        total_alerts = db.get_alerts_count()
+        users_count = len(await db.get_all_users())
+        total_alerts = await db.get_alerts_count()
         
         # Получаем статистику бирж из новой таблицы
-        exchange_stats = db.get_exchange_statistics()
+        exchange_stats = await db.get_exchange_statistics()
         
         # Форматируем статистику для удобного доступа
         stats_by_exchange = {}
@@ -873,7 +982,7 @@ async def get_exchanges_stats():
     """Получает статистику бирж"""
     try:
         # Получаем статистику бирж из новой таблицы
-        exchange_stats = db.get_exchange_statistics()
+        exchange_stats = await db.get_exchange_statistics()
         
         # Форматируем статистику в формате, который ожидает dashboard
         exchanges_data = {}
