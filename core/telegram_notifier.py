@@ -453,7 +453,7 @@ class TelegramNotifier:
         return []
     
     @staticmethod
-    def format_spike_messages(candle: Candle, delta: float, wick_pct: float, volume_usdt: float, 
+    async def format_spike_messages(candle: Candle, delta: float, wick_pct: float, volume_usdt: float, 
                             template: Optional[str] = None,
                             conditional_templates: Optional[List[Dict[str, Any]]] = None,
                             user_id: Optional[int] = None,
@@ -626,7 +626,7 @@ class TelegramNotifier:
         Returns:
             tuple[bool, str]: (успех, сообщение_об_ошибке)
         """
-        messages = TelegramNotifier.format_spike_messages(
+        messages = await TelegramNotifier.format_spike_messages(
             candle, delta, wick_pct, volume_usdt, template, conditional_templates, user_id, token, timezone, chat_id
         )
         
