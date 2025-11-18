@@ -49,26 +49,26 @@ export default function Dashboard() {
   // Состояние для временной зоны
   const [timezone, setTimezone] = useState<string>("UTC");
   
-  // Состояния для фильтров по биржам
+  // Состояния для фильтров по биржам (по умолчанию все отключены)
   const [exchangeFilters, setExchangeFilters] = useState<Record<string, boolean>>({
-    binance: true,
-    bybit: true,
-    bitget: true,
-    gate: true,
-    hyperliquid: true,
+    binance: false,
+    bybit: false,
+    bitget: false,
+    gate: false,
+    hyperliquid: false,
   });
   const [expandedExchanges, setExpandedExchanges] = useState<Record<string, boolean>>({});
   
-  // Состояния для настроек Spot и Futures каждой биржи
+  // Состояния для настроек Spot и Futures каждой биржи (по умолчанию все отключены и пустые)
   const [exchangeSettings, setExchangeSettings] = useState<Record<string, {
     spot: { enabled: boolean; delta: string; volume: string; shadow: string };
     futures: { enabled: boolean; delta: string; volume: string; shadow: string };
   }>>({
-    binance: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
-    bybit: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
-    bitget: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
-    gate: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
-    hyperliquid: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
+    binance: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
+    bybit: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
+    bitget: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
+    gate: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
+    hyperliquid: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
   });
   
   // Состояния для чёрного списка
@@ -1148,63 +1148,87 @@ export default function Dashboard() {
           
           // Загружаем фильтры по биржам
           if (options.exchanges && typeof options.exchanges === "object") {
+            // Если настройки есть, используем их (false означает отключено)
             setExchangeFilters({
-              binance: options.exchanges.binance !== false && options.exchanges.binance !== undefined ? options.exchanges.binance : true,
-              bybit: options.exchanges.bybit !== false && options.exchanges.bybit !== undefined ? options.exchanges.bybit : true,
-              bitget: options.exchanges.bitget !== false && options.exchanges.bitget !== undefined ? options.exchanges.bitget : true,
-              gate: options.exchanges.gate !== false && options.exchanges.gate !== undefined ? options.exchanges.gate : true,
-              hyperliquid: options.exchanges.hyperliquid !== false && options.exchanges.hyperliquid !== undefined ? options.exchanges.hyperliquid : true,
+              binance: options.exchanges.binance === true,
+              bybit: options.exchanges.bybit === true,
+              bitget: options.exchanges.bitget === true,
+              gate: options.exchanges.gate === true,
+              hyperliquid: options.exchanges.hyperliquid === true,
             });
           } else {
-            // Если фильтры не найдены, используем значения по умолчанию (все включены)
+            // Если фильтры не найдены, используем значения по умолчанию (все отключены)
             setExchangeFilters({
-              binance: true,
-              bybit: true,
-              bitget: true,
-              gate: true,
-              hyperliquid: true,
+              binance: false,
+              bybit: false,
+              bitget: false,
+              gate: false,
+              hyperliquid: false,
             });
           }
           
-          // Загружаем настройки бирж (Spot/Futures) с мерджем дефолтных значений
-          if (options.exchangeSettings) {
+          // Загружаем настройки бирж (Spot/Futures) - только те что есть в БД, остальные остаются пустыми
+          if (options.exchangeSettings && typeof options.exchangeSettings === "object") {
             setExchangeSettings((prevSettings) => {
               const merged = { ...prevSettings };
-              // Мерджим загруженные настройки с дефолтными
+              // Обновляем только те настройки, которые есть в БД
               Object.keys(options.exchangeSettings).forEach((exchange) => {
                 if (merged[exchange]) {
                   merged[exchange] = {
                     spot: {
-                      ...merged[exchange].spot,
-                      ...options.exchangeSettings[exchange].spot,
+                      enabled: options.exchangeSettings[exchange].spot?.enabled === true,
+                      delta: options.exchangeSettings[exchange].spot?.delta || "",
+                      volume: options.exchangeSettings[exchange].spot?.volume || "",
+                      shadow: options.exchangeSettings[exchange].spot?.shadow || "",
                     },
                     futures: {
-                      ...merged[exchange].futures,
-                      ...options.exchangeSettings[exchange].futures,
+                      enabled: options.exchangeSettings[exchange].futures?.enabled === true,
+                      delta: options.exchangeSettings[exchange].futures?.delta || "",
+                      volume: options.exchangeSettings[exchange].futures?.volume || "",
+                      shadow: options.exchangeSettings[exchange].futures?.shadow || "",
                     },
                   };
                 } else {
-                  merged[exchange] = options.exchangeSettings[exchange];
+                  // Если биржа не в дефолтах, создаем с пустыми значениями
+                  merged[exchange] = {
+                    spot: {
+                      enabled: options.exchangeSettings[exchange].spot?.enabled === true,
+                      delta: options.exchangeSettings[exchange].spot?.delta || "",
+                      volume: options.exchangeSettings[exchange].spot?.volume || "",
+                      shadow: options.exchangeSettings[exchange].spot?.shadow || "",
+                    },
+                    futures: {
+                      enabled: options.exchangeSettings[exchange].futures?.enabled === true,
+                      delta: options.exchangeSettings[exchange].futures?.delta || "",
+                      volume: options.exchangeSettings[exchange].futures?.volume || "",
+                      shadow: options.exchangeSettings[exchange].futures?.shadow || "",
+                    },
+                  };
                 }
               });
               return merged;
             });
           }
           
-          // Загружаем настройки пар (с поддержкой enabled и миграцией старых данных)
-          if (options.pairSettings) {
+          // Загружаем настройки пар - все пары по умолчанию отключены, если не указано иное
+          if (options.pairSettings && typeof options.pairSettings === "object") {
             const migratedPairSettings: Record<string, { enabled: boolean; delta: string; volume: string; shadow: string }> = {};
             Object.entries(options.pairSettings).forEach(([key, value]: [string, any]) => {
-              // Миграция старых данных без поля enabled
+              // Миграция старых данных без поля enabled - по умолчанию отключаем
               if (value && typeof value === 'object' && !('enabled' in value)) {
                 migratedPairSettings[key] = {
-                  enabled: true, // По умолчанию включено
-                  delta: value.delta || "0",
-                  volume: value.volume || "0",
-                  shadow: value.shadow || "0"
+                  enabled: false, // По умолчанию отключено для новых пользователей
+                  delta: value.delta || "",
+                  volume: value.volume || "",
+                  shadow: value.shadow || ""
                 };
               } else {
-                migratedPairSettings[key] = value;
+                migratedPairSettings[key] = {
+                  enabled: value?.enabled === true, // Только явно true считается включенным
+                  delta: value?.delta || "",
+                  volume: value?.volume || "",
+                  shadow: value?.shadow || ""
+                };
               }
             });
             setPairSettings(migratedPairSettings);
@@ -1335,13 +1359,13 @@ export default function Dashboard() {
           });
         } catch (e) {
           console.error("Ошибка парсинга options_json:", e);
-          // При ошибке парсинга используем значения по умолчанию для фильтров
+          // При ошибке парсинга используем значения по умолчанию для фильтров (все отключены)
           setExchangeFilters({
-            binance: true,
-            bybit: true,
-            bitget: true,
-            gate: true,
-            hyperliquid: true,
+            binance: false,
+            bybit: false,
+            bitget: false,
+            gate: false,
+            hyperliquid: false,
           });
         }
       } else if (res.status === 404) {
@@ -4928,11 +4952,12 @@ export default function Dashboard() {
                                       const spotSettings = settings.spot;
                                       
                                       // Используем общие настройки Spot, если для пары не заданы индивидуальные
+                                      // По умолчанию все пары отключены и пустые
                                       const pairData = savedPairData || {
-                                        enabled: true,
-                                        delta: spotSettings.delta || "0",
-                                        volume: spotSettings.volume || "0",
-                                        shadow: spotSettings.shadow || "0"
+                                        enabled: false,
+                                        delta: spotSettings.delta || "",
+                                        volume: spotSettings.volume || "",
+                                        shadow: spotSettings.shadow || ""
                                       };
                                       
                                       return (
@@ -4967,7 +4992,7 @@ export default function Dashboard() {
                                                 });
                                               }}
                                               className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder={spotSettings.delta || "0"}
+                                              placeholder=""
                                             />
                                           </div>
                                           <div>
@@ -4982,7 +5007,7 @@ export default function Dashboard() {
                                                 });
                                               }}
                                               className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder={spotSettings.volume || "0"}
+                                              placeholder=""
                                             />
                                           </div>
                                           <div>
@@ -4997,7 +5022,7 @@ export default function Dashboard() {
                                                 });
                                               }}
                                               className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder={spotSettings.shadow || "0"}
+                                              placeholder=""
                                             />
                                           </div>
                                         </div>
@@ -5141,11 +5166,12 @@ export default function Dashboard() {
                                       const futuresSettings = settings.futures;
                                       
                                       // Используем общие настройки Futures, если для пары не заданы индивидуальные
+                                      // По умолчанию все пары отключены и пустые
                                       const pairData = savedPairData || {
-                                        enabled: true,
-                                        delta: futuresSettings.delta || "0",
-                                        volume: futuresSettings.volume || "0",
-                                        shadow: futuresSettings.shadow || "0"
+                                        enabled: false,
+                                        delta: futuresSettings.delta || "",
+                                        volume: futuresSettings.volume || "",
+                                        shadow: futuresSettings.shadow || ""
                                       };
                                       
                                       return (
@@ -5180,7 +5206,7 @@ export default function Dashboard() {
                                                 });
                                               }}
                                               className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder={futuresSettings.delta || "0"}
+                                              placeholder=""
                                             />
                                           </div>
                                           <div>
@@ -5195,7 +5221,7 @@ export default function Dashboard() {
                                                 });
                                               }}
                                               className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder={futuresSettings.volume || "0"}
+                                              placeholder=""
                                             />
                                           </div>
                                           <div>
@@ -5210,7 +5236,7 @@ export default function Dashboard() {
                                                 });
                                               }}
                                               className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder={futuresSettings.shadow || "0"}
+                                              placeholder=""
                                             />
                                           </div>
                                         </div>
@@ -5249,7 +5275,18 @@ export default function Dashboard() {
                           const exchangeDisplayName = exchange === "gate" ? "Gate" : exchange === "hyperliquid" ? "Hyperliquid" : exchange.charAt(0).toUpperCase() + exchange.slice(1);
                           const settings = exchangeSettings[exchange];
                           
-                          if (settings.spot.enabled) {
+                          // Проверяем, есть ли дополнительные пары для каждого рынка
+                          const hasAdditionalSpotPairs = Object.keys(pairSettings).some(key => 
+                            key.startsWith(`${exchange}_spot_`) && pairSettings[key]?.enabled
+                          );
+                          const hasAdditionalFuturesPairs = Object.keys(pairSettings).some(key => 
+                            key.startsWith(`${exchange}_futures_`) && pairSettings[key]?.enabled
+                          );
+                          
+                          // Показываем общие настройки только если нет дополнительных пар
+                          // Для бирж с дополнительными парами (Binance, Bybit) это работает правильно
+                          // Для остальных бирж (Bitget, Gate, Hyperliquid) дополнительных пар нет, но показываем общие настройки
+                          if (settings.spot.enabled && !hasAdditionalSpotPairs) {
                             tableRows.push({
                               exchange: exchangeDisplayName,
                               market: "Spot",
@@ -5260,7 +5297,7 @@ export default function Dashboard() {
                             });
                           }
                           
-                          if (settings.futures.enabled) {
+                          if (settings.futures.enabled && !hasAdditionalFuturesPairs) {
                             tableRows.push({
                               exchange: exchangeDisplayName,
                               market: "Futures",
@@ -5300,31 +5337,75 @@ export default function Dashboard() {
                         );
                       }
                       
+                      // Группируем по биржам и рынкам для лучшего отображения
+                      const groupedRows = tableRows.reduce((acc, row) => {
+                        const key = `${row.exchange}_${row.market}`;
+                        if (!acc[key]) {
+                          acc[key] = {
+                            exchange: row.exchange,
+                            market: row.market,
+                            rows: []
+                          };
+                        }
+                        acc[key].rows.push(row);
+                        return acc;
+                      }, {} as Record<string, { exchange: string; market: string; rows: typeof tableRows }>);
+                      
                       return (
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="border-b border-zinc-700">
-                              <th className="text-left py-1 px-2 text-zinc-400 font-medium">Биржа</th>
-                              <th className="text-left py-1 px-2 text-zinc-400 font-medium">Рынок</th>
-                              <th className="text-left py-1 px-2 text-zinc-400 font-medium">Пара</th>
-                              <th className="text-right py-1 px-2 text-zinc-400 font-medium">Δ%</th>
-                              <th className="text-right py-1 px-2 text-zinc-400 font-medium">Объём</th>
-                              <th className="text-right py-1 px-2 text-zinc-400 font-medium">Тень%</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {tableRows.map((row, idx) => (
-                              <tr key={idx} className={`border-b border-zinc-800/50 ${row.pair ? 'bg-zinc-800/30' : ''}`}>
-                                <td className="py-1 px-2 text-white">{row.exchange}</td>
-                                <td className="py-1 px-2 text-emerald-400">{row.market}</td>
-                                <td className="py-1 px-2 text-zinc-400">{row.pair || '-'}</td>
-                                <td className="py-1 px-2 text-right text-white">{row.delta}</td>
-                                <td className="py-1 px-2 text-right text-white">{row.volume}</td>
-                                <td className="py-1 px-2 text-right text-white">{row.shadow}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                        <div className="space-y-3">
+                          {Object.values(groupedRows).map((group, groupIdx) => (
+                            <div key={groupIdx} className="border-b border-zinc-800/50 pb-3 last:border-b-0 last:pb-0">
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-xs font-semibold text-white">{group.exchange}</span>
+                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                                  group.market === "Spot" ? "bg-emerald-500/20 text-emerald-400" : "bg-blue-500/20 text-blue-400"
+                                }`}>
+                                  {group.market}
+                                </span>
+                                {group.rows.length > 0 && group.rows[0].pair === null && (
+                                  <span className="text-xs text-zinc-500">(все пары)</span>
+                                )}
+                              </div>
+                              {group.rows.length > 1 || (group.rows.length === 1 && group.rows[0].pair !== null) ? (
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="border-b border-zinc-700">
+                                      <th className="text-left py-1 px-2 text-zinc-400 font-medium">Пара</th>
+                                      <th className="text-right py-1 px-2 text-zinc-400 font-medium">Δ%</th>
+                                      <th className="text-right py-1 px-2 text-zinc-400 font-medium">Объём</th>
+                                      <th className="text-right py-1 px-2 text-zinc-400 font-medium">Тень%</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {group.rows.map((row, idx) => (
+                                      <tr key={idx} className={`border-b border-zinc-800/30 last:border-b-0 ${row.pair ? 'bg-zinc-800/20' : ''}`}>
+                                        <td className="py-1 px-2 text-zinc-400">{row.pair || '-'}</td>
+                                        <td className="py-1 px-2 text-right text-white">{row.delta}</td>
+                                        <td className="py-1 px-2 text-right text-white">{row.volume}</td>
+                                        <td className="py-1 px-2 text-right text-white">{row.shadow}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              ) : (
+                                <div className="grid grid-cols-3 gap-2 text-xs">
+                                  <div>
+                                    <span className="text-zinc-400">Δ%: </span>
+                                    <span className="text-white">{group.rows[0].delta}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-zinc-400">Объём: </span>
+                                    <span className="text-white">{group.rows[0].volume}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-zinc-400">Тень%: </span>
+                                    <span className="text-white">{group.rows[0].shadow}</span>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       );
                     })()}
                   </div>

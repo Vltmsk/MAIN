@@ -121,15 +121,15 @@ class SpikeDetector:
             return self._get_default_options()
     
     def _get_default_options(self) -> Dict:
-        """Возвращает дефолтные настройки фильтров (только для включения/выключения бирж)"""
+        """Возвращает дефолтные настройки фильтров (все биржи отключены по умолчанию)"""
         return {
             "thresholds": {},  # Нет дефолтных порогов - используются только пользовательские настройки
             "exchanges": {
-                "gate": True,
-                "binance": True,
-                "bitget": True,
-                "bybit": True,
-                "hyperliquid": True,
+                "gate": False,
+                "binance": False,
+                "bitget": False,
+                "bybit": False,
+                "hyperliquid": False,
             },
             "exchangeSettings": {},
             "pairSettings": {}

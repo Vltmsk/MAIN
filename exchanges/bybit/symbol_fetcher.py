@@ -56,12 +56,24 @@ async def fetch_symbols(market: str) -> List[str]:
                 
                 symbols = []
                 for item in list_data:
-                    # Filter: active status, USDT quote (для spot: USDT, ETH, BTC, USDC, EUR; для linear: только USDT)
                     status = item.get("status", "").lower()
                     if "trading" in status or status == "1":
                         symbol = item.get("symbol", "")
-                        if symbol.endswith("USDT"):
-                            symbols.append(symbol)
+                        
+                        # Для spot рынка: фильтруем по USDT, USDC, BTC, ETH, EUR
+                        # Для linear (futures) рынка: фильтруем только по USDT
+                        if market == "spot":
+                            # Поддерживаем дополнительные пары для spot
+                            # Проверяем от самых длинных к коротким (USDT перед USD, USDC перед USDT)
+                            quote_currencies = ["USDT", "USDC", "BTC", "ETH", "EUR"]
+                            for quote in sorted(quote_currencies, key=len, reverse=True):
+                                if symbol.endswith(quote):
+                                    symbols.append(symbol)
+                                    break
+                        elif market == "linear":
+                            # Для futures только USDT
+                            if symbol.endswith("USDT"):
+                                symbols.append(symbol)
                 
                 return symbols
                 

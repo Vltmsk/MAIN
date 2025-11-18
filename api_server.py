@@ -238,12 +238,40 @@ async def register_user(request: Request, user: str, user_data: UserRegister):
         if len(user_data.password) < 4:
             raise HTTPException(status_code=400, detail="Пароль должен быть не менее 4 символов")
         
+        # Дефолтные настройки для нового пользователя: все биржи отключены, все значения пустые
+        default_options = {
+            "thresholds": {},
+            "exchanges": {
+                "gate": False,
+                "binance": False,
+                "bitget": False,
+                "bybit": False,
+                "hyperliquid": False,
+            },
+            "exchangeSettings": {},
+            "pairSettings": {}
+        }
+        
+        # Если пользователь передал свои настройки, используем их, иначе дефолтные
+        import json
+        if user_data.options_json and user_data.options_json != "{}":
+            try:
+                user_options = json.loads(user_data.options_json)
+                # Объединяем с дефолтами, чтобы убедиться что все поля присутствуют
+                default_options.update(user_options)
+                options_json = json.dumps(default_options)
+            except (json.JSONDecodeError, ValueError):
+                # Если ошибка парсинга, используем дефолтные настройки
+                options_json = json.dumps(default_options)
+        else:
+            options_json = json.dumps(default_options)
+        
         user_id = await db.register_user(
             user=user,
             password=user_data.password,
             tg_token=user_data.tg_token or "",
             chat_id=user_data.chat_id or "",
-            options_json=user_data.options_json or "{}"
+            options_json=options_json
         )
         # Получаем точное имя пользователя из базы
         user_info = await db.get_user(user)
