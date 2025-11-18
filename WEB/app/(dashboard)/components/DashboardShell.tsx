@@ -3292,7 +3292,7 @@ export default function Dashboard() {
                             <p className="text-xs text-zinc-500 mb-2">
                               Получите Bot Token через @BotFather в Telegram
                             </p>
-                            <ChatIdHelp showBotTokenWarning={true} />
+                            <ChatIdHelp showBotTokenWarning={true} forBotToken={true} />
                           </div>
                         )}
                       </div>
@@ -3491,7 +3491,7 @@ export default function Dashboard() {
                             }
                           }
                         }}
-                        className="text-left px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-emerald-500/50 rounded-lg transition-colors group"
+                        className="text-left px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border-2 border-zinc-600 hover:border-emerald-500 rounded-lg transition-all cursor-pointer group shadow-sm hover:shadow-md"
                         title={placeholder.desc}
                       >
                         <div className="text-sm font-medium text-white group-hover:text-emerald-300 mb-0.5">
@@ -3510,7 +3510,6 @@ export default function Dashboard() {
                   <div className="flex items-center justify-between mb-2">
                     <label className="block text-sm font-medium text-zinc-300">
                       Шаблон сообщения
-                      <span className="text-xs text-zinc-500 ml-2">(можно вставлять emoji из Telegram через Ctrl+V или использовать кнопку Emoji)</span>
                     </label>
                     <button
                       ref={emojiButtonRef}
@@ -3637,7 +3636,7 @@ export default function Dashboard() {
                       onContextMenu={handleContextMenu}
                       onKeyDown={handleKeyDown}
                       onClick={() => setContextMenu(null)}
-                      className="w-full min-h-64 px-4 py-3 bg-zinc-800 border border-zinc-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-transparent focus:ring-emerald-500 resize-none overflow-y-auto template-editor"
+                      className="w-full min-h-64 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
                       style={{ whiteSpace: 'pre-wrap' }}
                       onPaste={(e) => {
                         // Разрешаем вставку emoji из буфера обмена
@@ -4294,7 +4293,6 @@ export default function Dashboard() {
                             <div className="flex items-center justify-between mb-2">
                               <label className="block text-xs text-zinc-400">
                                 Шаблон сообщения
-                                <span className="text-xs text-zinc-500 ml-1">(можно вставлять emoji из Telegram через Ctrl+V)</span>
                               </label>
                               <button
                                 type="button"
@@ -4445,7 +4443,7 @@ export default function Dashboard() {
                                         }, 0);
                                       }
                                     }}
-                                    className="text-left px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-emerald-500/50 rounded-lg transition-colors group"
+                                    className="text-left px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border-2 border-zinc-600 hover:border-emerald-500 rounded-lg transition-all cursor-pointer group shadow-sm hover:shadow-md"
                                     title={placeholder.desc}
                                   >
                                     <div className="text-sm font-medium text-white group-hover:text-emerald-300 mb-0.5">
@@ -4485,7 +4483,7 @@ export default function Dashboard() {
                                 newTemplates[index].template = convertToTechnicalKeys(textContent);
                                 setConditionalTemplates(newTemplates);
                               }}
-                              className="w-full min-h-32 px-4 py-3 bg-zinc-800 border border-zinc-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-transparent focus:ring-emerald-500 resize-none overflow-y-auto template-editor"
+                              className="w-full min-h-32 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
                               style={{ whiteSpace: 'pre-wrap' }}
                               onPaste={(e) => {
                                 // Разрешаем вставку emoji из буфера обмена
@@ -4554,7 +4552,10 @@ export default function Dashboard() {
                                 dangerouslySetInnerHTML={{
                                   __html: (() => {
                                     // Генерируем предпросмотр с примерными данными
-                                    const previewTemplate = template.template || "";
+                                    let preview = template.template || "";
+                                    // Сначала заменяем дружественные имена на технические ключи, если они есть
+                                    preview = convertToTechnicalKeys(preview);
+                                    // Затем заменяем технические ключи на примерные значения
                                     const previewReplacements: [string, string][] = [
                                       ["{delta_formatted}", "5.23%"],
                                       ["{volume_formatted}", "1,234,567"],
@@ -4567,8 +4568,21 @@ export default function Dashboard() {
                                       ["{market}", "SPOT"],
                                       ["{time}", "2024-01-01 12:00:00"],
                                     ];
-                                    let preview = previewTemplate;
                                     previewReplacements.forEach(([placeholder, value]) => {
+                                      preview = preview.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value);
+                                    });
+                                    // Также заменяем дружественные имена напрямую, если они остались (на случай, если шаблон еще не был сохранен)
+                                    const friendlyReplacements: [string, string][] = [
+                                      ["[[Дельта стрелы]]", "5.23%"],
+                                      ["[[Объём стрелы]]", "1,234,567"],
+                                      ["[[Тень свечи]]", "45.2%"],
+                                      ["[[Время детекта]]", "2024-01-01 12:00:00"],
+                                      ["[[Временная метка]]", "1704067200000"],
+                                      ["[[Направление]]", "📈"],
+                                      ["[[Биржа и тип рынка]]", "BINANCE | SPOT"],
+                                      ["[[Торговая пара]]", "ETH"],
+                                    ];
+                                    friendlyReplacements.forEach(([placeholder, value]) => {
                                       preview = preview.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value);
                                     });
                                     return preview;

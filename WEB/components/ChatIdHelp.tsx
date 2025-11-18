@@ -5,12 +5,16 @@ import { useState } from "react";
 interface ChatIdHelpProps {
   variant?: "default" | "compact";
   showBotTokenWarning?: boolean;
+  forBotToken?: boolean; // Новый проп для отображения инструкции для bot token
 }
 
-export default function ChatIdHelp({ variant = "default", showBotTokenWarning = false }: ChatIdHelpProps) {
+export default function ChatIdHelp({ variant = "default", showBotTokenWarning = false, forBotToken = false }: ChatIdHelpProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (variant === "compact") {
+    if (forBotToken) {
+      return null; // Для bot token не показываем compact версию
+    }
     return (
       <div className="mt-1">
         <button
@@ -50,7 +54,7 @@ export default function ChatIdHelp({ variant = "default", showBotTokenWarning = 
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        {isExpanded ? "Скрыть инструкцию" : "Как получить Chat ID?"}
+        {isExpanded ? "Скрыть инструкцию" : (forBotToken ? "Как получить bot token?" : "Как получить Chat ID?")}
         <svg 
           className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-180" : ""}`} 
           fill="none" 
@@ -61,7 +65,7 @@ export default function ChatIdHelp({ variant = "default", showBotTokenWarning = 
         </svg>
       </button>
 
-      {isExpanded && (
+      {isExpanded && !forBotToken && (
         <div className="mt-3 p-4 bg-zinc-800/50 border border-zinc-700 rounded-lg space-y-4">
           {/* Основной способ для групп и каналов */}
           <div>
@@ -238,6 +242,103 @@ export default function ChatIdHelp({ variant = "default", showBotTokenWarning = 
         </div>
       )}
 
+      {isExpanded && forBotToken && (
+        <div className="mt-3 p-4 bg-zinc-800/50 border border-zinc-700 rounded-lg space-y-4">
+          {/* Инструкция для получения bot token */}
+          <div>
+            <h4 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+              <span>🤖</span> Как получить Bot Token:
+            </h4>
+            <ol className="space-y-3 text-sm text-zinc-300">
+              <li className="flex gap-3">
+                <span className="flex-shrink-0 w-6 h-6 bg-emerald-600 rounded-full flex items-center justify-center text-white font-bold text-xs">1</span>
+                <div>
+                  <p className="font-medium text-white mb-1">Откройте @BotFather в Telegram</p>
+                  <p className="text-zinc-400">
+                    Найдите бота{" "}
+                    <a 
+                      href="tg://resolve?domain=BotFather" 
+                      className="text-emerald-400 hover:text-emerald-300 underline font-medium"
+                    >
+                      @BotFather
+                    </a>
+                    {" "}в Telegram и начните с ним диалог.
+                  </p>
+                </div>
+              </li>
+              
+              <li className="flex gap-3">
+                <span className="flex-shrink-0 w-6 h-6 bg-emerald-600 rounded-full flex items-center justify-center text-white font-bold text-xs">2</span>
+                <div>
+                  <p className="font-medium text-white mb-1">Создайте нового бота</p>
+                  <p className="text-zinc-400">
+                    Отправьте команду <code className="bg-zinc-900 px-1 rounded">/newbot</code> и следуйте инструкциям бота.
+                    Придумайте имя и username для вашего бота.
+                  </p>
+                </div>
+              </li>
+              
+              <li className="flex gap-3">
+                <span className="flex-shrink-0 w-6 h-6 bg-emerald-600 rounded-full flex items-center justify-center text-white font-bold text-xs">3</span>
+                <div>
+                  <p className="font-medium text-white mb-1">Получите Bot Token</p>
+                  <p className="text-zinc-400 mb-2">
+                    После создания бота @BotFather отправит вам сообщение с Bot Token.
+                    Это строка вида: <code className="bg-zinc-900 px-1 rounded">1234567890:ABCdefGHIjkIMNOpqrsTUVwxyz</code>
+                  </p>
+                  <div className="bg-zinc-900 border border-zinc-700 rounded p-3 font-mono text-xs text-zinc-300">
+                    <div className="text-emerald-400 font-semibold">Use this token to access the HTTP API:</div>
+                    <div className="mt-1">1234567890:ABCdefGHIjkIMNOpqrsTUVwxyz</div>
+                  </div>
+                </div>
+              </li>
+              
+              <li className="flex gap-3">
+                <span className="flex-shrink-0 w-6 h-6 bg-emerald-600 rounded-full flex items-center justify-center text-white font-bold text-xs">4</span>
+                <div>
+                  <p className="font-medium text-white mb-1">Скопируйте и вставьте Token</p>
+                  <p className="text-zinc-400">
+                    Скопируйте весь Bot Token (включая число и двоеточие) и вставьте в поле "Bot Token" выше.
+                  </p>
+                </div>
+              </li>
+            </ol>
+          </div>
+
+          {/* Важные примечания для bot token */}
+          <div className="pt-3 border-t border-zinc-700">
+            <h4 className="text-sm font-semibold text-white mb-2 flex items-center gap-2">
+              <span>💡</span> Важные примечания:
+            </h4>
+            <ul className="space-y-2 text-sm text-zinc-300">
+              <li className="flex items-start gap-2">
+                <span className="text-emerald-400 mt-0.5">✓</span>
+                <span>Формат Bot Token: <code className="bg-zinc-900 px-1 rounded">число:буквы</code> (например: <code className="bg-zinc-900 px-1 rounded">1234567890:ABCdefGHIjkIMNOpqrsTUVwxyz</code>)</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-yellow-400 mt-0.5">⚠️</span>
+                <span><strong>Безопасность:</strong> Не делитесь Bot Token с другими людьми. Тот, кто имеет доступ к токену, может управлять вашим ботом.</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-yellow-400 mt-0.5">⚠️</span>
+                <span><strong>Рекомендация:</strong> Создайте отдельного бота специально для этого сервиса. Не используйте бота, который уже используется для других целей.</span>
+              </li>
+            </ul>
+          </div>
+
+          {/* Кнопка быстрого доступа */}
+          <div className="pt-3 border-t border-zinc-700">
+            <a
+              href="tg://resolve?domain=BotFather"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg transition-colors"
+            >
+              <span className="text-lg">🤖</span>
+              Открыть @BotFather в Telegram
+            </a>
+          </div>
+        </div>
+      )}
+
       {showBotTokenWarning && (
         <div className="mt-3 p-3 bg-yellow-900/20 border border-yellow-700/50 rounded-lg">
           <div className="flex items-start gap-2">
@@ -255,15 +356,6 @@ export default function ChatIdHelp({ variant = "default", showBotTokenWarning = 
                 {" "}и используйте его <strong>только для получения сигналов с этого сайта</strong>. 
                 Не используйте этого бота для других целей.
               </p>
-              <details className="mt-2">
-                <summary className="text-xs text-zinc-400 cursor-pointer hover:text-zinc-300">
-                  Почему это важно?
-                </summary>
-                <p className="text-xs text-zinc-400 mt-2 ml-4">
-                  Использование отдельного бота для каждого сервиса повышает безопасность и позволяет лучше контролировать уведомления. 
-                  Если бот будет скомпрометирован или заблокирован, это не повлияет на другие ваши сервисы.
-                </p>
-              </details>
             </div>
           </div>
         </div>
