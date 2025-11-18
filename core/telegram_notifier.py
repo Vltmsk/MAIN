@@ -180,7 +180,7 @@ class TelegramNotifier:
             return False, error_msg
     
     @staticmethod
-    def _check_condition(condition: Dict[str, Any], delta: float, volume_usdt: float, wick_pct: float,
+    async def _check_condition(condition: Dict[str, Any], delta: float, volume_usdt: float, wick_pct: float,
                         candle: Optional[Candle] = None, user_id: Optional[int] = None,
                         all_conditions: Optional[List[Dict[str, Any]]] = None) -> bool:
         """
@@ -258,6 +258,105 @@ class TelegramNotifier:
                     return False
                 
                 return True
+            elif cond_type == "symbol":
+                # Проверка условия по символу (с нормализацией)
+                if candle is None:
+                    return False
+                
+                condition_symbol = condition.get("value") or condition.get("symbol")
+                if not condition_symbol:
+                    return False
+                
+                # Нормализуем символ из условия
+                from core.symbol_utils import normalize_symbol, is_normalized, symbols_match
+                
+                # Нормализуем символ свечи
+                candle_symbol_normalized = await normalize_symbol(
+                    candle.symbol,
+                    candle.exchange,
+                    candle.market
+                )
+                
+                # Нормализуем символ из условия (если он не нормализован)
+                condition_symbol_normalized = condition_symbol.upper()
+                if not is_normalized(condition_symbol):
+                    # Пытаемся нормализовать символ из условия
+                    # Используем биржу и рынок свечи
+                    try:
+                        condition_symbol_normalized = await normalize_symbol(
+                            condition_symbol,
+                            candle.exchange,
+                            candle.market
+                        )
+                    except Exception as e:
+                        logger.debug(f"Не удалось нормализовать символ из условия: {e}")
+                        # Если не удалось нормализовать, используем прямое сравнение
+                        condition_symbol_normalized = condition_symbol.upper()
+                
+                # Сравниваем нормализованные символы
+                return candle_symbol_normalized == condition_symbol_normalized
+            elif cond_type == "wick_pct":
+                # Проверка условия по тени свечи (диапазон)
+                value_min = condition.get("valueMin")
+                value_max = condition.get("valueMax")
+                
+                if value_min is None:
+                    return False
+                
+                # Проверяем минимальное значение
+                if wick_pct < value_min:
+                    return False
+                
+                # Проверяем максимальное значение, если оно указано (не None)
+                if value_max is not None and wick_pct > value_max:
+                    return False
+                
+                return True
+            elif cond_type == "exchange":
+                # Проверка условия по бирже
+                if candle is None:
+                    return False
+                
+                condition_exchange = condition.get("exchange")
+                if not condition_exchange:
+                    return False
+                
+                # Сравниваем биржи (без учета регистра)
+                return candle.exchange.lower() == condition_exchange.lower()
+            elif cond_type == "market":
+                # Проверка условия по типу рынка
+                if candle is None:
+                    return False
+                
+                condition_market = condition.get("market")
+                if not condition_market:
+                    return False
+                
+                # Нормализуем типы рынков для сравнения
+                market_mapping = {
+                    "futures": "linear",  # Futures и Linear - одно и то же
+                    "linear": "linear",
+                    "spot": "spot"
+                }
+                
+                candle_market = market_mapping.get(candle.market.lower(), candle.market.lower())
+                condition_market_normalized = market_mapping.get(condition_market.lower(), condition_market.lower())
+                
+                return candle_market == condition_market_normalized
+            elif cond_type == "direction":
+                # Проверка условия по направлению стрелы
+                if candle is None:
+                    return False
+                
+                condition_direction = condition.get("direction")
+                if not condition_direction:
+                    return False
+                
+                # Определяем направление свечи
+                is_up = candle.close > candle.open
+                candle_direction = "up" if is_up else "down"
+                
+                return candle_direction == condition_direction.lower()
             else:
                 logger.warning(f"Неизвестный тип условия: {cond_type}")
                 return False
@@ -270,7 +369,7 @@ class TelegramNotifier:
             return False
     
     @staticmethod
-    def _select_templates(delta: float, wick_pct: float, volume_usdt: float,
+    async def _select_templates(delta: float, wick_pct: float, volume_usdt: float,
                         conditional_templates: Optional[List[Dict[str, Any]]] = None,
                         default_template: Optional[str] = None,
                         candle: Optional[Candle] = None,
@@ -298,6 +397,11 @@ class TelegramNotifier:
         if conditional_templates:
             for cond_template in conditional_templates:
                 try:
+                    # Проверяем флаг enabled (по умолчанию true, если не указан)
+                    enabled = cond_template.get("enabled")
+                    if enabled is False:
+                        continue  # Пропускаем выключенные шаблоны
+                    
                     conditions = cond_template.get("conditions")  # Новый формат: массив условий
                     # Миграция: поддерживаем старый формат с одним condition
                     if not conditions:
@@ -314,7 +418,7 @@ class TelegramNotifier:
                         all_conditions_met = True
                         
                         for condition in conditions:
-                            if not TelegramNotifier._check_condition(condition, delta, volume_usdt, wick_pct, candle, user_id, conditions):
+                            if not await TelegramNotifier._check_condition(condition, delta, volume_usdt, wick_pct, candle, user_id, conditions):
                                 all_conditions_met = False
                                 break
                         
@@ -432,6 +536,14 @@ class TelegramNotifier:
         # Тип рынка
         market_text = "SPOT" if candle.market == "spot" else "FUTURES"
         
+        # Нормализуем символ для плейсхолдеров
+        from core.symbol_utils import normalize_symbol
+        normalized_symbol = await normalize_symbol(
+            candle.symbol,
+            candle.exchange,
+            candle.market
+        )
+        
         # Подготовка замен плейсхолдеров
         replacements = [
             ("{delta_formatted}", delta_formatted),
@@ -441,13 +553,13 @@ class TelegramNotifier:
             ("{direction}", direction_emoji),  # Используем emoji (кастомное или fallback)
             ("{exchange_market}", f"{candle.exchange.upper()} | {market_text}"),  # Объединенная вставка
             ("{exchange}", candle.exchange.upper()),  # Оставляем для обратной совместимости
-            ("{symbol}", candle.symbol),
+            ("{symbol}", normalized_symbol),  # Используем нормализованный символ
             ("{market}", market_text),  # Оставляем для обратной совместимости
             ("{time}", time_str),
         ]
         
         # Выбираем все подходящие шаблоны с Chat ID
-        selected_templates = TelegramNotifier._select_templates(
+        selected_templates = await TelegramNotifier._select_templates(
             delta, wick_pct, volume_usdt, conditional_templates, template, candle, user_id, default_chat_id
         )
         
@@ -473,7 +585,7 @@ class TelegramNotifier:
 🚨 <b>НАЙДЕНА СТРЕЛА!</b> {direction_emoji}
 
 <b>{candle.exchange.upper()} | {market_text}</b>
-💰 <b>{candle.symbol}</b>
+💰 <b>{normalized_symbol}</b>
 
 📊 <b>Метрики:</b>
 • Изменение: <b>{delta_formatted}</b> {direction_emoji}

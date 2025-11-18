@@ -594,16 +594,41 @@ async def get_spikes(
 ):
     """Получает стрелы с фильтрацией"""
     try:
+        from core.symbol_utils import normalize_symbol, denormalize_symbol, is_normalized
+        
         user_id = None
         if user:
             user_data = await db.get_user(user)
             if user_data:
                 user_id = user_data["id"]
         
+        # Если указан символ для фильтрации, проверяем, нужно ли денормализовать
+        filter_symbol = symbol
+        if symbol:
+            # Если символ нормализован, получаем все варианты для фильтрации
+            if is_normalized(symbol):
+                # Получаем все варианты символа для всех бирж и рынков
+                denormalized_symbols = []
+                if exchange and market:
+                    denormalized_symbols = await denormalize_symbol(symbol, exchange, market)
+                else:
+                    # Если биржа/рынок не указаны, получаем для всех
+                    for ex in ["binance", "gate", "bitget", "bybit", "hyperliquid"]:
+                        for mkt in ["spot", "linear"]:
+                            denorm = await denormalize_symbol(symbol, ex, mkt)
+                            denormalized_symbols.extend(denorm)
+                
+                # Если нашли варианты, используем их для фильтрации
+                # Но для упрощения, если вариантов много, используем исходный символ
+                # В реальности нужно будет изменить логику БД для поддержки IN запросов
+                # Пока используем исходный символ, если он нормализован
+                if not denormalized_symbols:
+                    filter_symbol = None  # Не фильтруем, если не нашли варианты
+        
         alerts = await db.get_alerts(
             exchange=exchange,
             market=market,
-            symbol=symbol,
+            symbol=filter_symbol,  # Используем оригинальный символ для фильтрации в БД
             user_id=user_id,
             ts_from=ts_from,
             ts_to=ts_to,
@@ -614,7 +639,20 @@ async def get_spikes(
             limit=limit,
             offset=offset
         )
-        return {"spikes": alerts}
+        
+        # Нормализуем символы в ответах
+        normalized_alerts = []
+        for alert in alerts:
+            normalized_symbol = await normalize_symbol(
+                alert["symbol"], 
+                alert["exchange"], 
+                alert["market"]
+            )
+            alert_copy = dict(alert)
+            alert_copy["symbol"] = normalized_symbol
+            normalized_alerts.append(alert_copy)
+        
+        return {"spikes": normalized_alerts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -717,11 +755,19 @@ async def get_user_spikes_stats(
             mkt = alert["market"]
             by_market[mkt] = by_market.get(mkt, 0) + 1
         
-        # Топ символов
+        # Нормализуем символы для статистики
+        from core.symbol_utils import normalize_symbol
+        
+        # Топ символов (с нормализацией)
         symbol_counts = {}
         for alert in alerts:
-            sym = alert["symbol"]
-            symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
+            # Нормализуем символ для группировки
+            normalized_sym = await normalize_symbol(
+                alert["symbol"],
+                alert["exchange"],
+                alert["market"]
+            )
+            symbol_counts[normalized_sym] = symbol_counts.get(normalized_sym, 0) + 1
         
         top_symbols = sorted(
             [{"symbol": sym, "count": cnt} for sym, cnt in symbol_counts.items()],
@@ -744,22 +790,49 @@ async def get_user_spikes_stats(
             key=lambda x: x["date"]
         )
         
-        # Последние 20 стрел для таблицы
-        recent_spikes = sorted(alerts, key=lambda x: x["ts"], reverse=True)[:20]
+        # Последние 20 стрел для таблицы (с нормализацией символов)
+        recent_spikes_raw = sorted(alerts, key=lambda x: x["ts"], reverse=True)[:20]
+        recent_spikes = []
+        for alert in recent_spikes_raw:
+            alert_copy = dict(alert)
+            alert_copy["symbol"] = await normalize_symbol(
+                alert["symbol"],
+                alert["exchange"],
+                alert["market"]
+            )
+            recent_spikes.append(alert_copy)
         
-        # Топ 10 стрел по дельте (абсолютное значение)
-        top_by_delta = sorted(
+        # Топ 10 стрел по дельте (абсолютное значение) (с нормализацией символов)
+        top_by_delta_raw = sorted(
             alerts,
             key=lambda x: abs(x["delta"]),
             reverse=True
         )[:10]
+        top_by_delta = []
+        for alert in top_by_delta_raw:
+            alert_copy = dict(alert)
+            alert_copy["symbol"] = await normalize_symbol(
+                alert["symbol"],
+                alert["exchange"],
+                alert["market"]
+            )
+            top_by_delta.append(alert_copy)
         
-        # Топ 10 стрел по объёму
-        top_by_volume = sorted(
+        # Топ 10 стрел по объёму (с нормализацией символов)
+        top_by_volume_raw = sorted(
             alerts,
             key=lambda x: x["volume_usdt"],
             reverse=True
         )[:10]
+        top_by_volume = []
+        for alert in top_by_volume_raw:
+            alert_copy = dict(alert)
+            alert_copy["symbol"] = await normalize_symbol(
+                alert["symbol"],
+                alert["exchange"],
+                alert["market"]
+            )
+            top_by_volume.append(alert_copy)
         
         # Группировка по месяцам
         monthly_counts = defaultdict(int)
@@ -804,29 +877,83 @@ async def get_user_spikes_by_symbol(
 ):
     """Получает все стрелы пользователя по конкретной монете"""
     try:
+        from core.symbol_utils import normalize_symbol, denormalize_symbol, is_normalized
+        
         user_data = await db.get_user(user)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
         
         user_id = user_data["id"]
         
-        # Получаем все стрелы пользователя по символу
-        alerts = await db.get_alerts(
-            exchange=exchange,
-            market=market,
-            symbol=symbol,
-            user_id=user_id,
-            ts_from=ts_from,
-            ts_to=ts_to
-        )
+        # Если символ нормализован, получаем все варианты для фильтрации
+        filter_symbols = [symbol]
+        normalized_symbol = symbol
+        
+        if is_normalized(symbol):
+            # Символ уже нормализован, используем его для ответа
+            normalized_symbol = symbol
+            # Получаем все варианты для фильтрации
+            if exchange and market:
+                denormalized = await denormalize_symbol(symbol, exchange, market)
+                if denormalized:
+                    filter_symbols = denormalized
+            else:
+                # Если биржа/рынок не указаны, получаем для всех
+                for ex in ["binance", "gate", "bitget", "bybit", "hyperliquid"]:
+                    for mkt in ["spot", "linear"]:
+                        denorm = await denormalize_symbol(symbol, ex, mkt)
+                        filter_symbols.extend(denorm)
+        else:
+            # Символ не нормализован, нормализуем для ответа
+            # Для фильтрации используем исходный символ
+            if exchange and market:
+                normalized_symbol = await normalize_symbol(symbol, exchange, market)
+            else:
+                # Если биржа/рынок не указаны, пробуем нормализовать для первой найденной биржи
+                normalized_symbol = await normalize_symbol(symbol, "binance", "spot")
+        
+        # Получаем все стрелы пользователя по символу (или вариантам символа)
+        # Пока используем простую фильтрацию по одному символу
+        # В будущем можно улучшить для поддержки множественных символов
+        all_alerts = []
+        for filter_sym in filter_symbols[:1]:  # Пока используем только первый вариант
+            alerts = await db.get_alerts(
+                exchange=exchange,
+                market=market,
+                symbol=filter_sym,
+                user_id=user_id,
+                ts_from=ts_from,
+                ts_to=ts_to
+            )
+            all_alerts.extend(alerts)
+        
+        # Удаляем дубликаты по id
+        seen_ids = set()
+        unique_alerts = []
+        for alert in all_alerts:
+            if alert["id"] not in seen_ids:
+                seen_ids.add(alert["id"])
+                unique_alerts.append(alert)
+        
+        # Нормализуем символы в ответах
+        normalized_alerts = []
+        for alert in unique_alerts:
+            alert_normalized_symbol = await normalize_symbol(
+                alert["symbol"],
+                alert["exchange"],
+                alert["market"]
+            )
+            alert_copy = dict(alert)
+            alert_copy["symbol"] = alert_normalized_symbol
+            normalized_alerts.append(alert_copy)
         
         # Сортируем по времени (новые первыми)
-        alerts = sorted(alerts, key=lambda x: x["ts"], reverse=True)
+        normalized_alerts = sorted(normalized_alerts, key=lambda x: x["ts"], reverse=True)
         
         return {
-            "symbol": symbol,
-            "total_count": len(alerts),
-            "spikes": alerts
+            "symbol": normalized_symbol,
+            "total_count": len(normalized_alerts),
+            "spikes": normalized_alerts
         }
     except HTTPException:
         raise

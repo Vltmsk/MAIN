@@ -686,6 +686,24 @@ async def main():
     logger.info("START: Запуск сборщика данных со всех бирж")
     logger.info("=" * 60)
     
+    # Инициализируем БД нормализации символов
+    try:
+        from BD.symbol_normalization_db import symbol_normalization_db
+        await symbol_normalization_db.initialize()
+        logger.info("БД нормализации символов инициализирована")
+        
+        # Проверяем, нужно ли заполнить БД (если она пустая)
+        all_symbols = await symbol_normalization_db.get_all_symbols()
+        if not all_symbols:
+            logger.info("БД нормализации пуста, начинаем заполнение...")
+            from core.symbol_utils import populate_normalization_db
+            await populate_normalization_db()
+        else:
+            logger.info(f"БД нормализации содержит {len(all_symbols)} символов")
+    except Exception as e:
+        logger.error(f"Ошибка при инициализации БД нормализации: {e}", exc_info=True)
+        # Продолжаем работу даже если БД нормализации не инициализирована
+    
     # Запускаем мониторинг здоровья системы
     await health_monitor.start_monitoring()
     

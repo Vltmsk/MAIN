@@ -2,6 +2,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
+import ChatIdHelp from "@/components/ChatIdHelp";
 
 // Динамический импорт EmojiPicker для избежания SSR проблем
 const EmojiPicker = dynamic(() => import("emoji-picker-react"), { ssr: false });
@@ -109,6 +110,93 @@ export default function Dashboard() {
     return result;
   };
 
+  // Функция для генерации описания шаблона на основе условий
+  const generateTemplateDescription = (template: ConditionalTemplate): string => {
+    if (!template.conditions || template.conditions.length === 0) {
+      return "Нет условий";
+    }
+
+    const parts: string[] = [];
+
+    template.conditions.forEach((condition) => {
+      switch (condition.type) {
+        case "volume":
+          if (condition.value !== undefined) {
+            parts.push(`Объём ≥ ${condition.value.toLocaleString()} USDT`);
+          }
+          break;
+        case "delta":
+          if (condition.valueMin !== undefined) {
+            const min = condition.valueMin;
+            const max = condition.valueMax;
+            if (max === null || max === undefined) {
+              parts.push(`Дельта ≥ ${min}%`);
+            } else {
+              parts.push(`Дельта ${min}% - ${max}%`);
+            }
+          } else if (condition.value !== undefined) {
+            parts.push(`Дельта ≥ ${condition.value}%`);
+          }
+          break;
+        case "series":
+          if (condition.count !== undefined && condition.timeWindowSeconds !== undefined) {
+            const minutes = Math.floor(condition.timeWindowSeconds / 60);
+            parts.push(`Серия: ${condition.count} стрел за ${minutes} мин`);
+          }
+          break;
+        case "symbol":
+          if (condition.symbol) {
+            parts.push(`Монета: ${condition.symbol}`);
+          }
+          break;
+        case "wick_pct":
+          if (condition.valueMin !== undefined) {
+            const min = condition.valueMin;
+            const max = condition.valueMax;
+            if (max === null || max === undefined) {
+              parts.push(`Тень ≥ ${min}%`);
+            } else {
+              parts.push(`Тень ${min}% - ${max}%`);
+            }
+          }
+          break;
+        case "exchange":
+          if (condition.exchange) {
+            const exchangeNames: Record<string, string> = {
+              binance: "Binance",
+              gate: "Gate",
+              bitget: "Bitget",
+              bybit: "Bybit",
+              hyperliquid: "Hyperliquid",
+            };
+            parts.push(`Биржа: ${exchangeNames[condition.exchange] || condition.exchange}`);
+          }
+          break;
+        case "market":
+          if (condition.market) {
+            const marketNames: Record<string, string> = {
+              spot: "Spot",
+              futures: "Futures",
+              linear: "Linear",
+            };
+            parts.push(`Рынок: ${marketNames[condition.market] || condition.market}`);
+          }
+          break;
+        case "direction":
+          if (condition.direction) {
+            parts.push(`Направление: ${condition.direction === "up" ? "Вверх ⬆️" : "Вниз ⬇️"}`);
+          }
+          break;
+      }
+    });
+
+    if (parts.length === 0) {
+      return "Нет условий";
+    }
+
+    return parts.join(" • ");
+  };
+
   // Состояние для шаблона сообщения (отображается с понятными названиями)
   const [messageTemplate, setMessageTemplate] = useState<string>(`🚨 <b>НАЙДЕНА СТРЕЛА!</b> [[Направление]]
 
@@ -124,13 +212,20 @@ export default function Dashboard() {
   
   // Состояние для условных шаблонов
   type ConditionalTemplate = {
+    name?: string; // Название шаблона (опционально, для отображения)
+    description?: string; // Автоматически сгенерированное описание (опционально)
+    enabled?: boolean; // Включен/выключен (по умолчанию true)
     conditions: Array<{
-      type: "volume" | "delta" | "series";
+      type: "volume" | "delta" | "series" | "symbol" | "wick_pct" | "exchange" | "market" | "direction";
       value?: number; // Для volume и старого формата delta
-      valueMin?: number; // Для delta (минимальное значение)
-      valueMax?: number | null; // Для delta (максимальное значение, null = бесконечность)
+      valueMin?: number; // Для delta и wick_pct (минимальное значение)
+      valueMax?: number | null; // Для delta и wick_pct (максимальное значение, null = бесконечность)
       count?: number; // Для series
       timeWindowSeconds?: number; // Для series
+      symbol?: string; // Для symbol (нормализованный символ, например: ETH, BTC)
+      exchange?: string; // Для exchange (название биржи: binance, gate, bitget, bybit, hyperliquid)
+      market?: "spot" | "futures" | "linear"; // Для market (тип рынка)
+      direction?: "up" | "down"; // Для direction (направление стрелы)
     }>;
     template: string;
     chatId?: string; // Telegram Chat ID для этого шаблона (опционально, если не указан - используется основной)
@@ -1135,23 +1230,47 @@ export default function Dashboard() {
                       count: cond.count || 2,
                       timeWindowSeconds: cond.timeWindowSeconds || 300,
                     };
-                  } else if (condType === "delta") {
-                    // Для дельты - поддержка диапазона (valueMin, valueMax) или старого формата (value)
+                  } else if (condType === "delta" || condType === "wick_pct") {
+                    // Для дельты и тени - поддержка диапазона (valueMin, valueMax) или старого формата (value)
                     if (cond.valueMin !== undefined || cond.valueMax !== undefined) {
                       // Новый формат с диапазоном
                       return {
-                        type: "delta",
+                        type: condType,
                         valueMin: cond.valueMin !== undefined ? cond.valueMin : 0,
                         valueMax: cond.valueMax !== undefined ? cond.valueMax : null, // null = бесконечность
                       };
                     } else {
                       // Старый формат - мигрируем value в valueMin
                       return {
-                        type: "delta",
+                        type: condType,
                         valueMin: cond.value !== undefined ? cond.value : 0,
                         valueMax: null, // null = бесконечность
                       };
                     }
+                  } else if (condType === "symbol") {
+                    // Для символа - используем symbol или value (для обратной совместимости)
+                    return {
+                      type: "symbol",
+                      symbol: (cond.symbol || cond.value || "").toUpperCase().trim(),
+                    };
+                  } else if (condType === "exchange") {
+                    // Для биржи
+                    return {
+                      type: "exchange",
+                      exchange: (cond.exchange || "binance").toLowerCase(),
+                    };
+                  } else if (condType === "market") {
+                    // Для типа рынка
+                    return {
+                      type: "market",
+                      market: (cond.market || "spot").toLowerCase() as "spot" | "futures" | "linear",
+                    };
+                  } else if (condType === "direction") {
+                    // Для направления
+                    return {
+                      type: "direction",
+                      direction: (cond.direction || "up").toLowerCase() as "up" | "down",
+                    };
                   } else {
                     // Для объёма - одно значение
                     return {
@@ -1183,6 +1302,8 @@ export default function Dashboard() {
               }
               
               return {
+                name: template.name || undefined, // Название шаблона
+                enabled: template.enabled !== undefined ? template.enabled : true, // По умолчанию true
                 conditions,
                 template: convertToFriendlyNames(template.template || ""), // Преобразуем в понятные названия
                 chatId: template.chatId || undefined, // Chat ID на уровне шаблона
@@ -1287,13 +1408,35 @@ export default function Dashboard() {
             if (condition.type === "series") {
               baseCondition.count = condition.count || 2;
               baseCondition.timeWindowSeconds = condition.timeWindowSeconds || 300;
-            } else if (condition.type === "delta") {
-              // Для дельты сохраняем valueMin и valueMax
+            } else if (condition.type === "delta" || condition.type === "wick_pct") {
+              // Для дельты и тени сохраняем valueMin и valueMax
               if (condition.valueMin !== undefined) {
                 baseCondition.valueMin = condition.valueMin;
               }
               if (condition.valueMax !== undefined || condition.valueMax === null) {
                 baseCondition.valueMax = condition.valueMax; // null = бесконечность
+              }
+            } else if (condition.type === "symbol") {
+              // Для символа сохраняем symbol (нормализованный символ)
+              if (condition.symbol) {
+                baseCondition.value = condition.symbol.toUpperCase().trim();
+                // Также сохраняем в поле symbol для обратной совместимости
+                baseCondition.symbol = condition.symbol.toUpperCase().trim();
+              }
+            } else if (condition.type === "exchange") {
+              // Для биржи сохраняем exchange
+              if (condition.exchange) {
+                baseCondition.exchange = condition.exchange.toLowerCase();
+              }
+            } else if (condition.type === "market") {
+              // Для типа рынка сохраняем market
+              if (condition.market) {
+                baseCondition.market = condition.market.toLowerCase();
+              }
+            } else if (condition.type === "direction") {
+              // Для направления сохраняем direction
+              if (condition.direction) {
+                baseCondition.direction = condition.direction.toLowerCase();
               }
             } else {
               // Для объёма сохраняем value
@@ -1304,6 +1447,17 @@ export default function Dashboard() {
           }),
           template: convertToTechnicalKeys(template.template), // Преобразуем технические ключи в условных шаблонах
         };
+        
+        // Добавляем name, если указан
+        if (template.name) {
+          templateData.name = template.name;
+        }
+        
+        // Добавляем enabled (по умолчанию true, сохраняем только если false)
+        if (template.enabled === false) {
+          templateData.enabled = false;
+        }
+        // enabled: true не сохраняем явно, так как это значение по умолчанию
         
         // Добавляем chatId на уровне шаблона, если указан
         if (template.chatId) {
@@ -1968,13 +2122,13 @@ export default function Dashboard() {
     fetchSymbolSpikes();
   }, [selectedSymbol, statisticsMode, userLogin]);
 
-  // Функция для удаления статистики стрел пользователя
+  // Функция для очистки статистики стрел пользователя
   const handleDeleteSpikes = async () => {
     if (!userLogin) return;
     
-    // Подтверждение удаления
+    // Подтверждение очистки
     const confirmed = window.confirm(
-      "Вы уверены, что хотите удалить всю вашу статистику стрел? Это действие нельзя отменить."
+      "Вы уверены, что хотите очистить всю вашу статистику стрел? Это действие нельзя отменить."
     );
     
     if (!confirmed) return;
@@ -1987,7 +2141,7 @@ export default function Dashboard() {
       
       if (res.ok) {
         const data = await res.json();
-        alert(`Статистика успешно удалена. Удалено записей: ${data.deleted_count || 0}`);
+        alert(`Статистика успешно очищена. Удалено записей: ${data.deleted_count || 0}`);
         // Обновляем статистику после удаления - сбрасываем и перезагружаем
         setSpikesStats(null);
         // Перезагружаем статистику
@@ -2002,11 +2156,11 @@ export default function Dashboard() {
         }
       } else {
         const errorData = await res.json().catch(() => ({ error: "Неизвестная ошибка" }));
-        alert(`Ошибка при удалении статистики: ${errorData.error || errorData.detail || "Неизвестная ошибка"}`);
+        alert(`Ошибка при очистке статистики: ${errorData.error || errorData.detail || "Неизвестная ошибка"}`);
       }
     } catch (error) {
-      console.error("Ошибка при удалении статистики:", error);
-      alert("Ошибка при удалении статистики. Попробуйте позже.");
+      console.error("Ошибка при очистке статистики:", error);
+      alert("Ошибка при очистке статистики. Попробуйте позже.");
     } finally {
       setDeletingSpikes(false);
     }
@@ -2095,7 +2249,7 @@ export default function Dashboard() {
     const chatIdRegex = /^-?\d{8,20}$/;
     
     if (!chatIdRegex.test(chatId)) {
-      return "Неверный формат Chat ID. Chat ID должен быть числом (например: 123456789 или -1001234567890 для групп)";
+      return "Неверный формат Chat ID. Chat ID должен быть числом от 8 до 20 цифр (например: 123456789 для личных чатов или -1001234567890 для групп/каналов). Разверните инструкцию ниже, чтобы узнать, как получить Chat ID.";
     }
     
     return "";
@@ -2494,7 +2648,7 @@ export default function Dashboard() {
                       Рыночная статистика
                     </button>
                   </div>
-                  {/* Кнопка удаления статистики (только для личной статистики) */}
+                  {/* Кнопка очистки статистики (только для личной статистики) */}
                   {statisticsMode === "personal" && (
                     <button
                       onClick={handleDeleteSpikes}
@@ -2504,15 +2658,15 @@ export default function Dashboard() {
                           ? "bg-zinc-700 text-zinc-400 cursor-not-allowed"
                           : "bg-red-600 hover:bg-red-700 text-white"
                       }`}
-                      title="Удалить всю мою статистику стрел"
+                      title="Очистить всю мою статистику стрел"
                     >
                       {deletingSpikes ? (
                         <span className="flex items-center gap-2">
                           <span className="w-4 h-4 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin"></span>
-                          Удаление...
+                          Очищение...
                         </span>
                       ) : (
-                        "🗑️ Удалить мою статистику"
+                        "🗑️ Очистить мою статистику"
                       )}
                     </button>
                   )}
@@ -3100,11 +3254,12 @@ export default function Dashboard() {
                           }`}
                         />
                         {telegramChatIdError ? (
-                          <p className="mt-1 text-xs text-red-400">{telegramChatIdError}</p>
+                          <div className="mt-1">
+                            <p className="text-xs text-red-400">{telegramChatIdError}</p>
+                            <ChatIdHelp variant="compact" />
+                          </div>
                         ) : (
-                          <p className="mt-1 text-xs text-zinc-500">
-                            Получите Chat ID через @userinfobot в Telegram
-                          </p>
+                          <ChatIdHelp />
                         )}
                       </div>
                       
@@ -3133,9 +3288,12 @@ export default function Dashboard() {
                         {telegramBotTokenError ? (
                           <p className="mt-1 text-xs text-red-400">{telegramBotTokenError}</p>
                         ) : (
-                          <p className="mt-1 text-xs text-zinc-500">
-                            Получите Bot Token через @BotFather в Telegram
-                          </p>
+                          <div className="mt-1">
+                            <p className="text-xs text-zinc-500 mb-2">
+                              Получите Bot Token через @BotFather в Telegram
+                            </p>
+                            <ChatIdHelp showBotTokenWarning={true} />
+                          </div>
                         )}
                       </div>
                       
@@ -3658,17 +3816,56 @@ export default function Dashboard() {
                 {isConditionalTemplatesExpanded && (
                   <>
                     <div className="space-y-4 mb-4">
-                      {conditionalTemplates.map((template, index) => (
-                        <div key={index} className="bg-zinc-800 border border-zinc-700 rounded-lg p-4">
-                          <div className="flex items-center justify-between mb-3">
-                            <h3 className="text-sm font-medium text-white">Условие #{index + 1}</h3>
+                      {conditionalTemplates.map((template, index) => {
+                        const isEnabled = template.enabled !== false; // По умолчанию true
+                        const templateDescription = template.description || generateTemplateDescription(template);
+                        const templateName = template.name || `Шаблон #${index + 1}`;
+                        
+                        return (
+                        <div key={index} className={`bg-zinc-800 border rounded-lg p-4 ${isEnabled ? 'border-zinc-700' : 'border-zinc-600/50 opacity-75'}`}>
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-3 mb-2">
+                                <input
+                                  type="text"
+                                  value={template.name || ""}
+                                  onChange={(e) => {
+                                    const newTemplates = [...conditionalTemplates];
+                                    newTemplates[index].name = e.target.value.trim() || undefined;
+                                    setConditionalTemplates(newTemplates);
+                                  }}
+                                  placeholder={`Шаблон #${index + 1}`}
+                                  className="flex-1 px-3 py-1.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                />
+                                <div className="flex items-center gap-2">
+                                  <label className="flex items-center gap-2 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={isEnabled}
+                                      onChange={(e) => {
+                                        const newTemplates = [...conditionalTemplates];
+                                        newTemplates[index].enabled = e.target.checked;
+                                        setConditionalTemplates(newTemplates);
+                                      }}
+                                      className="w-4 h-4 text-emerald-600 bg-zinc-700 border-zinc-600 rounded focus:ring-emerald-500 focus:ring-2"
+                                    />
+                                    <span className="text-xs text-zinc-300">
+                                      {isEnabled ? "Включен" : "Выключен"}
+                                    </span>
+                                  </label>
+                                </div>
+                              </div>
+                              <p className="text-xs text-zinc-400 italic">
+                                {templateDescription}
+                              </p>
+                            </div>
                             <button
                               onClick={() => {
                                 setConditionalTemplates(conditionalTemplates.filter((_, i) => i !== index));
                               }}
-                              className="px-2 py-1 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded transition-colors"
+                              className="ml-3 px-2 py-1 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded transition-colors"
                             >
-                              Удалить шаблон
+                              Удалить
                             </button>
                           </div>
                           
@@ -3701,19 +3898,27 @@ export default function Dashboard() {
                                         value={condition.type}
                                         onChange={(e) => {
                                           const newTemplates = [...conditionalTemplates];
-                                          const newType = e.target.value as "volume" | "delta" | "series";
+                                          const newType = e.target.value as "volume" | "delta" | "series" | "symbol" | "wick_pct" | "exchange" | "market" | "direction";
                                           newTemplates[index].conditions[condIndex].type = newType;
                                           // Очищаем значения при смене типа
                                           if (newType === "series") {
                                             newTemplates[index].conditions[condIndex].value = undefined;
                                             newTemplates[index].conditions[condIndex].valueMin = undefined;
                                             newTemplates[index].conditions[condIndex].valueMax = undefined;
+                                            newTemplates[index].conditions[condIndex].symbol = undefined;
+                                            newTemplates[index].conditions[condIndex].exchange = undefined;
+                                            newTemplates[index].conditions[condIndex].market = undefined;
+                                            newTemplates[index].conditions[condIndex].direction = undefined;
                                             newTemplates[index].conditions[condIndex].count = 2;
                                             newTemplates[index].conditions[condIndex].timeWindowSeconds = 300;
-                                          } else if (newType === "delta") {
-                                            // Для дельты используем диапазон
+                                          } else if (newType === "delta" || newType === "wick_pct") {
+                                            // Для дельты и тени используем диапазон
                                             newTemplates[index].conditions[condIndex].count = undefined;
                                             newTemplates[index].conditions[condIndex].timeWindowSeconds = undefined;
+                                            newTemplates[index].conditions[condIndex].symbol = undefined;
+                                            newTemplates[index].conditions[condIndex].exchange = undefined;
+                                            newTemplates[index].conditions[condIndex].market = undefined;
+                                            newTemplates[index].conditions[condIndex].direction = undefined;
                                             // Мигрируем старое значение value в valueMin, если оно есть
                                             if (newTemplates[index].conditions[condIndex].value !== undefined) {
                                               newTemplates[index].conditions[condIndex].valueMin = newTemplates[index].conditions[condIndex].value;
@@ -3722,21 +3927,74 @@ export default function Dashboard() {
                                               newTemplates[index].conditions[condIndex].valueMin = 0;
                                             }
                                             newTemplates[index].conditions[condIndex].valueMax = null; // null = бесконечность
+                                          } else if (newType === "symbol") {
+                                            // Для символа - очищаем все числовые поля
+                                            newTemplates[index].conditions[condIndex].value = undefined;
+                                            newTemplates[index].conditions[condIndex].valueMin = undefined;
+                                            newTemplates[index].conditions[condIndex].valueMax = undefined;
+                                            newTemplates[index].conditions[condIndex].count = undefined;
+                                            newTemplates[index].conditions[condIndex].timeWindowSeconds = undefined;
+                                            newTemplates[index].conditions[condIndex].exchange = undefined;
+                                            newTemplates[index].conditions[condIndex].market = undefined;
+                                            newTemplates[index].conditions[condIndex].direction = undefined;
+                                            newTemplates[index].conditions[condIndex].symbol = "";
+                                          } else if (newType === "exchange") {
+                                            newTemplates[index].conditions[condIndex].value = undefined;
+                                            newTemplates[index].conditions[condIndex].valueMin = undefined;
+                                            newTemplates[index].conditions[condIndex].valueMax = undefined;
+                                            newTemplates[index].conditions[condIndex].count = undefined;
+                                            newTemplates[index].conditions[condIndex].timeWindowSeconds = undefined;
+                                            newTemplates[index].conditions[condIndex].symbol = undefined;
+                                            newTemplates[index].conditions[condIndex].market = undefined;
+                                            newTemplates[index].conditions[condIndex].direction = undefined;
+                                            newTemplates[index].conditions[condIndex].exchange = "binance";
+                                          } else if (newType === "market") {
+                                            newTemplates[index].conditions[condIndex].value = undefined;
+                                            newTemplates[index].conditions[condIndex].valueMin = undefined;
+                                            newTemplates[index].conditions[condIndex].valueMax = undefined;
+                                            newTemplates[index].conditions[condIndex].count = undefined;
+                                            newTemplates[index].conditions[condIndex].timeWindowSeconds = undefined;
+                                            newTemplates[index].conditions[condIndex].symbol = undefined;
+                                            newTemplates[index].conditions[condIndex].exchange = undefined;
+                                            newTemplates[index].conditions[condIndex].direction = undefined;
+                                            newTemplates[index].conditions[condIndex].market = "spot";
+                                          } else if (newType === "direction") {
+                                            newTemplates[index].conditions[condIndex].value = undefined;
+                                            newTemplates[index].conditions[condIndex].valueMin = undefined;
+                                            newTemplates[index].conditions[condIndex].valueMax = undefined;
+                                            newTemplates[index].conditions[condIndex].count = undefined;
+                                            newTemplates[index].conditions[condIndex].timeWindowSeconds = undefined;
+                                            newTemplates[index].conditions[condIndex].symbol = undefined;
+                                            newTemplates[index].conditions[condIndex].exchange = undefined;
+                                            newTemplates[index].conditions[condIndex].market = undefined;
+                                            newTemplates[index].conditions[condIndex].direction = "up";
                                           } else {
                                             // Для объёма - одно значение
                                             newTemplates[index].conditions[condIndex].count = undefined;
                                             newTemplates[index].conditions[condIndex].timeWindowSeconds = undefined;
                                             newTemplates[index].conditions[condIndex].valueMin = undefined;
                                             newTemplates[index].conditions[condIndex].valueMax = undefined;
+                                            newTemplates[index].conditions[condIndex].symbol = undefined;
+                                            newTemplates[index].conditions[condIndex].exchange = undefined;
+                                            newTemplates[index].conditions[condIndex].market = undefined;
+                                            newTemplates[index].conditions[condIndex].direction = undefined;
                                             newTemplates[index].conditions[condIndex].value = 0;
                                           }
+                                          // Обновляем описание шаблона
+                                          const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                          newTemplates[index].description = updatedDescription;
                                           setConditionalTemplates(newTemplates);
                                         }}
                                         className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                       >
                                         <option value="volume">Объём (USDT)</option>
                                         <option value="delta">Дельта (%)</option>
+                                        <option value="wick_pct">Тень свечи (%)</option>
                                         <option value="series">Серия стрел</option>
+                                        <option value="symbol">Символ (монета)</option>
+                                        <option value="exchange">Биржа</option>
+                                        <option value="market">Тип рынка</option>
+                                        <option value="direction">Направление стрелы</option>
                                       </select>
                                     </div>
                                     
@@ -3753,6 +4011,8 @@ export default function Dashboard() {
                                               const newTemplates = [...conditionalTemplates];
                                               const val = e.target.value === "" ? 2 : parseInt(e.target.value);
                                               newTemplates[index].conditions[condIndex].count = isNaN(val) ? 2 : Math.max(2, val);
+                                              const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                              newTemplates[index].description = updatedDescription;
                                               setConditionalTemplates(newTemplates);
                                             }}
                                             className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
@@ -3771,6 +4031,8 @@ export default function Dashboard() {
                                               const newTemplates = [...conditionalTemplates];
                                               const val = e.target.value === "" ? 300 : parseInt(e.target.value);
                                               newTemplates[index].conditions[condIndex].timeWindowSeconds = isNaN(val) ? 300 : Math.max(60, val);
+                                              const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                              newTemplates[index].description = updatedDescription;
                                               setConditionalTemplates(newTemplates);
                                             }}
                                             className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
@@ -3798,6 +4060,8 @@ export default function Dashboard() {
                                                 if (newTemplates[index].conditions[condIndex].value !== undefined) {
                                                   delete newTemplates[index].conditions[condIndex].value;
                                                 }
+                                                const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                                newTemplates[index].description = updatedDescription;
                                                 setConditionalTemplates(newTemplates);
                                               }}
                                               className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
@@ -3821,6 +4085,8 @@ export default function Dashboard() {
                                                     newTemplates[index].conditions[condIndex].valueMax = null;
                                                   }
                                                 }
+                                                const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                                newTemplates[index].description = updatedDescription;
                                                 setConditionalTemplates(newTemplates);
                                               }}
                                               onBlur={(e) => {
@@ -3838,6 +4104,151 @@ export default function Dashboard() {
                                           </div>
                                         </div>
                                       </div>
+                                    ) : condition.type === "symbol" ? (
+                                      // Для символа - поле ввода нормализованного символа
+                                      <div className="flex-1">
+                                        <label className="block text-xs text-zinc-400 mb-1">Символ (монета)</label>
+                                        <input
+                                          type="text"
+                                          value={condition.symbol || ""}
+                                          onChange={(e) => {
+                                            const newTemplates = [...conditionalTemplates];
+                                            newTemplates[index].conditions[condIndex].symbol = e.target.value.toUpperCase().trim();
+                                            const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                            newTemplates[index].description = updatedDescription;
+                                            setConditionalTemplates(newTemplates);
+                                          }}
+                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                          placeholder="ETH, BTC, ADA..."
+                                          title="Введите нормализованный символ монеты (например: ETH, BTC, ADA). Условие сработает для всех пар с этой монетой на всех биржах."
+                                        />
+                                        <p className="text-xs text-zinc-500 mt-1">
+                                          Используйте нормализованный формат (ETH, BTC). Условие сработает для всех пар с этой монетой.
+                                        </p>
+                                      </div>
+                                    ) : condition.type === "wick_pct" ? (
+                                      // Для тени свечи - диапазон "от/до"
+                                      <div className="flex-1">
+                                        <label className="block text-xs text-zinc-400 mb-2">Диапазон (%)</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <div>
+                                            <label className="block text-xs text-zinc-500 mb-1">От</label>
+                                            <input
+                                              type="number"
+                                              step="0.1"
+                                              min="0"
+                                              max="100"
+                                              value={condition.valueMin !== undefined ? condition.valueMin : ""}
+                                              onChange={(e) => {
+                                                const newTemplates = [...conditionalTemplates];
+                                                const val = e.target.value === "" ? 0 : parseFloat(e.target.value);
+                                                newTemplates[index].conditions[condIndex].valueMin = isNaN(val) ? 0 : Math.max(0, Math.min(100, val));
+                                                const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                                newTemplates[index].description = updatedDescription;
+                                                setConditionalTemplates(newTemplates);
+                                              }}
+                                              className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                              placeholder="0"
+                                            />
+                                          </div>
+                                          <div>
+                                            <label className="block text-xs text-zinc-500 mb-1">До</label>
+                                            <input
+                                              type="text"
+                                              value={condition.valueMax === null || condition.valueMax === undefined ? "∞" : condition.valueMax}
+                                              onChange={(e) => {
+                                                const newTemplates = [...conditionalTemplates];
+                                                if (e.target.value === "∞" || e.target.value === "" || e.target.value.trim() === "") {
+                                                  newTemplates[index].conditions[condIndex].valueMax = null;
+                                                } else {
+                                                  const numValue = parseFloat(e.target.value);
+                                                  if (!isNaN(numValue)) {
+                                                    newTemplates[index].conditions[condIndex].valueMax = Math.max(0, Math.min(100, numValue));
+                                                  } else {
+                                                    newTemplates[index].conditions[condIndex].valueMax = null;
+                                                  }
+                                                }
+                                                const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                                newTemplates[index].description = updatedDescription;
+                                                setConditionalTemplates(newTemplates);
+                                              }}
+                                              onBlur={(e) => {
+                                                if (e.target.value === "" || e.target.value.trim() === "") {
+                                                  const newTemplates = [...conditionalTemplates];
+                                                  newTemplates[index].conditions[condIndex].valueMax = null;
+                                                  const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                                  newTemplates[index].description = updatedDescription;
+                                                  setConditionalTemplates(newTemplates);
+                                                }
+                                              }}
+                                              placeholder="∞"
+                                              className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                              title="Введите число от 0 до 100 или оставьте ∞ для бесконечности"
+                                            />
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : condition.type === "exchange" ? (
+                                      // Для биржи - выбор из списка
+                                      <div className="flex-1">
+                                        <label className="block text-xs text-zinc-400 mb-1">Биржа</label>
+                                        <select
+                                          value={condition.exchange || "binance"}
+                                          onChange={(e) => {
+                                            const newTemplates = [...conditionalTemplates];
+                                            newTemplates[index].conditions[condIndex].exchange = e.target.value;
+                                            const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                            newTemplates[index].description = updatedDescription;
+                                            setConditionalTemplates(newTemplates);
+                                          }}
+                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                        >
+                                          <option value="binance">Binance</option>
+                                          <option value="gate">Gate</option>
+                                          <option value="bitget">Bitget</option>
+                                          <option value="bybit">Bybit</option>
+                                          <option value="hyperliquid">Hyperliquid</option>
+                                        </select>
+                                      </div>
+                                    ) : condition.type === "market" ? (
+                                      // Для типа рынка - выбор из списка
+                                      <div className="flex-1">
+                                        <label className="block text-xs text-zinc-400 mb-1">Тип рынка</label>
+                                        <select
+                                          value={condition.market || "spot"}
+                                          onChange={(e) => {
+                                            const newTemplates = [...conditionalTemplates];
+                                            newTemplates[index].conditions[condIndex].market = e.target.value as "spot" | "futures" | "linear";
+                                            const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                            newTemplates[index].description = updatedDescription;
+                                            setConditionalTemplates(newTemplates);
+                                          }}
+                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                        >
+                                          <option value="spot">Spot</option>
+                                          <option value="futures">Futures</option>
+                                          <option value="linear">Linear</option>
+                                        </select>
+                                      </div>
+                                    ) : condition.type === "direction" ? (
+                                      // Для направления стрелы - выбор из списка
+                                      <div className="flex-1">
+                                        <label className="block text-xs text-zinc-400 mb-1">Направление стрелы</label>
+                                        <select
+                                          value={condition.direction || "up"}
+                                          onChange={(e) => {
+                                            const newTemplates = [...conditionalTemplates];
+                                            newTemplates[index].conditions[condIndex].direction = e.target.value as "up" | "down";
+                                            const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                            newTemplates[index].description = updatedDescription;
+                                            setConditionalTemplates(newTemplates);
+                                          }}
+                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                        >
+                                          <option value="up">Вверх ⬆️</option>
+                                          <option value="down">Вниз ⬇️</option>
+                                        </select>
+                                      </div>
                                     ) : (
                                       // Для объёма - одно значение как было
                                       <div className="flex-1">
@@ -3850,6 +4261,8 @@ export default function Dashboard() {
                                             const newTemplates = [...conditionalTemplates];
                                             const val = e.target.value === "" ? 0 : parseFloat(e.target.value);
                                             newTemplates[index].conditions[condIndex].value = isNaN(val) ? 0 : val;
+                                            const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                            newTemplates[index].description = updatedDescription;
                                             setConditionalTemplates(newTemplates);
                                           }}
                                           className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
@@ -4128,6 +4541,46 @@ export default function Dashboard() {
                             </p>
                           </div>
                           
+                          {/* Предварительный просмотр */}
+                          <div className="mt-4 pt-4 border-t border-zinc-700">
+                            <div className="flex items-center justify-between mb-2">
+                              <label className="block text-xs font-medium text-zinc-300">
+                                Предварительный просмотр
+                              </label>
+                            </div>
+                            <div className="bg-zinc-900/50 border border-zinc-700/50 rounded-lg p-4">
+                              <div 
+                                className="text-sm text-white whitespace-pre-wrap"
+                                dangerouslySetInnerHTML={{
+                                  __html: (() => {
+                                    // Генерируем предпросмотр с примерными данными
+                                    const previewTemplate = template.template || "";
+                                    const previewReplacements: [string, string][] = [
+                                      ["{delta_formatted}", "5.23%"],
+                                      ["{volume_formatted}", "1,234,567"],
+                                      ["{wick_formatted}", "45.2%"],
+                                      ["{timestamp}", "1704067200000"],
+                                      ["{direction}", "📈"],
+                                      ["{exchange_market}", "BINANCE | SPOT"],
+                                      ["{exchange}", "BINANCE"],
+                                      ["{symbol}", "ETH"],
+                                      ["{market}", "SPOT"],
+                                      ["{time}", "2024-01-01 12:00:00"],
+                                    ];
+                                    let preview = previewTemplate;
+                                    previewReplacements.forEach(([placeholder, value]) => {
+                                      preview = preview.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value);
+                                    });
+                                    return preview;
+                                  })()
+                                }}
+                              />
+                            </div>
+                            <p className="text-xs text-zinc-400 mt-2 italic">
+                              Это пример того, как будет выглядеть сообщение при выполнении всех условий
+                            </p>
+                          </div>
+                          
                           {/* Блок для отдельного Telegram чата */}
                           <div className="mt-4 pt-4 border-t border-zinc-700">
                             <div className="flex items-center justify-between mb-2">
@@ -4189,11 +4642,14 @@ export default function Dashboard() {
                                     </button>
                                   )}
                                 </div>
-                                <p className="text-xs text-zinc-500 mt-1">
-                                  {template.chatId 
-                                    ? `Сообщения будут отправляться в указанный чат (${template.chatId})`
-                                    : `Если не указано, сообщения будут отправляться в основной Chat ID (${telegramChatId || "не указан"})`}
-                                </p>
+                                <div className="mt-1">
+                                  <p className="text-xs text-zinc-500 mb-1">
+                                    {template.chatId 
+                                      ? `Сообщения будут отправляться в указанный чат (${template.chatId})`
+                                      : `Если не указано, сообщения будут отправляться в основной Chat ID (${telegramChatId || "не указан"})`}
+                                  </p>
+                                  <ChatIdHelp variant="compact" />
+                                </div>
                               </div>
                             )}
                             
@@ -4216,6 +4672,8 @@ export default function Dashboard() {
                           setConditionalTemplates([
                             ...conditionalTemplates,
                             {
+                              name: undefined, // Название можно задать позже
+                              enabled: true, // По умолчанию включен
                               conditions: [{
                                 type: "volume",
                                 value: 0,
@@ -4875,8 +5333,9 @@ export default function Dashboard() {
                       type="text"
                       value={newBlacklistSymbol}
                       onChange={(e) => setNewBlacklistSymbol(e.target.value.toUpperCase())}
-                      placeholder="Символ монеты (например, BTC)"
+                      placeholder="Символ монеты (например, BTC или ETHUSDT)"
                       className="flex-1 px-4 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                      title="Можно вводить как нормализованный формат (BTC, ETH), так и исходный формат биржи (BTCUSDT, ETH_USDT)"
                     />
                     <button
                       onClick={() => {

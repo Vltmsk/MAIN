@@ -97,6 +97,9 @@ class SpikeDetector:
             # Сохраняем exchangeSettings для использования в проверке порогов
             exchange_settings = options.get("exchangeSettings", {})
             
+            # Сохраняем pairSettings для индивидуальных настроек пар
+            pair_settings = options.get("pairSettings", {})
+            
             return {
                 "thresholds": thresholds,  # Используем только пользовательские настройки, без дефолтов
                 "exchanges": {
@@ -105,7 +108,8 @@ class SpikeDetector:
                     "bitget": bool(exchanges.get("bitget", default["exchanges"]["bitget"])),
                     "bybit": bool(exchanges.get("bybit", default["exchanges"]["bybit"])),
                 },
-                "exchangeSettings": exchange_settings
+                "exchangeSettings": exchange_settings,
+                "pairSettings": pair_settings
             }
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             logger.warning(f"Ошибка парсинга options_json: {e}, настройки не применятся", extra={
@@ -125,8 +129,56 @@ class SpikeDetector:
                 "bitget": True,
                 "bybit": True,
             },
-            "exchangeSettings": {}
+            "exchangeSettings": {},
+            "pairSettings": {}
         }
+    
+    def _extract_quote_currency(self, symbol: str, exchange: str) -> Optional[str]:
+        """
+        Извлекает котируемую валюту из символа
+        
+        Args:
+            symbol: Символ торговой пары (например, "BTCUSDT", "ETH_TRY", "LTC-TRY")
+            exchange: Название биржи (binance, gate, bitget, bybit)
+            
+        Returns:
+            Optional[str]: Котируемая валюта (USDT, TRY, USDC и т.д.) или None если не удалось определить
+        """
+        # Список известных котируемых валют (в порядке убывания длины для правильного поиска)
+        quote_currencies = [
+            "USDT", "USDC", "TRY", "BTC", "ETH", "BNB", "EUR", "GBP", "AUD", "BRL",
+            "TUSD", "FDUSD", "BIDR", "TRX", "DOGE", "AEUR"
+        ]
+        
+        exchange_lower = exchange.lower()
+        symbol_upper = symbol.upper()
+        
+        # Gate использует подчёркивание: BTC_USDT -> USDT
+        if exchange_lower == "gate" and "_" in symbol_upper:
+            parts = symbol_upper.split("_")
+            if len(parts) >= 2:
+                return parts[-1]  # Последняя часть после подчёркивания
+        
+        # Дефис используется некоторыми биржами: LTC-TRY -> TRY
+        if "-" in symbol_upper:
+            parts = symbol_upper.split("-")
+            if len(parts) >= 2:
+                return parts[-1]  # Последняя часть после дефиса
+        
+        # Слэш используется некоторыми биржами: BTC/USDT -> USDT
+        if "/" in symbol_upper:
+            parts = symbol_upper.split("/")
+            if len(parts) >= 2:
+                return parts[-1]  # Последняя часть после слэша
+        
+        # Для символов без разделителя ищем котируемую валюту в конце символа
+        # Проверяем от самых длинных к коротким (USDT перед USD)
+        for quote in sorted(quote_currencies, key=len, reverse=True):
+            if symbol_upper.endswith(quote):
+                return quote
+        
+        # Если не нашли - возвращаем None
+        return None
     
     def _calculate_delta(self, candle: Candle) -> float:
         """
@@ -208,6 +260,12 @@ class SpikeDetector:
         """
         Проверяет, соответствует ли свеча порогам пользователя
         
+        Логика приоритета настроек:
+        1. Если для конкретной пары есть индивидуальные настройки в pairSettings - используем их
+        2. Если для конкретной пары нет индивидуальных настроек, но есть дополнительные пары для рынка - не применяем детектирование (пара отключена)
+        3. Если дополнительных пар нет - используем глобальные настройки exchangeSettings[exchange][market]
+        4. Если нет exchangeSettings - используем глобальные thresholds
+        
         Args:
             candle: Свеча для проверки
             user_options: Настройки пользователя
@@ -220,12 +278,98 @@ class SpikeDetector:
         wick_pct = self._calculate_wick_pct(candle)
         volume_usdt = self._calculate_volume_usdt(candle)
         
-        # Пытаемся получить настройки из exchangeSettings для конкретной биржи и рынка
-        exchange_settings = user_options.get("exchangeSettings", {})
         exchange_key = candle.exchange.lower()
         market_key = "futures" if candle.market == "linear" else "spot"
         
-        # Используем настройки из exchangeSettings, если они есть
+        # Извлекаем котируемую валюту из символа
+        quote_currency = self._extract_quote_currency(candle.symbol, candle.exchange)
+        
+        # Получаем pairSettings
+        pair_settings = user_options.get("pairSettings", {})
+        
+        # Формируем ключ для поиска индивидуальных настроек пары: {exchange}_{market}_{pair}
+        pair_key = None
+        if quote_currency:
+            pair_key = f"{exchange_key}_{market_key}_{quote_currency}"
+        
+        # ШАГ 1: Проверяем индивидуальные настройки для конкретной пары
+        if pair_key and pair_settings and pair_key in pair_settings:
+            pair_config = pair_settings[pair_key]
+            
+            # Проверяем, включена ли эта пара
+            if not pair_config.get("enabled", True):
+                logger.debug(f"Пара {pair_key} отключена для пользователя")
+                return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+            
+            # Получаем пороги из индивидуальных настроек пары
+            try:
+                delta_str = pair_config.get("delta")
+                volume_str = pair_config.get("volume")
+                shadow_str = pair_config.get("shadow")
+                
+                # Если хотя бы одно значение отсутствует или пустое - не пропускаем детект
+                if delta_str is None or volume_str is None or shadow_str is None:
+                    logger.debug(f"Неполные настройки для пары {pair_key}: delta={delta_str}, volume={volume_str}, shadow={shadow_str}")
+                    return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+                # Проверяем, что значения не пустые строки
+                if delta_str == "" or volume_str == "" or shadow_str == "":
+                    logger.debug(f"Пустые настройки для пары {pair_key}: delta={delta_str}, volume={volume_str}, shadow={shadow_str}")
+                    return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+                delta_min = float(delta_str)
+                volume_min = float(volume_str)
+                wick_pct_max = float(shadow_str)
+
+                # Значение 0 или меньше означает, что пользователь не задал фильтр
+                if delta_min <= 0 or volume_min <= 0 or wick_pct_max <= 0:
+                    logger.debug(
+                        f"Игнорируем фильтры пары {pair_key}: delta={delta_min}, volume={volume_min}, shadow={wick_pct_max} (не заданы пользователем)"
+                    )
+                    return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+                logger.debug(f"Проверка индивидуальных фильтров для пары {pair_key}: delta_min={delta_min}, volume_min={volume_min}, wick_pct_max={wick_pct_max}")
+                logger.debug(f"Фактические значения: delta={delta:.2f}, volume={volume_usdt:.2f}, wick_pct={wick_pct:.2f}")
+                
+                # Проверяем пороги
+                if delta <= delta_min:
+                    logger.debug(f"Дельта {delta:.2f}% <= {delta_min}% - фильтр не пройден (нужно строго больше)")
+                    return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+                if volume_usdt <= volume_min:
+                    logger.debug(f"Объём {volume_usdt:.2f} <= {volume_min} - фильтр не пройден (нужно строго больше)")
+                    return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+                if wick_pct <= wick_pct_max:
+                    logger.debug(f"Тень {wick_pct:.2f}% <= {wick_pct_max}% - фильтр не пройден (нужно строго больше)")
+                    return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+                # Все проверки пройдены
+                logger.debug(f"Все индивидуальные фильтры пройдены для пары {pair_key}: delta={delta:.2f}% > {delta_min}%, volume={volume_usdt:.2f} > {volume_min}, wick_pct={wick_pct:.2f}% > {wick_pct_max}%")
+                return True, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Ошибка парсинга настроек пары {pair_key}: {e}")
+                return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+        
+        # ШАГ 2: Проверяем, есть ли дополнительные пары для этого рынка
+        # Если есть хотя бы одна дополнительная пара с настройками - глобальные настройки не применяются
+        if pair_settings:
+            # Проверяем, есть ли дополнительные пары для этого exchange и market
+            has_additional_pairs = False
+            for key in pair_settings.keys():
+                # Ключ формата: {exchange}_{market}_{pair}
+                if key.startswith(f"{exchange_key}_{market_key}_"):
+                    has_additional_pairs = True
+                    break
+            
+            # Если есть дополнительные пары, но для текущей пары нет настроек - не применяем детектирование
+            if has_additional_pairs:
+                logger.debug(f"Для рынка {exchange_key} {market_key} есть дополнительные пары, но для текущей пары ({quote_currency or 'unknown'}) нет индивидуальных настроек - детектирование не применяется")
+                return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+        
+        # ШАГ 3: Используем глобальные настройки exchangeSettings[exchange][market]
+        exchange_settings = user_options.get("exchangeSettings", {})
         if exchange_settings and exchange_key in exchange_settings:
             exchange_config = exchange_settings[exchange_key]
             market_config = exchange_config.get(market_key, {})
@@ -262,59 +406,77 @@ class SpikeDetector:
                     )
                     return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
                 
-                logger.debug(f"Проверка фильтров для {exchange_key} {market_key}: delta_min={delta_min}, volume_min={volume_min}, wick_pct_max={wick_pct_max}")
+                logger.debug(f"Проверка глобальных фильтров для {exchange_key} {market_key}: delta_min={delta_min}, volume_min={volume_min}, wick_pct_max={wick_pct_max}")
                 logger.debug(f"Фактические значения: delta={delta:.2f}, volume={volume_usdt:.2f}, wick_pct={wick_pct:.2f}")
+                
+                # Проверяем пороги
+                if delta <= delta_min:
+                    logger.debug(f"Дельта {delta:.2f}% <= {delta_min}% - фильтр не пройден (нужно строго больше)")
+                    return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+                if volume_usdt <= volume_min:
+                    logger.debug(f"Объём {volume_usdt:.2f} <= {volume_min} - фильтр не пройден (нужно строго больше)")
+                    return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+                if wick_pct <= wick_pct_max:
+                    logger.debug(f"Тень {wick_pct:.2f}% <= {wick_pct_max}% - фильтр не пройден (нужно строго больше)")
+                    return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
+                # Все проверки пройдены
+                logger.debug(f"Все глобальные фильтры пройдены для {exchange_key} {market_key}: delta={delta:.2f}% > {delta_min}%, volume={volume_usdt:.2f} > {volume_min}, wick_pct={wick_pct:.2f}% > {wick_pct_max}%")
+                return True, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+                
             except (ValueError, TypeError) as e:
                 logger.warning(f"Ошибка парсинга настроек биржи {exchange_key} {market_key}: {e}")
                 return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
-        else:
-            # Если нет настроек в exchangeSettings, проверяем глобальные thresholds
-            thresholds = user_options.get("thresholds", {})
-            
-            # Если нет настроек вообще - не пропускаем детект
-            if not thresholds:
-                return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
-            
-            # Используем глобальные пороги (БЕЗ дефолтных значений)
-            delta_min = thresholds.get("delta_pct")
-            volume_min = thresholds.get("volume_usdt")
-            wick_pct_max = thresholds.get("wick_pct")
-            
-            # Если хотя бы одно значение отсутствует - не пропускаем детект
-            if delta_min is None or volume_min is None or wick_pct_max is None:
-                return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
-
-            try:
-                delta_min = float(delta_min)
-                volume_min = float(volume_min)
-                wick_pct_max = float(wick_pct_max)
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Ошибка парсинга глобальных порогов пользователя: {e}")
-                return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
-
-            if delta_min <= 0 or volume_min <= 0:
-                logger.debug(
-                    f"Игнорируем глобальные пороги: delta={delta_min}, volume={volume_min} (не заданы пользователем)"
-                )
-                return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
         
-        # Дельта должна быть СТРОГО больше установленной пользователем
+        # ШАГ 4: Если нет exchangeSettings, проверяем глобальные thresholds
+        thresholds = user_options.get("thresholds", {})
+        
+        # Если нет настроек вообще - не пропускаем детект
+        if not thresholds:
+            logger.debug(f"Нет настроек фильтров для {exchange_key} {market_key} {candle.symbol}")
+            return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+        
+        # Используем глобальные пороги (БЕЗ дефолтных значений)
+        delta_min = thresholds.get("delta_pct")
+        volume_min = thresholds.get("volume_usdt")
+        wick_pct_max = thresholds.get("wick_pct")
+        
+        # Если хотя бы одно значение отсутствует - не пропускаем детект
+        if delta_min is None or volume_min is None or wick_pct_max is None:
+            logger.debug(f"Неполные глобальные пороги: delta_pct={delta_min}, volume_usdt={volume_min}, wick_pct={wick_pct_max}")
+            return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+
+        try:
+            delta_min = float(delta_min)
+            volume_min = float(volume_min)
+            wick_pct_max = float(wick_pct_max)
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Ошибка парсинга глобальных порогов пользователя: {e}")
+            return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+
+        if delta_min <= 0 or volume_min <= 0:
+            logger.debug(
+                f"Игнорируем глобальные пороги: delta={delta_min}, volume={volume_min} (не заданы пользователем)"
+            )
+            return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
+        
+        # Проверяем пороги
         if delta <= delta_min:
             logger.debug(f"Дельта {delta:.2f}% <= {delta_min}% - фильтр не пройден (нужно строго больше)")
             return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
         
-        # Объём должен быть СТРОГО больше установленного пользователем
         if volume_usdt <= volume_min:
             logger.debug(f"Объём {volume_usdt:.2f} <= {volume_min} - фильтр не пройден (нужно строго больше)")
             return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
         
-        # Тень должна быть СТРОГО больше установленной пользователем
         if wick_pct <= wick_pct_max:
             logger.debug(f"Тень {wick_pct:.2f}% <= {wick_pct_max}% - фильтр не пройден (нужно строго больше)")
             return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
         
         # Все проверки пройдены
-        logger.debug(f"Все фильтры пройдены для {exchange_key} {market_key}: delta={delta:.2f}% > {delta_min}%, volume={volume_usdt:.2f} > {volume_min}, wick_pct={wick_pct:.2f}% > {wick_pct_max}%")
+        logger.debug(f"Все глобальные пороги пройдены: delta={delta:.2f}% > {delta_min}%, volume={volume_usdt:.2f} > {volume_min}, wick_pct={wick_pct:.2f}% > {wick_pct_max}%")
         return True, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
     
     def _get_series_count(self, user_id: int, candle: Candle, time_window_seconds: float, 
