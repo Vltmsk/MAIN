@@ -107,6 +107,7 @@ class SpikeDetector:
                     "binance": bool(exchanges.get("binance", default["exchanges"]["binance"])),
                     "bitget": bool(exchanges.get("bitget", default["exchanges"]["bitget"])),
                     "bybit": bool(exchanges.get("bybit", default["exchanges"]["bybit"])),
+                    "hyperliquid": bool(exchanges.get("hyperliquid", default["exchanges"]["hyperliquid"])),
                 },
                 "exchangeSettings": exchange_settings,
                 "pairSettings": pair_settings
@@ -128,6 +129,7 @@ class SpikeDetector:
                 "binance": True,
                 "bitget": True,
                 "bybit": True,
+                "hyperliquid": True,
             },
             "exchangeSettings": {},
             "pairSettings": {}
@@ -139,7 +141,7 @@ class SpikeDetector:
         
         Args:
             symbol: Символ торговой пары (например, "BTCUSDT", "ETH_TRY", "LTC-TRY")
-            exchange: Название биржи (binance, gate, bitget, bybit)
+            exchange: Название биржи (binance, gate, bitget, bybit, hyperliquid)
             
         Returns:
             Optional[str]: Котируемая валюта (USDT, TRY, USDC и т.д.) или None если не удалось определить
@@ -251,6 +253,7 @@ class SpikeDetector:
             "gate": "gate",
             "bitget": "bitget",
             "bybit": "bybit",
+            "hyperliquid": "hyperliquid",
         }
         
         exchange_key = exchange_map.get(exchange.lower(), exchange.lower())
@@ -353,7 +356,8 @@ class SpikeDetector:
                 return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
         
         # ШАГ 2: Проверяем, есть ли дополнительные пары для этого рынка
-        # Если есть хотя бы одна дополнительная пара с настройками - глобальные настройки не применяются
+        # Если есть хотя бы одна дополнительная пара с настройками для этого рынка, но для текущей пары нет индивидуальных настроек,
+        # значит пользователь отключил или не включал отслеживание детектов для этой пары - детектирование не применяется
         if pair_settings:
             # Проверяем, есть ли дополнительные пары для этого exchange и market
             has_additional_pairs = False
@@ -363,9 +367,10 @@ class SpikeDetector:
                     has_additional_pairs = True
                     break
             
-            # Если есть дополнительные пары, но для текущей пары нет настроек - не применяем детектирование
+            # Если есть дополнительные пары для этого рынка, но для текущей пары нет индивидуальных настроек
+            # Значит пользователь не включил отслеживание для этой пары - детектирование не применяется
             if has_additional_pairs:
-                logger.debug(f"Для рынка {exchange_key} {market_key} есть дополнительные пары, но для текущей пары ({quote_currency or 'unknown'}) нет индивидуальных настроек - детектирование не применяется")
+                logger.debug(f"Для рынка {exchange_key} {market_key} есть дополнительные пары, но для текущей пары ({quote_currency or 'unknown'}) нет индивидуальных настроек - детектирование не применяется (пара не включена пользователем)")
                 return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
         
         # ШАГ 3: Используем глобальные настройки exchangeSettings[exchange][market]
@@ -598,47 +603,63 @@ class SpikeDetector:
         users = self._get_users()
         
         for user in users:
-            # Пропускаем пользователей без настроек Telegram (опционально, можно убрать)
-            # if not user.get("tg_token") or not user.get("chat_id"):
-            #     continue
-            
-            # Парсим настройки пользователя
-            user_options = self._parse_user_options(user.get("options_json", "{}"))
-            user_name = user.get("user", "Unknown")
-            user_id = user["id"]
-            
-            # Проверяем, включена ли эта биржа для пользователя
-            if not self._check_exchange_filter(candle.exchange, user_options):
-                logger.debug(f"Биржа {candle.exchange} отключена для пользователя {user_name}")
-                continue
-            
-            # Проверяем, есть ли у пользователя хотя бы какие-то настройки фильтров
-            # Если нет ни exchangeSettings, ни thresholds - пропускаем пользователя
-            exchange_settings = user_options.get("exchangeSettings", {})
-            thresholds = user_options.get("thresholds", {})
-            
-            if not exchange_settings and not thresholds:
-                logger.debug(f"У пользователя {user_name} нет настроек фильтров - пропускаем")
-                continue
-            
-            # Проверяем пороги
-            matches, metrics = self._check_thresholds(candle, user_options)
-            
-            if matches:
-                logger.info(f"Стрела обнаружена для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
+            try:
+                # Пропускаем пользователей без настроек Telegram (опционально, можно убрать)
+                # if not user.get("tg_token") or not user.get("chat_id"):
+                #     continue
                 
-                # Добавляем стрелу в трекер серий с параметрами
-                self._add_spike_to_series(user_id, candle, metrics["delta"], metrics["volume_usdt"])
+                # Парсим настройки пользователя
+                user_options = self._parse_user_options(user.get("options_json", "{}"))
+                user_name = user.get("user", "Unknown")
+                user_id = user["id"]
                 
-                detected_spikes.append({
-                    "user_id": user_id,
-                    "user_name": user["user"],
-                    "delta": metrics["delta"],
-                    "wick_pct": metrics["wick_pct"],
-                    "volume_usdt": metrics["volume_usdt"],
+                # Проверяем, включена ли эта биржа для пользователя
+                if not self._check_exchange_filter(candle.exchange, user_options):
+                    logger.debug(f"Биржа {candle.exchange} отключена для пользователя {user_name}")
+                    continue
+                
+                # Проверяем, есть ли у пользователя хотя бы какие-то настройки фильтров
+                # Если нет ни exchangeSettings, ни thresholds - пропускаем пользователя
+                exchange_settings = user_options.get("exchangeSettings", {})
+                thresholds = user_options.get("thresholds", {})
+                
+                if not exchange_settings and not thresholds:
+                    logger.debug(f"У пользователя {user_name} нет настроек фильтров - пропускаем")
+                    continue
+                
+                # Проверяем пороги
+                matches, metrics = self._check_thresholds(candle, user_options)
+                
+                if matches:
+                    logger.info(f"Стрела обнаружена для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
+                    
+                    # Добавляем стрелу в трекер серий с параметрами
+                    self._add_spike_to_series(user_id, candle, metrics["delta"], metrics["volume_usdt"])
+                    
+                    detected_spikes.append({
+                        "user_id": user_id,
+                        "user_name": user["user"],
+                        "delta": metrics["delta"],
+                        "wick_pct": metrics["wick_pct"],
+                        "volume_usdt": metrics["volume_usdt"],
+                    })
+                else:
+                    logger.debug(f"Стрела НЕ прошла фильтры для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
+            except Exception as e:
+                # Обрабатываем ошибки для каждого пользователя отдельно, чтобы ошибка одного не влияла на других
+                try:
+                    user_name = user.get("user", "Unknown")
+                except:
+                    user_name = "Unknown"
+                logger.error(f"Ошибка при обработке пользователя {user_name} для свечи {candle.exchange} {candle.market} {candle.symbol}: {e}", exc_info=True, extra={
+                    "log_to_db": True,
+                    "error_type": "spike_detection_user_error",
+                    "exchange": candle.exchange,
+                    "market": candle.market,
+                    "symbol": candle.symbol,
                 })
-            else:
-                logger.debug(f"Стрела НЕ прошла фильтры для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
+                # Продолжаем обработку других пользователей
+                continue
         
         return detected_spikes
     
