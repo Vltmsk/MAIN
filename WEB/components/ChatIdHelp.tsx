@@ -145,50 +145,6 @@ export default function ChatIdHelp({ variant = "default", showBotTokenWarning = 
             </ol>
           </div>
 
-          {/* Альтернативный способ для личного чата */}
-          <div className="pt-3 border-t border-zinc-700">
-            <h4 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-              <span>💬</span> Альтернативный способ (для личного чата):
-            </h4>
-            <ol className="space-y-2 text-sm text-zinc-300">
-              <li className="flex gap-3">
-                <span className="flex-shrink-0 w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xs">1</span>
-                <div>
-                  <p className="font-medium text-white mb-1">Напишите боту в личку</p>
-                  <p className="text-zinc-400">
-                    Откройте Telegram и найдите бота{" "}
-                    <a 
-                      href="tg://resolve?domain=getmyid_bot" 
-                      className="text-emerald-400 hover:text-emerald-300 underline font-medium"
-                    >
-                      @getmyid_bot
-                    </a>
-                    . Напишите боту любое сообщение или отправьте <code className="bg-zinc-900 px-1 rounded">/start</code>.
-                  </p>
-                </div>
-              </li>
-              <li className="flex gap-3">
-                <span className="flex-shrink-0 w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xs">2</span>
-                <div>
-                  <p className="font-medium text-white mb-1">Получите ваш ID</p>
-                  <p className="text-zinc-400">
-                    Бот автоматически отправит вам сообщение с вашим ID.
-                    Используйте значение из строки <strong className="text-emerald-400">"Your ID"</strong> (положительное число).
-                  </p>
-                </div>
-              </li>
-              <li className="flex gap-3">
-                <span className="flex-shrink-0 w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xs">3</span>
-                <div>
-                  <p className="font-medium text-white mb-1">Вставьте в поле</p>
-                  <p className="text-zinc-400">
-                    Скопируйте число и вставьте в поле "Chat ID" выше.
-                  </p>
-                </div>
-              </li>
-            </ol>
-          </div>
-
           {/* Важные примечания */}
           <div className="pt-3 border-t border-zinc-700">
             <h4 className="text-sm font-semibold text-white mb-2 flex items-center gap-2">
@@ -346,15 +302,14 @@ export default function ChatIdHelp({ variant = "default", showBotTokenWarning = 
             <div className="flex-1 text-sm">
               <p className="font-semibold text-yellow-400 mb-1">Важно:</p>
               <p className="text-zinc-300">
-                Создайте отдельного бота через{" "}
+                Добавьте своего созданного через{" "}
                 <a 
                   href="tg://resolve?domain=BotFather" 
                   className="text-emerald-400 hover:text-emerald-300 underline font-medium"
                 >
                   @BotFather
                 </a>
-                {" "}и используйте его <strong>только для получения сигналов с этого сайта</strong>. 
-                Не используйте этого бота для других целей.
+                {" "}бота в группу, чтобы получать туда детекты.
               </p>
             </div>
           </div>

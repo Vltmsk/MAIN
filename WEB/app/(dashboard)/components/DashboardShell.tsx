@@ -3313,9 +3313,6 @@ export default function Dashboard() {
                           <p className="mt-1 text-xs text-red-400">{telegramBotTokenError}</p>
                         ) : (
                           <div className="mt-1">
-                            <p className="text-xs text-zinc-500 mb-2">
-                              Получите Bot Token через @BotFather в Telegram
-                            </p>
                             <ChatIdHelp showBotTokenWarning={true} forBotToken={true} />
                           </div>
                         )}
@@ -4064,68 +4061,31 @@ export default function Dashboard() {
                                         </div>
                                       </>
                                     ) : condition.type === "delta" ? (
-                                      // Для дельты - диапазон "от/до"
+                                      // Для дельты - только минимум, максимум всегда бесконечность
                                       <div className="flex-1">
-                                        <label className="block text-xs text-zinc-400 mb-2">Диапазон (%)</label>
-                                        <div className="grid grid-cols-2 gap-2">
-                                          <div>
-                                            <label className="block text-xs text-zinc-500 mb-1">От</label>
-                                            <input
-                                              type="number"
-                                              step="0.1"
-                                              min="0"
-                                              value={condition.valueMin !== undefined ? condition.valueMin : (condition.value !== undefined ? condition.value : "")}
-                                              onChange={(e) => {
-                                                const newTemplates = [...conditionalTemplates];
-                                                const val = e.target.value === "" ? 0 : parseFloat(e.target.value);
-                                                newTemplates[index].conditions[condIndex].valueMin = isNaN(val) ? 0 : val;
-                                                // Удаляем старое поле value для обратной совместимости
-                                                if (newTemplates[index].conditions[condIndex].value !== undefined) {
-                                                  delete newTemplates[index].conditions[condIndex].value;
-                                                }
-                                                const updatedDescription = generateTemplateDescription(newTemplates[index]);
-                                                newTemplates[index].description = updatedDescription;
-                                                setConditionalTemplates(newTemplates);
-                                              }}
-                                              className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                              placeholder="0"
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="block text-xs text-zinc-500 mb-1">До</label>
-                                            <input
-                                              type="text"
-                                              value={condition.valueMax === null || condition.valueMax === undefined ? "∞" : condition.valueMax}
-                                              onChange={(e) => {
-                                                const newTemplates = [...conditionalTemplates];
-                                                if (e.target.value === "∞" || e.target.value === "" || e.target.value.trim() === "") {
-                                                  newTemplates[index].conditions[condIndex].valueMax = null; // null = бесконечность
-                                                } else {
-                                                  const numValue = parseFloat(e.target.value);
-                                                  if (!isNaN(numValue)) {
-                                                    newTemplates[index].conditions[condIndex].valueMax = numValue;
-                                                  } else {
-                                                    newTemplates[index].conditions[condIndex].valueMax = null;
-                                                  }
-                                                }
-                                                const updatedDescription = generateTemplateDescription(newTemplates[index]);
-                                                newTemplates[index].description = updatedDescription;
-                                                setConditionalTemplates(newTemplates);
-                                              }}
-                                              onBlur={(e) => {
-                                                // При потере фокуса, если поле пустое, устанавливаем ∞
-                                                if (e.target.value === "" || e.target.value.trim() === "") {
-                                                  const newTemplates = [...conditionalTemplates];
-                                                  newTemplates[index].conditions[condIndex].valueMax = null;
-                                                  setConditionalTemplates(newTemplates);
-                                                }
-                                              }}
-                                              placeholder="∞"
-                                              className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                              title="Введите число или оставьте ∞ для бесконечности"
-                                            />
-                                          </div>
-                                        </div>
+                                        <label className="block text-xs text-zinc-400 mb-1">Дельта (%)</label>
+                                        <input
+                                          type="number"
+                                          step="0.1"
+                                          min="0"
+                                          value={condition.valueMin !== undefined ? condition.valueMin : (condition.value !== undefined ? condition.value : "")}
+                                          onChange={(e) => {
+                                            const newTemplates = [...conditionalTemplates];
+                                            const val = e.target.value === "" ? 0 : parseFloat(e.target.value);
+                                            newTemplates[index].conditions[condIndex].valueMin = isNaN(val) ? 0 : val;
+                                            // Всегда устанавливаем valueMax = null (бесконечность) для дельты
+                                            newTemplates[index].conditions[condIndex].valueMax = null;
+                                            // Удаляем старое поле value для обратной совместимости
+                                            if (newTemplates[index].conditions[condIndex].value !== undefined) {
+                                              delete newTemplates[index].conditions[condIndex].value;
+                                            }
+                                            const updatedDescription = generateTemplateDescription(newTemplates[index]);
+                                            newTemplates[index].description = updatedDescription;
+                                            setConditionalTemplates(newTemplates);
+                                          }}
+                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                          placeholder="0"
+                                        />
                                       </div>
                                     ) : condition.type === "symbol" ? (
                                       // Для символа - поле ввода нормализованного символа
@@ -5363,7 +5323,7 @@ export default function Dashboard() {
                                   {group.market}
                                 </span>
                                 {group.rows.length > 0 && group.rows[0].pair === null && (
-                                  <span className="text-xs text-zinc-500">(все пары)</span>
+                                  <span className="text-xs text-zinc-500">USDT</span>
                                 )}
                               </div>
                               {group.rows.length > 1 || (group.rows.length === 1 && group.rows[0].pair !== null) ? (
