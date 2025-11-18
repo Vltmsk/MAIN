@@ -9,6 +9,7 @@ $ServiceMap = @{
     "CryptoSpikesWeb" = "Web"
 }
 $LogFile = "C:\onlyWS\deploy.log"
+$LastDeployFile = "C:\onlyWS\.last_deploy_hash"  # Файл для отслеживания последнего развернутого коммита
 
 # Функция для логирования
 function Write-Log {
@@ -156,21 +157,60 @@ $remoteHash = $null
 $localHash = $null
 
 try {
+    # Проверяем статус рабочей директории
+    $workingTreeStatus = git status --porcelain 2>&1
+    if ($workingTreeStatus -and $LASTEXITCODE -eq 0) {
+        $modifiedFiles = ($workingTreeStatus -split "`n" | Where-Object { $_ -ne "" -and $_ -match "^[^?]" })
+        if ($modifiedFiles.Count -gt 0) {
+            Write-Log "ВНИМАНИЕ: Обнаружены незакоммиченные изменения в рабочей директории:"
+            foreach ($file in $modifiedFiles) {
+                Write-Log "  $file"
+            }
+        }
+    }
+    
     # Получение информации об удаленном репозитории
-    git fetch origin 2>&1 | Out-Null
+    $fetchOutput = git fetch origin 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "ПРЕДУПРЕЖДЕНИЕ: Ошибка при git fetch: $fetchOutput"
+    }
     
     # Получение хешей коммитов
     $remoteHash = git rev-parse origin/$currentBranch 2>&1
-    $localHash = git rev-parse HEAD 2>&1
-    
     if ($LASTEXITCODE -ne 0) {
-        Write-Log "ОШИБКА: Не удалось получить информацию о коммитах"
+        Write-Log "ОШИБКА: Не удалось получить удаленный хеш коммита для origin/$currentBranch"
         exit 1
+    }
+    
+    $localHash = git rev-parse HEAD 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "ОШИБКА: Не удалось получить локальный хеш коммита"
+        exit 1
+    }
+    
+    # Проверяем последний развернутый коммит (защита от повторных перезагрузок)
+    $lastDeployedHash = $null
+    if (Test-Path $LastDeployFile) {
+        $lastDeployedHash = (Get-Content $LastDeployFile -ErrorAction SilentlyContinue).Trim()
+        if ($lastDeployedHash -eq $remoteHash) {
+            Write-Log "Удаленный коммит уже развернут. Хеш: $remoteHash. Перезагрузка не требуется."
+            # Обновляем локальный репозиторий, если нужно
+            if ($localHash -ne $remoteHash) {
+                Write-Log "Локальный репозиторий отстает, синхронизируем..."
+                git pull origin $currentBranch 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Log "Синхронизация завершена"
+                }
+            }
+            exit 0
+        }
     }
     
     # Сравнение хешей
     if ($remoteHash -eq $localHash) {
         Write-Log "Изменений не обнаружено. Локальный коммит: $localHash"
+        # Обновляем метку последнего развернутого коммита
+        $remoteHash | Set-Content -Path $LastDeployFile -ErrorAction SilentlyContinue
         exit 0
     }
     
@@ -180,23 +220,56 @@ try {
     Write-Log "Анализируем измененные файлы..."
     $changedFiles = Get-ChangedFiles -LocalHash $localHash -RemoteHash $remoteHash
     
+    # Если не удалось определить измененные файлы, проверяем через git diff еще раз
     if ($changedFiles.Count -eq 0) {
-        Write-Log "Не удалось определить измененные файлы, перезагружаем все службы"
-        $servicesToReload = @{
-            "CryptoSpikesMain" = @{"needsPythonDeps" = $true}
-            "CryptoSpikesAPI" = @{"needsPythonDeps" = $true}
-            "CryptoSpikesWeb" = @{"needsNodeDeps" = $true}
+        Write-Log "Попытка альтернативного метода определения изменений..."
+        try {
+            $diffOutput = git diff --name-only HEAD origin/$currentBranch 2>&1
+            if ($LASTEXITCODE -eq 0 -and $diffOutput) {
+                $changedFiles = $diffOutput -split "`n" | Where-Object { $_ -ne "" }
+                Write-Log "Альтернативный метод: обнаружено файлов: $($changedFiles.Count)"
+            }
+        } catch {
+            Write-Log "Альтернативный метод также не дал результатов"
         }
-    } else {
-        Write-Log "Обнаружено измененных файлов: $($changedFiles.Count)"
-        $servicesToReload = Get-ServicesToReload -ChangedFiles $changedFiles
     }
+    
+    # Если все еще не удалось определить файлы, просто синхронизируем код без перезагрузки
+    if ($changedFiles.Count -eq 0) {
+        Write-Log "Не удалось определить измененные файлы. Выполняем синхронизацию без перезагрузки служб"
+        git pull origin $currentBranch 2>&1 | ForEach-Object {
+            Write-Log $_
+        }
+        
+        # Проверяем после pull, действительно ли были изменения
+        $newLocalHash = git rev-parse HEAD 2>&1
+        if ($newLocalHash -eq $remoteHash) {
+            Write-Log "Код синхронизирован. Хеши совпадают: $newLocalHash"
+        } else {
+            Write-Log "ВНИМАНИЕ: После pull хеши все еще различаются. Локальный: $newLocalHash, Удаленный: $remoteHash"
+        }
+        exit 0
+    }
+    
+    Write-Log "Обнаружено измененных файлов: $($changedFiles.Count)"
+    foreach ($file in $changedFiles) {
+        Write-Log "  Изменен: $file"
+    }
+    
+    $servicesToReload = Get-ServicesToReload -ChangedFiles $changedFiles
     
     if ($servicesToReload.Count -eq 0) {
         Write-Log "Нет служб для перезагрузки (изменены только служебные файлы)"
         # Всё равно делаем pull, чтобы синхронизировать код
-        git pull origin $currentBranch 2>&1 | Out-Null
-        Write-Log "Код синхронизирован, перезагрузка не требуется"
+        git pull origin $currentBranch 2>&1 | ForEach-Object {
+            Write-Log $_
+        }
+        
+        # Проверяем после pull
+        $newLocalHash = git rev-parse HEAD 2>&1
+        if ($newLocalHash -eq $remoteHash) {
+            Write-Log "Код синхронизирован, перезагрузка не требуется. Хеш: $newLocalHash"
+        }
         exit 0
     }
     
@@ -238,6 +311,14 @@ try {
         exit 1
     }
     
+    # Проверяем после pull, что хеши совпадают
+    $newLocalHash = git rev-parse HEAD 2>&1
+    if ($newLocalHash -ne $remoteHash) {
+        Write-Log "ПРЕДУПРЕЖДЕНИЕ: После pull хеши все еще различаются. Локальный: $newLocalHash, Ожидался: $remoteHash"
+    } else {
+        Write-Log "Подтверждение: Код успешно обновлен. Новый хеш: $newLocalHash"
+    }
+    
     # Определяем, нужны ли обновления зависимостей
     $needsPythonDeps = ($servicesToReload.Values | Where-Object { $_.needsPythonDeps }).Count -gt 0
     $needsNodeDeps = ($servicesToReload.Values | Where-Object { $_.needsNodeDeps }).Count -gt 0
@@ -271,6 +352,13 @@ try {
     }
     
     Write-Log "Обновление завершено успешно! Перезагружено служб: $($servicesToReload.Count)"
+    
+    # Сохраняем хеш развернутого коммита
+    $finalHash = git rev-parse HEAD 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $finalHash | Set-Content -Path $LastDeployFile -ErrorAction SilentlyContinue
+        Write-Log "Сохранен хеш развернутого коммита: $finalHash"
+    }
     
 } catch {
     Write-Log "КРИТИЧЕСКАЯ ОШИБКА: $($_.Exception.Message)"
