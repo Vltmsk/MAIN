@@ -1491,8 +1491,11 @@ export default function Dashboard() {
     const extractedText = extractTextFromEditor();
     
     // Объединяем настройки графиков в pairSettings и exchangeSettings
-    const pairSettingsWithCharts = { ...pairSettings };
-    const exchangeSettingsWithCharts = { ...exchangeSettings };
+    const pairSettingsWithCharts: Record<string, { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean }> = { ...pairSettings };
+    const exchangeSettingsWithCharts: Record<string, {
+      spot: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean };
+      futures: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean };
+    }> = { ...exchangeSettings };
     
     // Добавляем sendChart в pairSettings
     Object.keys(chartSettings).forEach((key) => {
