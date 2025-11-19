@@ -3864,7 +3864,7 @@ export default function Dashboard() {
                       onContextMenu={handleContextMenu}
                       onKeyDown={handleKeyDown}
                       onClick={() => setContextMenu(null)}
-                      className="w-full min-h-64 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
+                      className="w-auto max-w-2xl min-h-64 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
                       style={{ whiteSpace: 'pre-wrap' }}
                       onPaste={(e) => {
                         // Разрешаем вставку emoji из буфера обмена
@@ -4062,7 +4062,7 @@ export default function Dashboard() {
                                     setConditionalTemplates(newTemplates);
                                   }}
                                   placeholder={`Шаблон #${index + 1}`}
-                                  className="flex-1 px-3 py-1.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  className="w-64 px-3 py-1.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                 />
                                 <div className="flex items-center gap-2">
                                   <label className="flex items-center gap-2 cursor-pointer">
@@ -4212,7 +4212,7 @@ export default function Dashboard() {
                                           newTemplates[index].description = updatedDescription;
                                           setConditionalTemplates(newTemplates);
                                         }}
-                                        className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                        className="w-48 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                       >
                                         <option value="volume">Объём (USDT)</option>
                                         <option value="delta">Дельта (%)</option>
@@ -4242,7 +4242,7 @@ export default function Dashboard() {
                                               newTemplates[index].description = updatedDescription;
                                               setConditionalTemplates(newTemplates);
                                             }}
-                                            className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                            className="w-32 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                             placeholder="2"
                                           />
                                         </div>
@@ -4262,7 +4262,7 @@ export default function Dashboard() {
                                               newTemplates[index].description = updatedDescription;
                                               setConditionalTemplates(newTemplates);
                                             }}
-                                            className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                            className="w-32 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                             placeholder="300"
                                           />
                                         </div>
@@ -4290,7 +4290,7 @@ export default function Dashboard() {
                                             newTemplates[index].description = updatedDescription;
                                             setConditionalTemplates(newTemplates);
                                           }}
-                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                          className="w-32 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                           placeholder="0"
                                         />
                                       </div>
@@ -4308,7 +4308,7 @@ export default function Dashboard() {
                                             newTemplates[index].description = updatedDescription;
                                             setConditionalTemplates(newTemplates);
                                           }}
-                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                          className="w-40 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                           placeholder="ETH, BTC, ADA..."
                                           title="Введите нормализованный символ монеты (например: ETH, BTC, ADA). Условие сработает для всех пар с этой монетой на всех биржах."
                                         />
@@ -4337,7 +4337,7 @@ export default function Dashboard() {
                                                 newTemplates[index].description = updatedDescription;
                                                 setConditionalTemplates(newTemplates);
                                               }}
-                                              className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                              className="w-24 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                               placeholder="0"
                                             />
                                           </div>
@@ -4372,7 +4372,7 @@ export default function Dashboard() {
                                                 }
                                               }}
                                               placeholder="∞"
-                                              className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                              className="w-24 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                               title="Введите число от 0 до 100 или оставьте ∞ для бесконечности"
                                             />
                                           </div>
@@ -4391,7 +4391,7 @@ export default function Dashboard() {
                                             newTemplates[index].description = updatedDescription;
                                             setConditionalTemplates(newTemplates);
                                           }}
-                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                          className="w-40 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                         >
                                           <option value="binance">Binance</option>
                                           <option value="gate">Gate</option>
@@ -4413,7 +4413,7 @@ export default function Dashboard() {
                                             newTemplates[index].description = updatedDescription;
                                             setConditionalTemplates(newTemplates);
                                           }}
-                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                          className="w-32 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                         >
                                           <option value="spot">Spot</option>
                                           <option value="futures">Futures</option>
@@ -4433,7 +4433,7 @@ export default function Dashboard() {
                                             newTemplates[index].description = updatedDescription;
                                             setConditionalTemplates(newTemplates);
                                           }}
-                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                          className="w-40 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                         >
                                           <option value="up">Вверх ⬆️</option>
                                           <option value="down">Вниз ⬇️</option>
@@ -4455,7 +4455,7 @@ export default function Dashboard() {
                                             newTemplates[index].description = updatedDescription;
                                             setConditionalTemplates(newTemplates);
                                           }}
-                                          className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                          className="w-32 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                           placeholder="0"
                                         />
                                       </div>
@@ -4674,7 +4674,7 @@ export default function Dashboard() {
                                 newTemplates[index].template = convertToTechnicalKeys(textContent);
                                 setConditionalTemplates(newTemplates);
                               }}
-                              className="w-full min-h-32 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
+                              className="w-auto max-w-2xl min-h-32 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
                               style={{ whiteSpace: 'pre-wrap' }}
                               onPaste={(e) => {
                                 // Разрешаем вставку emoji из буфера обмена
@@ -4831,7 +4831,7 @@ export default function Dashboard() {
                                       setConditionalTemplates(newTemplates);
                                     }}
                                     placeholder={telegramChatId || "Введите Chat ID"}
-                                    className="flex-1 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                    className="w-64 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                   />
                                   {!template.chatId && (
                                     <button
@@ -4940,7 +4940,7 @@ export default function Dashboard() {
                     
                     {/* Компактная таблица настроек */}
                     <div className="overflow-x-auto">
-                      <table className="w-full border-collapse">
+                      <table className="border-collapse">
                         <thead>
                           <tr className="border-b border-zinc-700">
                             <th className="text-left py-2 px-3 text-sm font-semibold text-zinc-300">Биржа</th>
@@ -5068,7 +5068,7 @@ export default function Dashboard() {
                       onClick={async () => {
                         await saveAllSettings();
                       }}
-                      className="w-full px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-medium rounded-lg smooth-transition ripple hover-glow shadow-emerald"
+                      className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-medium rounded-lg smooth-transition ripple hover-glow shadow-emerald"
                     >
                       Сохранить настройки графиков
                     </button>
@@ -5181,10 +5181,10 @@ export default function Dashboard() {
                             <div className="px-4 pb-4">
                               {showPairsImmediately ? (
                                 // Для Binance Spot, Binance Futures и Bybit Spot - показываем таблицу всех пар
-                                <div className="bg-zinc-900 rounded-lg p-4 border border-zinc-700">
+                                <div className="bg-zinc-900 rounded-lg p-4 border border-zinc-700 inline-block">
                                   <h4 className="text-sm font-medium text-white mb-4">Торговые пары</h4>
                                   <div className="overflow-x-auto">
-                                    <table className="w-full border-collapse">
+                                    <table className="border-collapse">
                                       <thead>
                                         <tr className="border-b border-zinc-700">
                                           <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Пара</th>
@@ -5237,7 +5237,7 @@ export default function Dashboard() {
                                                       [pairKey]: { ...pairData, delta: e.target.value },
                                                     });
                                                   }}
-                                                  className="w-full px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                                  className="w-20 px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                                   placeholder=""
                                                 />
                                               </td>
@@ -5251,7 +5251,7 @@ export default function Dashboard() {
                                                       [pairKey]: { ...pairData, volume: e.target.value },
                                                     });
                                                   }}
-                                                  className="w-full px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                                  className="w-24 px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                                   placeholder=""
                                                 />
                                               </td>
@@ -5265,7 +5265,7 @@ export default function Dashboard() {
                                                       [pairKey]: { ...pairData, shadow: e.target.value },
                                                     });
                                                   }}
-                                                  className="w-full px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                                  className="w-20 px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                                   placeholder=""
                                                 />
                                               </td>
