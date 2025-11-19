@@ -4959,7 +4959,7 @@ export default function Dashboard() {
                                 <td className="py-3 px-3 align-top">
                                   <span className="text-sm font-medium text-white">{exchangeDisplayName}</span>
                                 </td>
-                                <td className="py-3 px-3 align-top">
+                                <td className="py-3 px-3 align-top" style={{ maxWidth: '400px' }}>
                                   <div className="space-y-2">
                                     {/* Глобальная настройка для Spot */}
                                     <div className="flex items-center justify-between mb-2">
@@ -4980,13 +4980,13 @@ export default function Dashboard() {
                                         }`} />
                                       </div>
                                     </div>
-                                    {/* Компактная сетка пар */}
-                                    <div className="flex flex-wrap gap-1.5">
+                                    {/* Компактная сетка пар с ограниченной шириной */}
+                                    <div className="grid grid-cols-8 gap-1.5 max-w-full">
                                       {pairs.map((pair) => {
                                         const pairKey = `${exchange}_spot_${pair}`;
                                         return (
                                           <div key={pairKey} className="flex items-center gap-1.5 bg-zinc-700/50 rounded px-1.5 py-0.5">
-                                            <span className="text-xs text-zinc-300">{pair}</span>
+                                            <span className="text-xs text-zinc-300 whitespace-nowrap">{pair}</span>
                                             <div
                                               className={`w-8 h-4 rounded-full transition-colors cursor-pointer flex-shrink-0 ${
                                                 chartSettings[pairKey] ? "bg-emerald-500" : "bg-zinc-600"
@@ -5008,7 +5008,7 @@ export default function Dashboard() {
                                     </div>
                                   </div>
                                 </td>
-                                <td className="py-3 px-3 align-top">
+                                <td className="py-3 px-3 align-top" style={{ maxWidth: '400px' }}>
                                   <div className="space-y-2">
                                     {/* Глобальная настройка для Futures */}
                                     <div className="flex items-center justify-between mb-2">
@@ -5029,13 +5029,13 @@ export default function Dashboard() {
                                         }`} />
                                       </div>
                                     </div>
-                                    {/* Компактная сетка пар */}
-                                    <div className="flex flex-wrap gap-1.5">
+                                    {/* Компактная сетка пар с ограниченной шириной */}
+                                    <div className="grid grid-cols-8 gap-1.5 max-w-full">
                                       {futuresPairs.map((pair) => {
                                         const pairKey = `${exchange}_futures_${pair}`;
                                         return (
                                           <div key={pairKey} className="flex items-center gap-1.5 bg-zinc-700/50 rounded px-1.5 py-0.5">
-                                            <span className="text-xs text-zinc-300">{pair}</span>
+                                            <span className="text-xs text-zinc-300 whitespace-nowrap">{pair}</span>
                                             <div
                                               className={`w-8 h-4 rounded-full transition-colors cursor-pointer flex-shrink-0 ${
                                                 chartSettings[pairKey] ? "bg-emerald-500" : "bg-zinc-600"
@@ -5180,202 +5180,101 @@ export default function Dashboard() {
                           {isExpanded && (
                             <div className="px-4 pb-4">
                               {showPairsImmediately ? (
-                                // Для Binance Spot, Binance Futures и Bybit Spot - сразу показываем список всех пар
+                                // Для Binance Spot, Binance Futures и Bybit Spot - показываем таблицу всех пар
                                 <div className="bg-zinc-900 rounded-lg p-4 border border-zinc-700">
                                   <h4 className="text-sm font-medium text-white mb-4">Торговые пары</h4>
-                                  <div className="flex flex-nowrap gap-4 overflow-x-auto pb-2">
-                                    {pairs.map((pair) => {
-                                      const pairKey = `${exchange}_${market}_${pair}`;
-                                      const savedPairData = pairSettings[pairKey];
-                                      
-                                      // Используем общие настройки рынка, если для пары не заданы индивидуальные
-                                      const pairData = savedPairData || {
-                                        enabled: false,
-                                        delta: marketSettings.delta || "",
-                                        volume: marketSettings.volume || "",
-                                        shadow: marketSettings.shadow || ""
-                                      };
-                                      
-                                      // Скрываем карточку, если пара отключена
-                                      if (!pairData.enabled) {
-                                        return null;
-                                      }
-                                      
-                                      return (
-                                        <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2 flex-shrink-0 min-w-[200px]">
-                                          <div className="flex items-center justify-between mb-2">
-                                            <div className="text-white font-medium text-sm">{pair}</div>
-                                            <div
-                                              className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${
-                                                pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
-                                              }`}
-                                              onClick={() => {
-                                                setPairSettings({
-                                                  ...pairSettings,
-                                                  [pairKey]: { ...pairData, enabled: !pairData.enabled },
-                                                });
-                                              }}
-                                            >
-                                              <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
-                                                pairData.enabled ? "translate-x-5" : "translate-x-1"
-                                              }`} />
-                                            </div>
-                                          </div>
-                                          <div>
-                                            <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
-                                            <input
-                                              type="number"
-                                              value={pairData.delta}
-                                              onChange={(e) => {
-                                                setPairSettings({
-                                                  ...pairSettings,
-                                                  [pairKey]: { ...pairData, delta: e.target.value },
-                                                });
-                                              }}
-                                              className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder=""
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
-                                            <input
-                                              type="number"
-                                              value={pairData.volume}
-                                              onChange={(e) => {
-                                                setPairSettings({
-                                                  ...pairSettings,
-                                                  [pairKey]: { ...pairData, volume: e.target.value },
-                                                });
-                                              }}
-                                              className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder=""
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
-                                            <input
-                                              type="number"
-                                              value={pairData.shadow}
-                                              onChange={(e) => {
-                                                setPairSettings({
-                                                  ...pairSettings,
-                                                  [pairKey]: { ...pairData, shadow: e.target.value },
-                                                });
-                                              }}
-                                              className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder=""
-                                            />
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
+                                  <div className="overflow-x-auto">
+                                    <table className="w-full border-collapse">
+                                      <thead>
+                                        <tr className="border-b border-zinc-700">
+                                          <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Пара</th>
+                                          <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Включено</th>
+                                          <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Дельта %</th>
+                                          <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Объём USDT</th>
+                                          <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Тень %</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {pairs.map((pair) => {
+                                          const pairKey = `${exchange}_${market}_${pair}`;
+                                          const savedPairData = pairSettings[pairKey];
+                                          
+                                          // Используем общие настройки рынка, если для пары не заданы индивидуальные
+                                          const pairData = savedPairData || {
+                                            enabled: false,
+                                            delta: marketSettings.delta || "",
+                                            volume: marketSettings.volume || "",
+                                            shadow: marketSettings.shadow || ""
+                                          };
+                                          
+                                          return (
+                                            <tr key={pair} className={`border-b border-zinc-800 hover:bg-zinc-800/50 ${!pairData.enabled ? "opacity-60" : ""}`}>
+                                              <td className="py-2 px-3 text-white font-medium text-sm">{pair}</td>
+                                              <td className="py-2 px-3">
+                                                <div
+                                                  className={`w-10 h-5 rounded-full transition-colors cursor-pointer inline-flex ${
+                                                    pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
+                                                  }`}
+                                                  onClick={() => {
+                                                    setPairSettings({
+                                                      ...pairSettings,
+                                                      [pairKey]: { ...pairData, enabled: !pairData.enabled },
+                                                    });
+                                                  }}
+                                                >
+                                                  <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
+                                                    pairData.enabled ? "translate-x-5" : "translate-x-1"
+                                                  }`} />
+                                                </div>
+                                              </td>
+                                              <td className="py-2 px-3">
+                                                <input
+                                                  type="number"
+                                                  value={pairData.delta}
+                                                  onChange={(e) => {
+                                                    setPairSettings({
+                                                      ...pairSettings,
+                                                      [pairKey]: { ...pairData, delta: e.target.value },
+                                                    });
+                                                  }}
+                                                  className="w-full px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                                  placeholder=""
+                                                />
+                                              </td>
+                                              <td className="py-2 px-3">
+                                                <input
+                                                  type="number"
+                                                  value={pairData.volume}
+                                                  onChange={(e) => {
+                                                    setPairSettings({
+                                                      ...pairSettings,
+                                                      [pairKey]: { ...pairData, volume: e.target.value },
+                                                    });
+                                                  }}
+                                                  className="w-full px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                                  placeholder=""
+                                                />
+                                              </td>
+                                              <td className="py-2 px-3">
+                                                <input
+                                                  type="number"
+                                                  value={pairData.shadow}
+                                                  onChange={(e) => {
+                                                    setPairSettings({
+                                                      ...pairSettings,
+                                                      [pairKey]: { ...pairData, shadow: e.target.value },
+                                                    });
+                                                  }}
+                                                  className="w-full px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                                  placeholder=""
+                                                />
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
                                   </div>
-                                  {/* Показываем отключенные пары в отдельном разделе */}
-                                  {pairs.some((pair) => {
-                                    const pairKey = `${exchange}_${market}_${pair}`;
-                                    const savedPairData = pairSettings[pairKey];
-                                    const pairData = savedPairData || {
-                                      enabled: false,
-                                      delta: marketSettings.delta || "",
-                                      volume: marketSettings.volume || "",
-                                      shadow: marketSettings.shadow || ""
-                                    };
-                                    return !pairData.enabled;
-                                  }) && (
-                                    <div className="mt-4">
-                                      <details className="bg-zinc-950 rounded-lg p-3 border border-zinc-700">
-                                        <summary className="text-sm text-zinc-400 cursor-pointer hover:text-white transition-colors">
-                                          Показать отключенные пары
-                                        </summary>
-                                        <div className="mt-3 flex flex-nowrap gap-4 overflow-x-auto pb-2">
-                                          {pairs.map((pair) => {
-                                            const pairKey = `${exchange}_${market}_${pair}`;
-                                            const savedPairData = pairSettings[pairKey];
-                                            
-                                            const pairData = savedPairData || {
-                                              enabled: false,
-                                              delta: marketSettings.delta || "",
-                                              volume: marketSettings.volume || "",
-                                              shadow: marketSettings.shadow || ""
-                                            };
-                                            
-                                            // Показываем только отключенные пары
-                                            if (pairData.enabled) {
-                                              return null;
-                                            }
-                                            
-                                            return (
-                                              <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2 opacity-60 flex-shrink-0 min-w-[200px]">
-                                                <div className="flex items-center justify-between mb-2">
-                                                  <div className="text-white font-medium text-sm">{pair}</div>
-                                                  <div
-                                                    className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${
-                                                      pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
-                                                    }`}
-                                                    onClick={() => {
-                                                      setPairSettings({
-                                                        ...pairSettings,
-                                                        [pairKey]: { ...pairData, enabled: !pairData.enabled },
-                                                      });
-                                                    }}
-                                                  >
-                                                    <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
-                                                      pairData.enabled ? "translate-x-5" : "translate-x-1"
-                                                    }`} />
-                                                  </div>
-                                                </div>
-                                                <div>
-                                                  <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
-                                                  <input
-                                                    type="number"
-                                                    value={pairData.delta}
-                                                    onChange={(e) => {
-                                                      setPairSettings({
-                                                        ...pairSettings,
-                                                        [pairKey]: { ...pairData, delta: e.target.value },
-                                                      });
-                                                    }}
-                                                    className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                                    placeholder=""
-                                                  />
-                                                </div>
-                                                <div>
-                                                  <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
-                                                  <input
-                                                    type="number"
-                                                    value={pairData.volume}
-                                                    onChange={(e) => {
-                                                      setPairSettings({
-                                                        ...pairSettings,
-                                                        [pairKey]: { ...pairData, volume: e.target.value },
-                                                      });
-                                                    }}
-                                                    className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                                    placeholder=""
-                                                  />
-                                                </div>
-                                                <div>
-                                                  <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
-                                                  <input
-                                                    type="number"
-                                                    value={pairData.shadow}
-                                                    onChange={(e) => {
-                                                      setPairSettings({
-                                                        ...pairSettings,
-                                                        [pairKey]: { ...pairData, shadow: e.target.value },
-                                                      });
-                                                    }}
-                                                    className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                                    placeholder=""
-                                                  />
-                                                </div>
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                      </details>
-                                    </div>
-                                  )}
                                 </div>
                               ) : (
                                 // Для остальных бирж - показываем настройки для одной пары
