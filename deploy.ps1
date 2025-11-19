@@ -70,20 +70,82 @@ try {
     
     # Обновление кода из Git
     Write-Log "Обновляем код из Git..."
-    git pull origin $currentBranch 2>&1 | ForEach-Object {
+    
+    $pullOutput = git pull origin $currentBranch 2>&1 | ForEach-Object {
         Write-Log $_
+        $_
     }
     
     if ($LASTEXITCODE -ne 0) {
-        Write-Log "ОШИБКА: Не удалось обновить код из Git"
-        # Попытка перезапустить службы даже при ошибке
-        foreach ($serviceName in $ServiceNames) {
-            $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-            if ($service) {
-                Start-Service -Name $serviceName
+        # Проверяем, связана ли ошибка с неотслеживаемыми файлами
+        $pullOutputString = $pullOutput -join "`n"
+        if ($pullOutputString -match "untracked working tree files would be overwritten by merge") {
+            Write-Log "Обнаружены конфликтующие неотслеживаемые файлы. Обрабатываем..."
+            
+            # Извлекаем имена файлов из сообщения об ошибке
+            $conflictFiles = @()
+            $lines = $pullOutputString -split "`n"
+            $foundMarker = $false
+            
+            foreach ($line in $lines) {
+                if ($line -match "would be overwritten by merge") {
+                    $foundMarker = $true
+                    # Файл может быть в этой же строке или на следующей
+                    if ($line -match "would be overwritten by merge[:\s]+(.+)") {
+                        $conflictFiles += $matches[1].Trim()
+                    }
+                } elseif ($foundMarker -and $line.Trim() -and -not ($line -match "Please move or remove")) {
+                    # Файл на следующей строке (обычно с отступами)
+                    $fileName = $line.Trim()
+                    if ($fileName -and -not ($fileName -match "^\s*$")) {
+                        $conflictFiles += $fileName
+                    }
+                } elseif ($line -match "Please move or remove") {
+                    $foundMarker = $false
+                }
             }
+            
+            # Удаляем конфликтующие файлы
+            foreach ($file in $conflictFiles) {
+                if ($file -and (Test-Path $file)) {
+                    Write-Log "Удаляем конфликтующий файл: $file"
+                    Remove-Item -Path $file -Force -ErrorAction SilentlyContinue
+                    if (Test-Path $file) {
+                        Write-Log "ПРЕДУПРЕЖДЕНИЕ: Не удалось удалить $file, пробуем переместить..."
+                        $backupPath = "$file.backup.$(Get-Date -Format 'yyyyMMddHHmmss')"
+                        Move-Item -Path $file -Destination $backupPath -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+            
+            # Повторяем pull
+            Write-Log "Повторяем обновление из Git..."
+            git pull origin $currentBranch 2>&1 | ForEach-Object {
+                Write-Log $_
+            }
+            
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "ОШИБКА: Не удалось обновить код из Git после обработки конфликтов"
+                # Попытка перезапустить службы даже при ошибке
+                foreach ($serviceName in $ServiceNames) {
+                    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+                    if ($service) {
+                        Start-Service -Name $serviceName
+                    }
+                }
+                exit 1
+            }
+        } else {
+            Write-Log "ОШИБКА: Не удалось обновить код из Git"
+            # Попытка перезапустить службы даже при ошибке
+            foreach ($serviceName in $ServiceNames) {
+                $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+                if ($service) {
+                    Start-Service -Name $serviceName
+                }
+            }
+            exit 1
         }
-        exit 1
     }
     
     # Обновление Python зависимостей (опционально)
