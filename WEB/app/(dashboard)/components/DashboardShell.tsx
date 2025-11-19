@@ -748,6 +748,72 @@ export default function Dashboard() {
     return null;
   };
 
+  // Проверить, все ли графики включены
+  const areAllChartsEnabled = (): boolean => {
+    const exchanges = ["binance", "bybit", "bitget", "gate", "hyperliquid"];
+    
+    for (const exchange of exchanges) {
+      const spotKey = `${exchange}_spot`;
+      const futuresKey = `${exchange}_futures`;
+      
+      if (!chartSettings[spotKey] || !chartSettings[futuresKey]) {
+        return false;
+      }
+      
+      const spotPairs = getPairsForExchange(exchange, "spot");
+      const futuresPairs = getPairsForExchange(exchange, "futures");
+      
+      for (const pair of spotPairs) {
+        const pairKey = `${exchange}_spot_${pair}`;
+        if (!chartSettings[pairKey]) {
+          return false;
+        }
+      }
+      
+      for (const pair of futuresPairs) {
+        const pairKey = `${exchange}_futures_${pair}`;
+        if (!chartSettings[pairKey]) {
+          return false;
+        }
+      }
+    }
+    
+    return true;
+  };
+
+  // Переключить все графики (включить/отключить)
+  const toggleAllCharts = () => {
+    const exchanges = ["binance", "bybit", "bitget", "gate", "hyperliquid"];
+    const allEnabled = areAllChartsEnabled();
+    const newValue = !allEnabled;
+    
+    // Создаем новый объект настроек
+    const newSettings: Record<string, boolean> = {};
+    
+    // Устанавливаем значения для всех бирж и пар
+    for (const exchange of exchanges) {
+      newSettings[`${exchange}_spot`] = newValue;
+      newSettings[`${exchange}_futures`] = newValue;
+      
+      const spotPairs = getPairsForExchange(exchange, "spot");
+      const futuresPairs = getPairsForExchange(exchange, "futures");
+      
+      for (const pair of spotPairs) {
+        newSettings[`${exchange}_spot_${pair}`] = newValue;
+      }
+      
+      for (const pair of futuresPairs) {
+        newSettings[`${exchange}_futures_${pair}`] = newValue;
+      }
+    }
+    
+    // Сохраняем существующие настройки и обновляем
+    setChartSettings({
+      ...chartSettings,
+      ...newSettings
+    });
+  };
+
   // Проверка, нужно ли сразу показывать дополнительные пары (для Binance Spot, Binance Futures, Bybit Spot)
   const shouldShowPairsImmediately = (exchange: string, market: "spot" | "futures"): boolean => {
     return (exchange === "binance" && (market === "spot" || market === "futures")) ||
@@ -4862,120 +4928,141 @@ export default function Dashboard() {
                 
                 {isChartSettingsExpanded && (
                   <div className="space-y-4">
-                    {/* Настройки для каждой биржи и рынка */}
-                    {["binance", "bybit", "bitget", "gate", "hyperliquid"].map((exchange) => {
-                      const exchangeDisplayName = exchange === "gate" ? "Gate" : exchange === "hyperliquid" ? "Hyperliquid" : exchange.charAt(0).toUpperCase() + exchange.slice(1);
-                      const pairs = getPairsForExchange(exchange, "spot");
-                      const futuresPairs = getPairsForExchange(exchange, "futures");
-                      
-                      return (
-                        <div key={exchange} className="bg-zinc-800 rounded-lg p-4">
-                          <h3 className="text-lg font-semibold text-white mb-3">{exchangeDisplayName}</h3>
-                          
-                          {/* Spot рынок */}
-                          <div className="mb-4">
-                            <h4 className="text-sm font-medium text-zinc-300 mb-2">Spot</h4>
-                            <div className="space-y-2">
-                              {/* Глобальная настройка для Spot */}
-                              <div className="flex items-center justify-between p-2 bg-zinc-700/50 rounded-lg">
-                                <span className="text-sm text-zinc-300">Все торговые пары Spot</span>
-                                <div
-                                  className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                                    chartSettings[`${exchange}_spot`] ? "bg-emerald-500" : "bg-zinc-600"
-                                  }`}
-                                  onClick={() => {
-                                    setChartSettings({
-                                      ...chartSettings,
-                                      [`${exchange}_spot`]: !chartSettings[`${exchange}_spot`]
-                                    });
-                                  }}
-                                >
-                                  <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                                    chartSettings[`${exchange}_spot`] ? "translate-x-6" : "translate-x-1"
-                                  }`} />
-                                </div>
-                              </div>
-                              
-                              {/* Индивидуальные настройки для каждой пары */}
-                              {pairs.map((pair) => {
-                                const pairKey = `${exchange}_spot_${pair}`;
-                                return (
-                                  <div key={pairKey} className="flex items-center justify-between p-2 bg-zinc-700/50 rounded-lg">
-                                    <span className="text-sm text-zinc-300">{pair}</span>
-                                    <div
-                                      className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                                        chartSettings[pairKey] ? "bg-emerald-500" : "bg-zinc-600"
-                                      }`}
-                                      onClick={() => {
-                                        setChartSettings({
-                                          ...chartSettings,
-                                          [pairKey]: !chartSettings[pairKey]
-                                        });
-                                      }}
-                                    >
-                                      <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                                        chartSettings[pairKey] ? "translate-x-6" : "translate-x-1"
-                                      }`} />
+                    {/* Кнопка для включения/отключения всех графиков */}
+                    <div className="flex justify-end">
+                      <button
+                        onClick={toggleAllCharts}
+                        className="px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-sm font-medium rounded-lg smooth-transition ripple hover-glow shadow-blue"
+                      >
+                        {areAllChartsEnabled() ? "Отключить все графики" : "Включить все графики"}
+                      </button>
+                    </div>
+                    
+                    {/* Компактная таблица настроек */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full border-collapse">
+                        <thead>
+                          <tr className="border-b border-zinc-700">
+                            <th className="text-left py-2 px-3 text-sm font-semibold text-zinc-300">Биржа</th>
+                            <th className="text-left py-2 px-3 text-sm font-semibold text-zinc-300">Spot</th>
+                            <th className="text-left py-2 px-3 text-sm font-semibold text-zinc-300">Futures</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {["binance", "bybit", "bitget", "gate", "hyperliquid"].map((exchange) => {
+                            const exchangeDisplayName = exchange === "gate" ? "Gate" : exchange === "hyperliquid" ? "Hyperliquid" : exchange.charAt(0).toUpperCase() + exchange.slice(1);
+                            const pairs = getPairsForExchange(exchange, "spot");
+                            const futuresPairs = getPairsForExchange(exchange, "futures");
+                            
+                            return (
+                              <tr key={exchange} className="border-b border-zinc-800 hover:bg-zinc-800/50">
+                                <td className="py-3 px-3 align-top">
+                                  <span className="text-sm font-medium text-white">{exchangeDisplayName}</span>
+                                </td>
+                                <td className="py-3 px-3 align-top">
+                                  <div className="space-y-2">
+                                    {/* Глобальная настройка для Spot */}
+                                    <div className="flex items-center justify-between mb-2">
+                                      <span className="text-xs text-zinc-400">Все</span>
+                                      <div
+                                        className={`w-10 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 ${
+                                          chartSettings[`${exchange}_spot`] ? "bg-emerald-500" : "bg-zinc-600"
+                                        }`}
+                                        onClick={() => {
+                                          setChartSettings({
+                                            ...chartSettings,
+                                            [`${exchange}_spot`]: !chartSettings[`${exchange}_spot`]
+                                          });
+                                        }}
+                                      >
+                                        <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
+                                          chartSettings[`${exchange}_spot`] ? "translate-x-5" : "translate-x-0.5"
+                                        }`} />
+                                      </div>
+                                    </div>
+                                    {/* Компактная сетка пар */}
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {pairs.map((pair) => {
+                                        const pairKey = `${exchange}_spot_${pair}`;
+                                        return (
+                                          <div key={pairKey} className="flex items-center gap-1.5 bg-zinc-700/50 rounded px-1.5 py-0.5">
+                                            <span className="text-xs text-zinc-300">{pair}</span>
+                                            <div
+                                              className={`w-8 h-4 rounded-full transition-colors cursor-pointer flex-shrink-0 ${
+                                                chartSettings[pairKey] ? "bg-emerald-500" : "bg-zinc-600"
+                                              }`}
+                                              onClick={() => {
+                                                setChartSettings({
+                                                  ...chartSettings,
+                                                  [pairKey]: !chartSettings[pairKey]
+                                                });
+                                              }}
+                                            >
+                                              <div className={`w-3 h-3 bg-white rounded-full transition-transform mt-0.5 ${
+                                                chartSettings[pairKey] ? "translate-x-4" : "translate-x-0.5"
+                                              }`} />
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                          
-                          {/* Futures рынок */}
-                          <div>
-                            <h4 className="text-sm font-medium text-zinc-300 mb-2">Futures</h4>
-                            <div className="space-y-2">
-                              {/* Глобальная настройка для Futures */}
-                              <div className="flex items-center justify-between p-2 bg-zinc-700/50 rounded-lg">
-                                <span className="text-sm text-zinc-300">Все торговые пары Futures</span>
-                                <div
-                                  className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                                    chartSettings[`${exchange}_futures`] ? "bg-emerald-500" : "bg-zinc-600"
-                                  }`}
-                                  onClick={() => {
-                                    setChartSettings({
-                                      ...chartSettings,
-                                      [`${exchange}_futures`]: !chartSettings[`${exchange}_futures`]
-                                    });
-                                  }}
-                                >
-                                  <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                                    chartSettings[`${exchange}_futures`] ? "translate-x-6" : "translate-x-1"
-                                  }`} />
-                                </div>
-                              </div>
-                              
-                              {/* Индивидуальные настройки для каждой пары */}
-                              {futuresPairs.map((pair) => {
-                                const pairKey = `${exchange}_futures_${pair}`;
-                                return (
-                                  <div key={pairKey} className="flex items-center justify-between p-2 bg-zinc-700/50 rounded-lg">
-                                    <span className="text-sm text-zinc-300">{pair}</span>
-                                    <div
-                                      className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                                        chartSettings[pairKey] ? "bg-emerald-500" : "bg-zinc-600"
-                                      }`}
-                                      onClick={() => {
-                                        setChartSettings({
-                                          ...chartSettings,
-                                          [pairKey]: !chartSettings[pairKey]
-                                        });
-                                      }}
-                                    >
-                                      <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                                        chartSettings[pairKey] ? "translate-x-6" : "translate-x-1"
-                                      }`} />
+                                </td>
+                                <td className="py-3 px-3 align-top">
+                                  <div className="space-y-2">
+                                    {/* Глобальная настройка для Futures */}
+                                    <div className="flex items-center justify-between mb-2">
+                                      <span className="text-xs text-zinc-400">Все</span>
+                                      <div
+                                        className={`w-10 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0 ${
+                                          chartSettings[`${exchange}_futures`] ? "bg-emerald-500" : "bg-zinc-600"
+                                        }`}
+                                        onClick={() => {
+                                          setChartSettings({
+                                            ...chartSettings,
+                                            [`${exchange}_futures`]: !chartSettings[`${exchange}_futures`]
+                                          });
+                                        }}
+                                      >
+                                        <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
+                                          chartSettings[`${exchange}_futures`] ? "translate-x-5" : "translate-x-0.5"
+                                        }`} />
+                                      </div>
+                                    </div>
+                                    {/* Компактная сетка пар */}
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {futuresPairs.map((pair) => {
+                                        const pairKey = `${exchange}_futures_${pair}`;
+                                        return (
+                                          <div key={pairKey} className="flex items-center gap-1.5 bg-zinc-700/50 rounded px-1.5 py-0.5">
+                                            <span className="text-xs text-zinc-300">{pair}</span>
+                                            <div
+                                              className={`w-8 h-4 rounded-full transition-colors cursor-pointer flex-shrink-0 ${
+                                                chartSettings[pairKey] ? "bg-emerald-500" : "bg-zinc-600"
+                                              }`}
+                                              onClick={() => {
+                                                setChartSettings({
+                                                  ...chartSettings,
+                                                  [pairKey]: !chartSettings[pairKey]
+                                                });
+                                              }}
+                                            >
+                                              <div className={`w-3 h-3 bg-white rounded-full transition-transform mt-0.5 ${
+                                                chartSettings[pairKey] ? "translate-x-4" : "translate-x-0.5"
+                                              }`} />
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                     
                     <button
                       onClick={async () => {
@@ -5096,7 +5183,7 @@ export default function Dashboard() {
                                 // Для Binance Spot, Binance Futures и Bybit Spot - сразу показываем список всех пар
                                 <div className="bg-zinc-900 rounded-lg p-4 border border-zinc-700">
                                   <h4 className="text-sm font-medium text-white mb-4">Торговые пары</h4>
-                                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                  <div className="flex flex-nowrap gap-4 overflow-x-auto pb-2">
                                     {pairs.map((pair) => {
                                       const pairKey = `${exchange}_${market}_${pair}`;
                                       const savedPairData = pairSettings[pairKey];
@@ -5115,7 +5202,7 @@ export default function Dashboard() {
                                       }
                                       
                                       return (
-                                        <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2">
+                                        <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2 flex-shrink-0 min-w-[200px]">
                                           <div className="flex items-center justify-between mb-2">
                                             <div className="text-white font-medium text-sm">{pair}</div>
                                             <div
@@ -5200,7 +5287,7 @@ export default function Dashboard() {
                                         <summary className="text-sm text-zinc-400 cursor-pointer hover:text-white transition-colors">
                                           Показать отключенные пары
                                         </summary>
-                                        <div className="mt-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                        <div className="mt-3 flex flex-nowrap gap-4 overflow-x-auto pb-2">
                                           {pairs.map((pair) => {
                                             const pairKey = `${exchange}_${market}_${pair}`;
                                             const savedPairData = pairSettings[pairKey];
@@ -5218,7 +5305,7 @@ export default function Dashboard() {
                                             }
                                             
                                             return (
-                                              <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2 opacity-60">
+                                              <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2 opacity-60 flex-shrink-0 min-w-[200px]">
                                                 <div className="flex items-center justify-between mb-2">
                                                   <div className="text-white font-medium text-sm">{pair}</div>
                                                   <div
