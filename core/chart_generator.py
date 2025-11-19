@@ -10,7 +10,7 @@ import matplotlib
 matplotlib.use('Agg')  # Используем backend без GUI
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
+from datetime import datetime, timedelta
 from core.candle_builder import Candle
 from core.logger import get_logger
 from core.symbol_utils import get_symbol_with_pair
@@ -485,12 +485,44 @@ class ChartGenerator:
             # Создаем график
             fig, ax = plt.subplots(figsize=(19.2, 10.8), dpi=100)  # 1920x1080 пикселей
             
-            # Рисуем scatter plot
-            ax.scatter(timestamps, prices, c=colors, s=1, alpha=0.6)
+            # Рисуем scatter plot с увеличенным размером точек (в 3 раза больше)
+            ax.scatter(timestamps, prices, c=colors, s=3, alpha=0.6)
             
-            # Выделяем момент детекта
-            detection_time = datetime.fromtimestamp(detection_time_ms / 1000)
-            ax.axvline(x=detection_time, color='yellow', linestyle='--', linewidth=2, label='Момент детекта')
+            # Рисуем жёлтую линейку справа от прострела (от high до low свечи)
+            # Используем точное время свечи для определения позиции
+            detection_time = datetime.fromtimestamp(candle.ts_ms / 1000)
+            
+            # Находим позицию для жёлтой линейки - справа от последней сделки
+            if timestamps:
+                # Находим последнюю сделку, которая была до или в момент детекта
+                trades_before_detection = [t for t in timestamps if t <= detection_time]
+                
+                if trades_before_detection:
+                    # Берём последнюю сделку до детекта
+                    last_trade_time = max(trades_before_detection)
+                else:
+                    # Если нет сделок до детекта, берём первую сделку
+                    last_trade_time = min(timestamps)
+                
+                # Добавляем небольшой отступ вправо (примерно 2% от диапазона времени или минимум 10 секунд)
+                if len(timestamps) > 1:
+                    time_range = (max(timestamps) - min(timestamps)).total_seconds()
+                    # Используем меньший отступ, чтобы линейка была ближе к моменту детекта
+                    offset_seconds = max(time_range * 0.02, 10)  # Минимум 10 секунд
+                    marker_time = last_trade_time + timedelta(seconds=offset_seconds)
+                else:
+                    # Если только одна сделка, добавляем 10 секунд
+                    marker_time = last_trade_time + timedelta(seconds=10)
+                
+                # Рисуем вертикальную линию от high до low свечи жёлтым цветом
+                ax.plot(
+                    [marker_time, marker_time],
+                    [candle.low, candle.high],
+                    color='yellow',
+                    linewidth=3,
+                    alpha=0.9,
+                    label='Момент детекта'
+                )
             
             # Форматируем оси
             ax.set_xlabel('Время', fontsize=12)
