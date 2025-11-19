@@ -138,9 +138,14 @@ async def _send_chart_async(
         user_name: Имя пользователя (для логирования)
     """
     try:
+        logger.debug(
+            f"Начало отправки графика для {user_name} "
+            f"({candle.exchange} {candle.market} {candle.symbol})"
+        )
         from core.chart_generator import chart_generator
         
         # Генерируем график
+        logger.debug(f"Генерация графика для {user_name} ({candle.exchange} {candle.symbol})...")
         chart_bytes = await chart_generator.generate_chart(
             candle=candle,
             delta=delta,
@@ -149,7 +154,12 @@ async def _send_chart_async(
         )
         
         if chart_bytes:
+            logger.debug(
+                f"График сгенерирован для {user_name} "
+                f"({candle.exchange} {candle.symbol}), размер: {len(chart_bytes)} байт"
+            )
             # Отправляем график
+            logger.debug(f"Отправка графика в Telegram для {user_name}...")
             success, error_msg = await telegram_notifier.send_photo(
                 token=token,
                 chat_id=chat_id,
@@ -170,7 +180,10 @@ async def _send_chart_async(
                     },
                 )
         else:
-            logger.debug(f"Не удалось сгенерировать график для пользователя {user_name} ({candle.exchange} {candle.symbol})")
+            logger.warning(
+                f"Не удалось сгенерировать график для пользователя {user_name} "
+                f"({candle.exchange} {candle.market} {candle.symbol})"
+            )
     except Exception as e:
         logger.warning(
             f"Ошибка при отправке графика пользователю {user_name}: {e}",
@@ -280,22 +293,42 @@ async def on_candle(candle: Candle) -> None:
                         from core.symbol_utils import get_quote_currency
                         quote_currency = await get_quote_currency(candle.symbol, candle.exchange, candle.market)
                         exchange_key = candle.exchange.lower()
-                        market_key = "spot" if candle.market == "spot" else "futures"
+                        # Преобразуем market в формат настроек: "linear" -> "futures", "spot" -> "spot"
+                        # Это работает для всех бирж: Binance, Bybit, Bitget, Gate, Hyperliquid
+                        # Все они используют "linear" для фьючерсов в candle.market
+                        market_key = "futures" if candle.market == "linear" else "spot"
+                        
+                        logger.debug(
+                            f"Проверка отправки графика для {user_name}: "
+                            f"exchange={candle.exchange}, market={candle.market}, symbol={candle.symbol}, "
+                            f"exchange_key={exchange_key}, market_key={market_key}, quote_currency={quote_currency}"
+                        )
                         
                         pair_settings = options.get("pairSettings", {})
                         if quote_currency:
                             pair_key = f"{exchange_key}_{market_key}_{quote_currency}"
+                            logger.debug(f"Проверка индивидуальных настроек пары: pair_key={pair_key}, exists={pair_key in pair_settings}")
                             if pair_key in pair_settings:
                                 pair_config = pair_settings[pair_key]
                                 should_send_chart = pair_config.get("sendChart", False)
+                                logger.debug(f"Найдены индивидуальные настройки пары: sendChart={should_send_chart}")
                         
                         # Если не найдено в индивидуальных настройках, проверяем глобальные настройки биржи/рынка
                         if not should_send_chart:
                             exchange_settings = options.get("exchangeSettings", {})
+                            logger.debug(f"Проверка глобальных настроек: exchange_key={exchange_key}, exists={exchange_key in exchange_settings}")
                             if exchange_key in exchange_settings:
                                 exchange_config = exchange_settings[exchange_key]
+                                logger.debug(f"Настройки биржи {exchange_key}: {list(exchange_config.keys())}")
                                 market_config = exchange_config.get(market_key, {})
+                                logger.debug(f"Настройки рынка {market_key}: {market_config}")
                                 should_send_chart = market_config.get("sendChart", False)
+                                logger.debug(f"Глобальные настройки: sendChart={should_send_chart}")
+                        
+                        logger.info(
+                            f"Результат проверки отправки графика для {user_name} "
+                            f"({candle.exchange} {candle.market} {candle.symbol}): should_send_chart={should_send_chart}"
+                        )
                 except json.JSONDecodeError as e:
                     logger.debug(f"Ошибка парсинга JSON для пользователя {user_name}: {e}")
                 except (ValueError, TypeError) as e:
@@ -332,6 +365,10 @@ async def on_candle(candle: Candle) -> None:
                         
                         # Асинхронно отправляем график, если включено
                         if should_send_chart and success:
+                            logger.info(
+                                f"Запуск отправки графика для {user_name} "
+                                f"({candle.exchange} {candle.market} {candle.symbol})"
+                            )
                             # Запускаем отправку графика в фоне (не блокируем основной поток)
                             asyncio.create_task(_send_chart_async(
                                 candle=candle,
@@ -342,6 +379,18 @@ async def on_candle(candle: Candle) -> None:
                                 chat_id=chat_id,
                                 user_name=user_name
                             ))
+                        elif should_send_chart and not success:
+                            logger.warning(
+                                f"График не отправлен для {user_name} "
+                                f"({candle.exchange} {candle.market} {candle.symbol}): "
+                                f"уведомление не было отправлено успешно (success={success})"
+                            )
+                        elif not should_send_chart:
+                            logger.debug(
+                                f"График не отправлен для {user_name} "
+                                f"({candle.exchange} {candle.market} {candle.symbol}): "
+                                f"отправка графиков отключена (should_send_chart=False)"
+                            )
                     except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                         # Эти ошибки уже обработаны в telegram_notifier, но логируем для полноты
                         logger.error(
