@@ -184,19 +184,24 @@ class SpikeDetector:
     
     def _calculate_delta(self, candle: Candle) -> float:
         """
-        Вычисляет изменение цены в процентах
+        Вычисляет максимальное изменение цены в процентах
+        (от открытия к максимальному отклонению - хаю или лою)
         
         Args:
             candle: Свеча
             
         Returns:
-            float: Дельта в процентах
+            float: Дельта в процентах (максимальное отклонение от открытия)
         """
         if candle.open == 0:
             return 0.0
         
-        delta = ((candle.close - candle.open) / candle.open) * 100
-        return abs(delta)  # Берём абсолютное значение
+        # Вычисляем отклонение к хаю и к лою
+        delta_high = ((candle.high - candle.open) / candle.open) * 100
+        delta_low = ((candle.low - candle.open) / candle.open) * 100
+        
+        # Возвращаем максимальное абсолютное отклонение
+        return max(abs(delta_high), abs(delta_low))
     
     def _calculate_wick_pct(self, candle: Candle) -> float:
         """
