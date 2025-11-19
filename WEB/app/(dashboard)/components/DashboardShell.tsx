@@ -61,8 +61,8 @@ export default function Dashboard() {
   
   // Состояния для настроек Spot и Futures каждой биржи (по умолчанию все отключены и пустые)
   const [exchangeSettings, setExchangeSettings] = useState<Record<string, {
-    spot: { enabled: boolean; delta: string; volume: string; shadow: string };
-    futures: { enabled: boolean; delta: string; volume: string; shadow: string };
+    spot: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean };
+    futures: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean };
   }>>({
     binance: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
     bybit: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
@@ -702,7 +702,7 @@ export default function Dashboard() {
   
   // Состояния для дополнительных пар
   const [openPairs, setOpenPairs] = useState<Record<string, boolean>>({});
-  const [pairSettings, setPairSettings] = useState<Record<string, { enabled: boolean; delta: string; volume: string; shadow: string }>>({});
+  const [pairSettings, setPairSettings] = useState<Record<string, { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean }>>({});
   
   // Определение пар для каждой биржи и типа рынка
   const getPairsForExchange = (exchange: string, market: "spot" | "futures"): string[] => {
