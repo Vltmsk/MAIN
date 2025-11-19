@@ -668,16 +668,12 @@ async def get_spikes(
             offset=offset
         )
         
-        # Нормализуем символы в ответах
+        # Используем normalized_symbol из БД для ответов (уже нормализован при записи)
         normalized_alerts = []
         for alert in alerts:
-            normalized_symbol = await normalize_symbol(
-                alert["symbol"], 
-                alert["exchange"], 
-                alert["market"]
-            )
             alert_copy = dict(alert)
-            alert_copy["symbol"] = normalized_symbol
+            # Используем normalized_symbol из БД (уже нормализован при записи)
+            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
             normalized_alerts.append(alert_copy)
         
         return {"spikes": normalized_alerts}
@@ -809,18 +805,11 @@ async def get_user_spikes_stats(
             mkt = alert["market"]
             by_market[mkt] = by_market.get(mkt, 0) + 1
         
-        # Нормализуем символы для статистики
-        from core.symbol_utils import normalize_symbol
-        
-        # Топ символов (с нормализацией)
+        # Топ символов (используем normalized_symbol из БД)
         symbol_counts = {}
         for alert in alerts:
-            # Нормализуем символ для группировки
-            normalized_sym = await normalize_symbol(
-                alert["symbol"],
-                alert["exchange"],
-                alert["market"]
-            )
+            # Используем normalized_symbol из БД (уже нормализован при записи)
+            normalized_sym = alert.get("normalized_symbol") or alert["symbol"]
             symbol_counts[normalized_sym] = symbol_counts.get(normalized_sym, 0) + 1
         
         top_symbols = sorted(
@@ -844,19 +833,16 @@ async def get_user_spikes_stats(
             key=lambda x: x["date"]
         )
         
-        # Последние 20 стрел для таблицы (с нормализацией символов)
+        # Последние 20 стрел для таблицы (используем normalized_symbol из БД)
         recent_spikes_raw = sorted(alerts, key=lambda x: x["ts"], reverse=True)[:20]
         recent_spikes = []
         for alert in recent_spikes_raw:
             alert_copy = dict(alert)
-            alert_copy["symbol"] = await normalize_symbol(
-                alert["symbol"],
-                alert["exchange"],
-                alert["market"]
-            )
+            # Используем normalized_symbol из БД (уже нормализован при записи)
+            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
             recent_spikes.append(alert_copy)
         
-        # Топ 10 стрел по дельте (абсолютное значение) (с нормализацией символов)
+        # Топ 10 стрел по дельте (абсолютное значение) (используем normalized_symbol из БД)
         top_by_delta_raw = sorted(
             alerts,
             key=lambda x: abs(x["delta"]),
@@ -865,14 +851,11 @@ async def get_user_spikes_stats(
         top_by_delta = []
         for alert in top_by_delta_raw:
             alert_copy = dict(alert)
-            alert_copy["symbol"] = await normalize_symbol(
-                alert["symbol"],
-                alert["exchange"],
-                alert["market"]
-            )
+            # Используем normalized_symbol из БД (уже нормализован при записи)
+            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
             top_by_delta.append(alert_copy)
         
-        # Топ 10 стрел по объёму (с нормализацией символов)
+        # Топ 10 стрел по объёму (используем normalized_symbol из БД)
         top_by_volume_raw = sorted(
             alerts,
             key=lambda x: x["volume_usdt"],
@@ -881,11 +864,8 @@ async def get_user_spikes_stats(
         top_by_volume = []
         for alert in top_by_volume_raw:
             alert_copy = dict(alert)
-            alert_copy["symbol"] = await normalize_symbol(
-                alert["symbol"],
-                alert["exchange"],
-                alert["market"]
-            )
+            # Используем normalized_symbol из БД (уже нормализован при записи)
+            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
             top_by_volume.append(alert_copy)
         
         # Группировка по месяцам
@@ -995,16 +975,12 @@ async def get_user_spikes_by_symbol(
                 seen_ids.add(alert["id"])
                 unique_alerts.append(alert)
         
-        # Нормализуем символы в ответах
+        # Используем normalized_symbol из БД для ответов (уже нормализован при записи)
         normalized_alerts = []
         for alert in unique_alerts:
-            alert_normalized_symbol = await normalize_symbol(
-                alert["symbol"],
-                alert["exchange"],
-                alert["market"]
-            )
             alert_copy = dict(alert)
-            alert_copy["symbol"] = alert_normalized_symbol
+            # Используем normalized_symbol из БД (уже нормализован при записи)
+            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
             normalized_alerts.append(alert_copy)
         
         # Сортируем по времени (новые первыми)

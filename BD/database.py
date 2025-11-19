@@ -120,6 +120,7 @@ class Database:
                     exchange TEXT NOT NULL,
                     market TEXT NOT NULL,
                     symbol TEXT NOT NULL,
+                    normalized_symbol TEXT,
                     delta REAL NOT NULL,
                     wick_pct REAL NOT NULL,
                     volume_usdt REAL NOT NULL,
@@ -128,6 +129,96 @@ class Database:
                     UNIQUE(ts, exchange, market, symbol, delta, wick_pct, volume_usdt)
                 )
             """)
+            
+            # Миграция: добавляем поле normalized_symbol если его нет
+            try:
+                async with conn.execute("PRAGMA table_info(alerts)") as cursor:
+                    columns = [row[1] for row in await cursor.fetchall()]
+                    has_normalized_symbol = 'normalized_symbol' in columns
+                    
+                    if not has_normalized_symbol:
+                        await conn.execute("ALTER TABLE alerts ADD COLUMN normalized_symbol TEXT")
+                        logger.info("Добавлено поле normalized_symbol в таблицу alerts")
+                        
+                        # Автоматическая миграция существующих данных
+                        logger.info("Начинаем миграцию: нормализация символов для существующих записей")
+                        from core.symbol_utils import normalize_symbol
+                        
+                        # Получаем все записи без normalized_symbol
+                        async with conn.execute("""
+                            SELECT id, symbol, exchange, market 
+                            FROM alerts 
+                            WHERE normalized_symbol IS NULL OR normalized_symbol = ''
+                        """) as cursor:
+                            rows = await cursor.fetchall()
+                            total_rows = len(rows) if rows else 0
+                            
+                            if total_rows > 0:
+                                logger.info(f"Найдено {total_rows} записей для нормализации символов")
+                                updated_count = 0
+                                error_count = 0
+                                
+                                for row in rows:
+                                    alert_id = row[0]
+                                    symbol = row[1]
+                                    exchange = row[2]
+                                    market = row[3]
+                                    
+                                    try:
+                                        # Нормализуем символ
+                                        normalized = await normalize_symbol(symbol, exchange, market)
+                                        
+                                        # Если нормализация не удалась, используем оригинальный символ
+                                        if not normalized:
+                                            normalized = symbol
+                                            logger.warning(
+                                                f"Не удалось нормализовать символ '{symbol}' для {exchange} {market}, "
+                                                f"используется оригинальный символ"
+                                            )
+                                        
+                                        # Обновляем запись
+                                        await conn.execute("""
+                                            UPDATE alerts 
+                                            SET normalized_symbol = ? 
+                                            WHERE id = ?
+                                        """, (normalized, alert_id))
+                                        updated_count += 1
+                                        
+                                        # Коммитим каждые 100 записей для оптимизации
+                                        if updated_count % 100 == 0:
+                                            await conn.commit()
+                                            
+                                    except Exception as e:
+                                        error_count += 1
+                                        logger.warning(
+                                            f"Ошибка при нормализации символа для записи {alert_id} "
+                                            f"({exchange} {market} {symbol}): {e}"
+                                        )
+                                        # В случае ошибки используем оригинальный символ
+                                        try:
+                                            await conn.execute("""
+                                                UPDATE alerts 
+                                                SET normalized_symbol = ? 
+                                                WHERE id = ?
+                                            """, (symbol, alert_id))
+                                        except Exception as update_error:
+                                            logger.error(f"Ошибка при обновлении записи {alert_id}: {update_error}")
+                                
+                                # Финальный коммит
+                                await conn.commit()
+                                logger.info(
+                                    f"Миграция символов завершена: обновлено {updated_count} записей, "
+                                    f"ошибок {error_count}"
+                                )
+                            else:
+                                logger.info("Нет записей для миграции символов")
+            except aiosqlite.OperationalError as e:
+                # Колонка уже существует или другая ошибка - это нормально
+                if "duplicate column name" not in str(e).lower():
+                    logger.warning(f"Ошибка при добавлении поля normalized_symbol: {e}")
+            except Exception as e:
+                logger.error(f"Ошибка при миграции normalized_symbol: {e}", exc_info=True)
+                # Продолжаем работу, это не критично для работы системы
             
             # Таблица связи пользователей со стрелами (user_alerts)
             await conn.execute("""
@@ -295,6 +386,10 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_alerts_exchange_market ON alerts(exchange, market)",
                 # Составной индекс для запросов статистики по времени и бирже
                 "CREATE INDEX IF NOT EXISTS idx_alerts_ts_exchange_market ON alerts(ts, exchange, market)",
+                # Индексы для normalized_symbol - оптимизация статистики
+                "CREATE INDEX IF NOT EXISTS idx_alerts_normalized_symbol ON alerts(normalized_symbol)",
+                # Составной индекс для группировки по нормализованным символам в статистике
+                "CREATE INDEX IF NOT EXISTS idx_alerts_normalized_symbol_exchange_market ON alerts(normalized_symbol, exchange, market)",
                 # Индексы для user_alerts
                 "CREATE INDEX IF NOT EXISTS idx_user_alerts_alert_id ON user_alerts(alert_id)",
                 "CREATE INDEX IF NOT EXISTS idx_user_alerts_user_id ON user_alerts(user_id)",
@@ -970,6 +1065,8 @@ class Database:
         """
         Добавляет новую стрелу в БД или связывает существующую с пользователем (асинхронная версия)
         
+        Нормализует символ перед записью и сохраняет нормализованную версию в поле normalized_symbol.
+        
         Args:
             ts: Timestamp в миллисекундах
             exchange: Название биржи
@@ -987,11 +1084,33 @@ class Database:
         if user_id is None:
             raise ValueError("user_id обязателен для добавления стрелы")
         
+        # Нормализуем символ перед записью
+        from core.symbol_utils import normalize_symbol
+        normalized_symbol = symbol  # Fallback на оригинальный символ
+        
+        try:
+            normalized = await normalize_symbol(symbol, exchange, market)
+            if normalized:
+                normalized_symbol = normalized
+            else:
+                # Если нормализация вернула None, используем оригинальный символ
+                logger.warning(
+                    f"normalize_symbol вернул None для {exchange} {market} {symbol}, "
+                    f"используется оригинальный символ"
+                )
+        except Exception as e:
+            # В случае ошибки логируем и используем оригинальный символ
+            logger.warning(
+                f"Ошибка при нормализации символа {symbol} для {exchange} {market}: {e}. "
+                f"Используется оригинальный символ",
+                exc_info=True
+            )
+        
         conn = await self._get_connection()
         try:
             # Проверяем, существует ли уже такая стрела по уникальному ключу
             async with conn.execute("""
-                SELECT id FROM alerts 
+                SELECT id, normalized_symbol FROM alerts 
                 WHERE ts = ? AND exchange = ? AND market = ? AND symbol = ? 
                   AND delta = ? AND wick_pct = ? AND volume_usdt = ?
             """, (ts, exchange, market, symbol, delta, wick_pct, volume_usdt)) as cursor:
@@ -1000,16 +1119,27 @@ class Database:
             if existing_alert:
                 # Стрела уже существует, используем её ID
                 alert_id = existing_alert[0]
+                existing_normalized = existing_alert[1] if len(existing_alert) > 1 else None
+                
+                # Обновляем normalized_symbol только если он NULL или пустой (для обратной совместимости)
+                if not existing_normalized or existing_normalized.strip() == '':
+                    await conn.execute("""
+                        UPDATE alerts 
+                        SET normalized_symbol = ? 
+                        WHERE id = ?
+                    """, (normalized_symbol, alert_id))
+                    await conn.commit()
+                
                 logger.debug(f"Найдена существующая стрела (ID: {alert_id}): {exchange} {market} {symbol} (delta: {delta}%)")
             else:
-                # Создаём новую стрелу
+                # Создаём новую стрелу с нормализованным символом
                 cursor = await conn.execute("""
                     INSERT INTO alerts 
-                    (ts, exchange, market, symbol, delta, wick_pct, volume_usdt, meta)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (ts, exchange, market, symbol, delta, wick_pct, volume_usdt, meta))
+                    (ts, exchange, market, symbol, normalized_symbol, delta, wick_pct, volume_usdt, meta)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (ts, exchange, market, symbol, normalized_symbol, delta, wick_pct, volume_usdt, meta))
                 alert_id = cursor.lastrowid
-                logger.debug(f"Создана новая стрела (ID: {alert_id}): {exchange} {market} {symbol} (delta: {delta}%)")
+                logger.debug(f"Создана новая стрела (ID: {alert_id}): {exchange} {market} {symbol} (normalized: {normalized_symbol}, delta: {delta}%)")
             
             # Создаём связь пользователя со стрелой (если её ещё нет)
             await conn.execute("""
@@ -1118,7 +1248,7 @@ class Database:
             # Если user_id указан, возвращаем user_id для обратной совместимости
             if user_id is not None:
                 select_clause = """
-                    SELECT a.id, a.ts, a.exchange, a.market, a.symbol, a.delta, 
+                    SELECT a.id, a.ts, a.exchange, a.market, a.symbol, a.normalized_symbol, a.delta, 
                            a.wick_pct, a.volume_usdt, a.meta, a.created_at,
                            ua.user_id
                     FROM alerts a
@@ -1126,7 +1256,7 @@ class Database:
             else:
                 # Если user_id не указан, возвращаем все стрелы без user_id
                 select_clause = """
-                    SELECT a.id, a.ts, a.exchange, a.market, a.symbol, a.delta, 
+                    SELECT a.id, a.ts, a.exchange, a.market, a.symbol, a.normalized_symbol, a.delta, 
                            a.wick_pct, a.volume_usdt, a.meta, a.created_at,
                            NULL as user_id
                     FROM alerts a
