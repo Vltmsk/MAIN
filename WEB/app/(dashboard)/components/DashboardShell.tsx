@@ -233,6 +233,10 @@ export default function Dashboard() {
   const [conditionalTemplates, setConditionalTemplates] = useState<ConditionalTemplate[]>([]);
   const [isConditionalTemplatesExpanded, setIsConditionalTemplatesExpanded] = useState(false);
   
+  // Состояние для настройки отправки графиков
+  const [chartSettings, setChartSettings] = useState<Record<string, boolean>>({});
+  const [isChartSettingsExpanded, setIsChartSettingsExpanded] = useState(false);
+  
   // Состояние для управления видимостью блока формата отправки детекта
   // Реф для отслеживания, что пользователь активно редактирует
   const isUserEditingRef = useRef(false);
@@ -711,7 +715,43 @@ export default function Dashboard() {
     if (exchange === "bybit" && market === "spot") {
       return ["USDT", "ETH", "BTC", "USDC", "EUR"];
     }
+    if (exchange === "bybit" && market === "futures") {
+      return ["USDT"];
+    }
+    if (exchange === "bitget" && market === "spot") {
+      return ["USDT"];
+    }
+    if (exchange === "bitget" && market === "futures") {
+      return ["USDT"];
+    }
+    if (exchange === "gate" && market === "spot") {
+      return ["USDT"];
+    }
+    if (exchange === "gate" && market === "futures") {
+      return ["USDT"];
+    }
+    if (exchange === "hyperliquid" && market === "spot") {
+      return ["USDC"];
+    }
+    if (exchange === "hyperliquid" && market === "futures") {
+      return ["USDC"];
+    }
     return [];
+  };
+
+  // Получить название торговой пары для биржи (для бирж с одной парой)
+  const getQuoteCurrencyForExchange = (exchange: string, market: "spot" | "futures"): string | null => {
+    const pairs = getPairsForExchange(exchange, market);
+    if (pairs.length === 1) {
+      return pairs[0];
+    }
+    return null;
+  };
+
+  // Проверка, нужно ли сразу показывать дополнительные пары (для Binance Spot, Binance Futures, Bybit Spot)
+  const shouldShowPairsImmediately = (exchange: string, market: "spot" | "futures"): boolean => {
+    return (exchange === "binance" && (market === "spot" || market === "futures")) ||
+           (exchange === "bybit" && market === "spot");
   };
   
   // Состояния для статистики стрел
@@ -727,6 +767,11 @@ export default function Dashboard() {
     top_by_delta: Array<any>;
     top_by_volume: Array<any>;
     spikes: Array<any>;
+    binance_spot_settings?: {
+      delta: string;
+      volume: string;
+      shadow: string;
+    };
   } | null>(null);
   const [spikesStatsLoading, setSpikesStatsLoading] = useState(false);
   const [statisticsMode, setStatisticsMode] = useState<"personal" | "global">("personal");
@@ -1338,6 +1383,36 @@ export default function Dashboard() {
             setConditionalTemplates([]);
           }
           
+          // Загружаем настройки отправки графиков
+          const chartSettingsMap: Record<string, boolean> = {};
+          
+          // Загружаем из pairSettings
+          if (options.pairSettings && typeof options.pairSettings === "object") {
+            Object.entries(options.pairSettings).forEach(([key, value]: [string, any]) => {
+              if (value && typeof value === 'object' && 'sendChart' in value) {
+                chartSettingsMap[key] = value.sendChart === true;
+              }
+            });
+          }
+          
+          // Загружаем из exchangeSettings
+          if (options.exchangeSettings && typeof options.exchangeSettings === "object") {
+            Object.keys(options.exchangeSettings).forEach((exchange) => {
+              const exchangeConfig = options.exchangeSettings[exchange];
+              if (exchangeConfig && typeof exchangeConfig === "object") {
+                ["spot", "futures"].forEach((market) => {
+                  const marketConfig = exchangeConfig[market];
+                  if (marketConfig && typeof marketConfig === "object" && 'sendChart' in marketConfig) {
+                    const key = `${exchange}_${market}`;
+                    chartSettingsMap[key] = marketConfig.sendChart === true;
+                  }
+                });
+              }
+            });
+          }
+          
+          setChartSettings(chartSettingsMap);
+          
           // Загружаем временную зону
           if (options.timezone && typeof options.timezone === "string") {
             setTimezone(options.timezone);
@@ -1415,10 +1490,43 @@ export default function Dashboard() {
     // Извлекаем текст из редактора перед сохранением
     const extractedText = extractTextFromEditor();
     
+    // Объединяем настройки графиков в pairSettings и exchangeSettings
+    const pairSettingsWithCharts = { ...pairSettings };
+    const exchangeSettingsWithCharts = { ...exchangeSettings };
+    
+    // Добавляем sendChart в pairSettings
+    Object.keys(chartSettings).forEach((key) => {
+      // Проверяем, является ли ключ ключом пары (формат: exchange_market_quote)
+      if (pairSettings[key]) {
+        pairSettingsWithCharts[key] = {
+          ...pairSettings[key],
+          sendChart: chartSettings[key]
+        };
+      } else {
+        // Проверяем, является ли ключ ключом биржи/рынка (формат: exchange_market)
+        const parts = key.split('_');
+        if (parts.length === 2) {
+          const [exchange, market] = parts;
+          if (!exchangeSettingsWithCharts[exchange]) {
+            exchangeSettingsWithCharts[exchange] = {
+              spot: { enabled: false, delta: "", volume: "", shadow: "" },
+              futures: { enabled: false, delta: "", volume: "", shadow: "" }
+            };
+          }
+          if (market === "spot" || market === "futures") {
+            exchangeSettingsWithCharts[exchange][market] = {
+              ...exchangeSettingsWithCharts[exchange][market],
+              sendChart: chartSettings[key]
+            };
+          }
+        }
+      }
+    });
+    
     const options = {
       exchanges: exchangeFilters,
-      exchangeSettings,
-      pairSettings,
+      exchangeSettings: exchangeSettingsWithCharts,
+      pairSettings: pairSettingsWithCharts,
       blacklist,
       messageTemplate: convertToTechnicalKeys(extractedText), // Преобразуем в технические ключи перед сохранением
       conditionalTemplates: conditionalTemplates.map(template => {
@@ -2542,9 +2650,6 @@ export default function Dashboard() {
               </div>
               <div className="text-sm text-zinc-400 mb-2">Всего свечей</div>
               <div className="text-4xl font-bold text-white">{formatNumber(totalCandles)}</div>
-              <div className="text-xs text-zinc-500 mt-2">
-                Собрано данных 1s за {formatUptime(uptimeSeconds)}
-              </div>
             </div>
 
             {/* Время работы */}
@@ -2631,7 +2736,30 @@ export default function Dashboard() {
                   <p className="text-zinc-400">
                     {statisticsMode === "personal" 
                       ? `Статистика по вашим детектам за последние ${statisticsPeriod} дней (с учетом ваших фильтров)`
-                      : `Рыночная статистика по детектам за последние ${statisticsPeriod} дней (с учетом настроек пользователя Stats)`}
+                      : (() => {
+                          const settings = spikesStats?.binance_spot_settings;
+                          if (settings) {
+                            const delta = settings.delta ? `${settings.delta}%` : "";
+                            let volume = "";
+                            if (settings.volume) {
+                              const volumeNum = parseFloat(settings.volume);
+                              if (!isNaN(volumeNum)) {
+                                if (volumeNum >= 1000) {
+                                  volume = `${(volumeNum / 1000).toFixed(0)}k$`;
+                                } else {
+                                  volume = `${volumeNum}$`;
+                                }
+                              } else {
+                                volume = `${settings.volume}$`;
+                              }
+                            }
+                            const shadow = settings.shadow ? `${settings.shadow}%` : "";
+                            const parts = [delta, volume, shadow].filter(Boolean);
+                            const settingsText = parts.length > 0 ? ` (${parts.join(" ")})` : "";
+                            return `Рыночная статистика по детектам за последние ${statisticsPeriod} дней (с учетом настроек пользователя Stats${settingsText})`;
+                          }
+                          return `Рыночная статистика по детектам за последние ${statisticsPeriod} дней (с учетом настроек пользователя Stats)`;
+                        })()}
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
@@ -3459,7 +3587,7 @@ export default function Dashboard() {
                       { friendly: "[[Дельта стрелы]]", label: "Дельта стрелы", desc: "Например: 5.23%" },
                       { friendly: "[[Направление]]", label: "Направление", desc: "Эмодзи стрелки вверх ⬆️ или вниз ⬇️", descHtml: <>Эмодзи стрелки вверх <span style={{color: '#10b981'}}>⬆️</span> или вниз <span style={{color: '#ef4444'}}>⬇️</span></> },
                       { friendly: "[[Биржа и тип рынка]]", label: "Биржа и тип рынка", desc: "Название биржи и тип рынка (например: BINANCE | SPOT)" },
-                      { friendly: "[[Торговая пара]]", label: "Торговая пара", desc: "Символ пары (например: BTCUSDT)" },
+                      { friendly: "[[Торговая пара]]", label: "Торговая пара", desc: "Символ пары (например: BTC-USDT)" },
                       { friendly: "[[Объём стрелы]]", label: "Объём стрелы", desc: "Объём в USDT" },
                       { friendly: "[[Тень свечи]]", label: "Тень свечи", desc: "Процент тени свечи (например: 45.2%)" },
                       { friendly: "[[Время детекта]]", label: "Время детекта", desc: "Дата и время (YYYY-MM-DD HH:MM:SS)" },
@@ -4336,7 +4464,7 @@ export default function Dashboard() {
                                   { friendly: "[[Дельта стрелы]]", label: "Дельта стрелы", desc: "Например: 5.23%" },
                                   { friendly: "[[Направление]]", label: "Направление", desc: "Эмодзи стрелки вверх ⬆️ или вниз ⬇️", descHtml: <>Эмодзи стрелки вверх <span style={{color: '#10b981'}}>⬆️</span> или вниз <span style={{color: '#ef4444'}}>⬇️</span></> },
                                   { friendly: "[[Биржа и тип рынка]]", label: "Биржа и тип рынка", desc: "Название биржи и тип рынка (например: BINANCE | SPOT)" },
-                                  { friendly: "[[Торговая пара]]", label: "Торговая пара", desc: "Символ пары (например: BTCUSDT)" },
+                                  { friendly: "[[Торговая пара]]", label: "Торговая пара", desc: "Символ пары (например: BTC-USDT)" },
                                   { friendly: "[[Объём стрелы]]", label: "Объём стрелы", desc: "Объём в USDT" },
                                   { friendly: "[[Тень свечи]]", label: "Тень свечи", desc: "Процент тени свечи (например: 45.2%)" },
                                   { friendly: "[[Время детекта]]", label: "Время детекта", desc: "Дата и время (YYYY-MM-DD HH:MM:SS)" },
@@ -4698,6 +4826,156 @@ export default function Dashboard() {
                 )}
               </div>
               
+              {/* Настройка отправки графиков */}
+              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl font-bold text-white">Отправка графиков прострелов</h2>
+                    <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <title>Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.</title>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <button
+                    onClick={() => setIsChartSettingsExpanded(!isChartSettingsExpanded)}
+                    className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg smooth-transition"
+                  >
+                    {isChartSettingsExpanded ? "Скрыть" : "Показать"}
+                  </button>
+                </div>
+                <p className="text-sm text-zinc-400 mb-4">
+                  Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.
+                </p>
+                
+                {isChartSettingsExpanded && (
+                  <div className="space-y-4">
+                    {/* Настройки для каждой биржи и рынка */}
+                    {["binance", "bybit", "bitget", "gate", "hyperliquid"].map((exchange) => {
+                      const exchangeDisplayName = exchange === "gate" ? "Gate" : exchange === "hyperliquid" ? "Hyperliquid" : exchange.charAt(0).toUpperCase() + exchange.slice(1);
+                      const pairs = getPairsForExchange(exchange, "spot");
+                      const futuresPairs = getPairsForExchange(exchange, "futures");
+                      
+                      return (
+                        <div key={exchange} className="bg-zinc-800 rounded-lg p-4">
+                          <h3 className="text-lg font-semibold text-white mb-3">{exchangeDisplayName}</h3>
+                          
+                          {/* Spot рынок */}
+                          <div className="mb-4">
+                            <h4 className="text-sm font-medium text-zinc-300 mb-2">Spot</h4>
+                            <div className="space-y-2">
+                              {/* Глобальная настройка для Spot */}
+                              <div className="flex items-center justify-between p-2 bg-zinc-700/50 rounded-lg">
+                                <span className="text-sm text-zinc-300">Все торговые пары Spot</span>
+                                <div
+                                  className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
+                                    chartSettings[`${exchange}_spot`] ? "bg-emerald-500" : "bg-zinc-600"
+                                  }`}
+                                  onClick={() => {
+                                    setChartSettings({
+                                      ...chartSettings,
+                                      [`${exchange}_spot`]: !chartSettings[`${exchange}_spot`]
+                                    });
+                                  }}
+                                >
+                                  <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
+                                    chartSettings[`${exchange}_spot`] ? "translate-x-6" : "translate-x-1"
+                                  }`} />
+                                </div>
+                              </div>
+                              
+                              {/* Индивидуальные настройки для каждой пары */}
+                              {pairs.map((pair) => {
+                                const pairKey = `${exchange}_spot_${pair}`;
+                                return (
+                                  <div key={pairKey} className="flex items-center justify-between p-2 bg-zinc-700/50 rounded-lg">
+                                    <span className="text-sm text-zinc-300">{pair}</span>
+                                    <div
+                                      className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
+                                        chartSettings[pairKey] ? "bg-emerald-500" : "bg-zinc-600"
+                                      }`}
+                                      onClick={() => {
+                                        setChartSettings({
+                                          ...chartSettings,
+                                          [pairKey]: !chartSettings[pairKey]
+                                        });
+                                      }}
+                                    >
+                                      <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
+                                        chartSettings[pairKey] ? "translate-x-6" : "translate-x-1"
+                                      }`} />
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          
+                          {/* Futures рынок */}
+                          <div>
+                            <h4 className="text-sm font-medium text-zinc-300 mb-2">Futures</h4>
+                            <div className="space-y-2">
+                              {/* Глобальная настройка для Futures */}
+                              <div className="flex items-center justify-between p-2 bg-zinc-700/50 rounded-lg">
+                                <span className="text-sm text-zinc-300">Все торговые пары Futures</span>
+                                <div
+                                  className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
+                                    chartSettings[`${exchange}_futures`] ? "bg-emerald-500" : "bg-zinc-600"
+                                  }`}
+                                  onClick={() => {
+                                    setChartSettings({
+                                      ...chartSettings,
+                                      [`${exchange}_futures`]: !chartSettings[`${exchange}_futures`]
+                                    });
+                                  }}
+                                >
+                                  <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
+                                    chartSettings[`${exchange}_futures`] ? "translate-x-6" : "translate-x-1"
+                                  }`} />
+                                </div>
+                              </div>
+                              
+                              {/* Индивидуальные настройки для каждой пары */}
+                              {futuresPairs.map((pair) => {
+                                const pairKey = `${exchange}_futures_${pair}`;
+                                return (
+                                  <div key={pairKey} className="flex items-center justify-between p-2 bg-zinc-700/50 rounded-lg">
+                                    <span className="text-sm text-zinc-300">{pair}</span>
+                                    <div
+                                      className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
+                                        chartSettings[pairKey] ? "bg-emerald-500" : "bg-zinc-600"
+                                      }`}
+                                      onClick={() => {
+                                        setChartSettings({
+                                          ...chartSettings,
+                                          [pairKey]: !chartSettings[pairKey]
+                                        });
+                                      }}
+                                    >
+                                      <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
+                                        chartSettings[pairKey] ? "translate-x-6" : "translate-x-1"
+                                      }`} />
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    
+                    <button
+                      onClick={async () => {
+                        await saveAllSettings();
+                      }}
+                      className="w-full px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-medium rounded-lg smooth-transition ripple hover-glow shadow-emerald"
+                    >
+                      Сохранить настройки графиков
+                    </button>
+                  </div>
+                )}
+              </div>
+              
               {/* Фильтры по биржам */}
               <div className="mb-8 flex gap-4 flex-col lg:flex-row">
                 {/* Левая часть - блок с фильтрами */}
@@ -4723,202 +5001,105 @@ export default function Dashboard() {
                   <p className="text-sm text-zinc-400 mb-6">Выберите биржи для мониторинга и настройте параметры детектирования для каждой биржи отдельно (Spot и Futures). Можно включить/выключить биржи и настроить минимальные значения дельты, объёма и тени свечи.</p>
                   
                   <div className="space-y-2">
-                  {["binance", "bybit", "bitget", "gate", "hyperliquid"].map((exchange) => {
-                    const isExpanded = expandedExchanges[exchange] || false;
-                    const exchangeDisplayName = exchange === "gate" ? "Gate" : exchange === "hyperliquid" ? "Hyperliquid" : exchange.charAt(0).toUpperCase() + exchange.slice(1);
-                    const settings = exchangeSettings[exchange];
+                  {(() => {
+                    // Создаем массив всех комбинаций биржа + рынок
+                    const exchangeMarketCombinations: Array<{exchange: string, market: "spot" | "futures"}> = [];
+                    ["binance", "bybit", "bitget", "gate", "hyperliquid"].forEach((exchange) => {
+                      exchangeMarketCombinations.push({exchange, market: "spot"});
+                      exchangeMarketCombinations.push({exchange, market: "futures"});
+                    });
                     
-                    return (
-                      <div key={exchange} className="bg-zinc-800 rounded-lg overflow-hidden">
-                        {/* Заголовок биржи */}
-                        <div className="flex items-center gap-3 p-4">
-                          <div
-                            className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                              exchangeFilters[exchange] ? "bg-emerald-500" : "bg-zinc-600"
-                            }`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setExchangeFilters({
-                                ...exchangeFilters,
-                                [exchange]: !exchangeFilters[exchange],
-                              });
-                            }}
-                          >
-                            <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                              exchangeFilters[exchange] ? "translate-x-6" : "translate-x-1"
-                            }`} />
+                    return exchangeMarketCombinations.map(({exchange, market}) => {
+                      const sectionKey = `${exchange}_${market}`;
+                      const isExpanded = expandedExchanges[sectionKey] || false;
+                      const exchangeDisplayName = exchange === "gate" ? "Gate" : exchange === "hyperliquid" ? "Hyperliquid" : exchange.charAt(0).toUpperCase() + exchange.slice(1);
+                      const marketDisplayName = market === "spot" ? "Spot" : "Futures";
+                      const settings = exchangeSettings[exchange];
+                      const marketSettings = market === "spot" ? settings.spot : settings.futures;
+                      const pairs = getPairsForExchange(exchange, market);
+                      const quoteCurrency = getQuoteCurrencyForExchange(exchange, market);
+                      const showPairsImmediately = shouldShowPairsImmediately(exchange, market);
+                      
+                      // Проверяем, включена ли биржа
+                      const isExchangeEnabled = exchangeFilters[exchange] || false;
+                      
+                      return (
+                        <div key={sectionKey} className="bg-zinc-800 rounded-lg overflow-hidden">
+                          {/* Заголовок секции */}
+                          <div className="flex items-center gap-3 p-4">
+                            <div
+                              className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
+                                marketSettings.enabled ? "bg-emerald-500" : "bg-zinc-600"
+                              }`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExchangeSettings({
+                                  ...exchangeSettings,
+                                  [exchange]: {
+                                    ...settings,
+                                    [market]: { ...marketSettings, enabled: !marketSettings.enabled },
+                                  },
+                                });
+                              }}
+                            >
+                              <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
+                                marketSettings.enabled ? "translate-x-6" : "translate-x-1"
+                              }`} />
+                            </div>
+                            <span
+                              className="flex-1 text-white font-medium cursor-pointer hover:text-zinc-300 transition-colors"
+                              onClick={() => {
+                                setExpandedExchanges({
+                                  ...expandedExchanges,
+                                  [sectionKey]: !isExpanded,
+                                });
+                              }}
+                            >
+                              {exchangeDisplayName} {marketDisplayName}
+                              {quoteCurrency && ` (${quoteCurrency})`}
+                            </span>
+                            <svg
+                              className={`w-5 h-5 text-zinc-400 transition-transform cursor-pointer ${
+                                isExpanded ? "rotate-180" : ""
+                              }`}
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                              onClick={() => {
+                                setExpandedExchanges({
+                                  ...expandedExchanges,
+                                  [sectionKey]: !isExpanded,
+                                });
+                              }}
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
                           </div>
-                          <span
-                            className="flex-1 text-white font-medium cursor-pointer hover:text-zinc-300 transition-colors"
-                            onClick={() => {
-                              setExpandedExchanges({
-                                ...expandedExchanges,
-                                [exchange]: !isExpanded,
-                              });
-                            }}
-                          >
-                            {exchangeDisplayName}
-                          </span>
-                          <svg
-                            className={`w-5 h-5 text-zinc-400 transition-transform cursor-pointer ${
-                              isExpanded ? "rotate-180" : ""
-                            }`}
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                            onClick={() => {
-                              setExpandedExchanges({
-                                ...expandedExchanges,
-                                [exchange]: !isExpanded,
-                              });
-                            }}
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
-                        </div>
-                        
-                        {/* Раскрывающийся контент */}
-                        {isExpanded && (
-                          <div className="px-4 pb-4 space-y-4">
-                            {/* Spot секция */}
-                            <div className="bg-zinc-900 rounded-lg p-4 space-y-4">
-                              <div className="flex items-center justify-between">
-                                <div>
-                                  <h3 className="text-white font-medium">Spot</h3>
-                                  <p className="text-sm text-zinc-400">Все торговые пары</p>
-                                </div>
-                                <div
-                                  className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                                    settings.spot.enabled ? "bg-emerald-500" : "bg-zinc-600"
-                                  }`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setExchangeSettings({
-                                      ...exchangeSettings,
-                                      [exchange]: {
-                                        ...settings,
-                                        spot: { ...settings.spot, enabled: !settings.spot.enabled },
-                                      },
-                                    });
-                                  }}
-                                >
-                                  <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                                    settings.spot.enabled ? "translate-x-6" : "translate-x-1"
-                                  }`} />
-                                </div>
-                              </div>
-                              
-                              {/* Основная секция со значениями - скрывается при открытии дополнительных пар */}
-                              {!openPairs[`${exchange}_spot`] && (
-                                <>
-                                  <div className="grid grid-cols-3 gap-3">
-                                    <div>
-                                      <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
-                                      <input
-                                        type="number"
-                                        value={settings.spot.delta}
-                                        onChange={(e) => {
-                                          setExchangeSettings({
-                                            ...exchangeSettings,
-                                            [exchange]: {
-                                              ...settings,
-                                              spot: { ...settings.spot, delta: e.target.value },
-                                            },
-                                          });
-                                        }}
-                                        className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                      />
-                                    </div>
-                                    <div>
-                                      <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
-                                      <input
-                                        type="number"
-                                        value={settings.spot.volume}
-                                        onChange={(e) => {
-                                          setExchangeSettings({
-                                            ...exchangeSettings,
-                                            [exchange]: {
-                                              ...settings,
-                                              spot: { ...settings.spot, volume: e.target.value },
-                                            },
-                                          });
-                                        }}
-                                        className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                      />
-                                    </div>
-                                    <div>
-                                      <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
-                                      <input
-                                        type="number"
-                                        value={settings.spot.shadow}
-                                        onChange={(e) => {
-                                          setExchangeSettings({
-                                            ...exchangeSettings,
-                                            [exchange]: {
-                                              ...settings,
-                                              spot: { ...settings.spot, shadow: e.target.value },
-                                            },
-                                          });
-                                        }}
-                                        className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                      />
-                                    </div>
-                                  </div>
-                                  
-                                  {(exchange === "binance" || (exchange === "bybit")) && (
-                                    <div className="flex justify-end">
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          const key = `${exchange}_spot`;
-                                          setOpenPairs({
-                                            ...openPairs,
-                                            [key]: !openPairs[key],
-                                          });
-                                        }}
-                                        className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg transition-colors"
-                                      >
-                                        Открыть дополнительные пары
-                                      </button>
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                              
-                              {/* Блок с дополнительными парами для Spot */}
-                              {((exchange === "binance" || exchange === "bybit") && openPairs[`${exchange}_spot`]) && (
-                                <>
-                                  <div className="flex justify-end mb-4">
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        const key = `${exchange}_spot`;
-                                        setOpenPairs({
-                                          ...openPairs,
-                                          [key]: false,
-                                        });
-                                      }}
-                                      className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg transition-colors"
-                                    >
-                                      Скрыть пары
-                                    </button>
-                                  </div>
-                                  <div className="bg-zinc-950 rounded-lg p-4 border border-zinc-700">
-                                  <h4 className="text-sm font-medium text-white mb-4">Дополнительные пары для Spot</h4>
+                          
+                          {/* Раскрывающийся контент */}
+                          {isExpanded && (
+                            <div className="px-4 pb-4">
+                              {showPairsImmediately ? (
+                                // Для Binance Spot, Binance Futures и Bybit Spot - сразу показываем список всех пар
+                                <div className="bg-zinc-900 rounded-lg p-4 border border-zinc-700">
+                                  <h4 className="text-sm font-medium text-white mb-4">Торговые пары</h4>
                                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                                    {getPairsForExchange(exchange, "spot").map((pair) => {
-                                      const pairKey = `${exchange}_spot_${pair}`;
+                                    {pairs.map((pair) => {
+                                      const pairKey = `${exchange}_${market}_${pair}`;
                                       const savedPairData = pairSettings[pairKey];
-                                      const spotSettings = settings.spot;
                                       
-                                      // Используем общие настройки Spot, если для пары не заданы индивидуальные
-                                      // По умолчанию все пары отключены и пустые
+                                      // Используем общие настройки рынка, если для пары не заданы индивидуальные
                                       const pairData = savedPairData || {
                                         enabled: false,
-                                        delta: spotSettings.delta || "",
-                                        volume: spotSettings.volume || "",
-                                        shadow: spotSettings.shadow || ""
+                                        delta: marketSettings.delta || "",
+                                        volume: marketSettings.volume || "",
+                                        shadow: marketSettings.shadow || ""
                                       };
+                                      
+                                      // Скрываем карточку, если пара отключена
+                                      if (!pairData.enabled) {
+                                        return null;
+                                      }
                                       
                                       return (
                                         <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2">
@@ -4989,54 +5170,137 @@ export default function Dashboard() {
                                       );
                                     })}
                                   </div>
+                                  {/* Показываем отключенные пары в отдельном разделе */}
+                                  {pairs.some((pair) => {
+                                    const pairKey = `${exchange}_${market}_${pair}`;
+                                    const savedPairData = pairSettings[pairKey];
+                                    const pairData = savedPairData || {
+                                      enabled: false,
+                                      delta: marketSettings.delta || "",
+                                      volume: marketSettings.volume || "",
+                                      shadow: marketSettings.shadow || ""
+                                    };
+                                    return !pairData.enabled;
+                                  }) && (
+                                    <div className="mt-4">
+                                      <details className="bg-zinc-950 rounded-lg p-3 border border-zinc-700">
+                                        <summary className="text-sm text-zinc-400 cursor-pointer hover:text-white transition-colors">
+                                          Показать отключенные пары
+                                        </summary>
+                                        <div className="mt-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                          {pairs.map((pair) => {
+                                            const pairKey = `${exchange}_${market}_${pair}`;
+                                            const savedPairData = pairSettings[pairKey];
+                                            
+                                            const pairData = savedPairData || {
+                                              enabled: false,
+                                              delta: marketSettings.delta || "",
+                                              volume: marketSettings.volume || "",
+                                              shadow: marketSettings.shadow || ""
+                                            };
+                                            
+                                            // Показываем только отключенные пары
+                                            if (pairData.enabled) {
+                                              return null;
+                                            }
+                                            
+                                            return (
+                                              <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2 opacity-60">
+                                                <div className="flex items-center justify-between mb-2">
+                                                  <div className="text-white font-medium text-sm">{pair}</div>
+                                                  <div
+                                                    className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${
+                                                      pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
+                                                    }`}
+                                                    onClick={() => {
+                                                      setPairSettings({
+                                                        ...pairSettings,
+                                                        [pairKey]: { ...pairData, enabled: !pairData.enabled },
+                                                      });
+                                                    }}
+                                                  >
+                                                    <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
+                                                      pairData.enabled ? "translate-x-5" : "translate-x-1"
+                                                    }`} />
+                                                  </div>
+                                                </div>
+                                                <div>
+                                                  <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
+                                                  <input
+                                                    type="number"
+                                                    value={pairData.delta}
+                                                    onChange={(e) => {
+                                                      setPairSettings({
+                                                        ...pairSettings,
+                                                        [pairKey]: { ...pairData, delta: e.target.value },
+                                                      });
+                                                    }}
+                                                    className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                                    placeholder=""
+                                                  />
+                                                </div>
+                                                <div>
+                                                  <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
+                                                  <input
+                                                    type="number"
+                                                    value={pairData.volume}
+                                                    onChange={(e) => {
+                                                      setPairSettings({
+                                                        ...pairSettings,
+                                                        [pairKey]: { ...pairData, volume: e.target.value },
+                                                      });
+                                                    }}
+                                                    className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                                    placeholder=""
+                                                  />
+                                                </div>
+                                                <div>
+                                                  <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
+                                                  <input
+                                                    type="number"
+                                                    value={pairData.shadow}
+                                                    onChange={(e) => {
+                                                      setPairSettings({
+                                                        ...pairSettings,
+                                                        [pairKey]: { ...pairData, shadow: e.target.value },
+                                                      });
+                                                    }}
+                                                    className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                                    placeholder=""
+                                                  />
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </details>
+                                    </div>
+                                  )}
                                 </div>
-                                </>
-                              )}
-                            </div>
-                            
-                            {/* Futures секция */}
-                            <div className="bg-zinc-900 rounded-lg p-4 space-y-4">
-                              <div className="flex items-center justify-between">
-                                <div>
-                                  <h3 className="text-white font-medium">Futures</h3>
-                                  <p className="text-sm text-zinc-400">Все торговые пары</p>
-                                </div>
-                                <div
-                                  className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                                    settings.futures.enabled ? "bg-emerald-500" : "bg-zinc-600"
-                                  }`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setExchangeSettings({
-                                      ...exchangeSettings,
-                                      [exchange]: {
-                                        ...settings,
-                                        futures: { ...settings.futures, enabled: !settings.futures.enabled },
-                                      },
-                                    });
-                                  }}
-                                >
-                                  <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                                    settings.futures.enabled ? "translate-x-6" : "translate-x-1"
-                                  }`} />
-                                </div>
-                              </div>
-                              
-                              {/* Основная секция со значениями - скрывается при открытии дополнительных пар */}
-                              {!openPairs[`${exchange}_futures`] && (
-                                <>
+                              ) : (
+                                // Для остальных бирж - показываем настройки для одной пары
+                                <div className="bg-zinc-900 rounded-lg p-4 space-y-4">
+                                  {quoteCurrency && (
+                                    <div className="flex items-center justify-between mb-4">
+                                      <div>
+                                        <h3 className="text-white font-medium">{quoteCurrency}</h3>
+                                        <p className="text-sm text-zinc-400">Торговая пара</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  
                                   <div className="grid grid-cols-3 gap-3">
                                     <div>
                                       <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
                                       <input
                                         type="number"
-                                        value={settings.futures.delta}
+                                        value={marketSettings.delta}
                                         onChange={(e) => {
                                           setExchangeSettings({
                                             ...exchangeSettings,
                                             [exchange]: {
                                               ...settings,
-                                              futures: { ...settings.futures, delta: e.target.value },
+                                              [market]: { ...marketSettings, delta: e.target.value },
                                             },
                                           });
                                         }}
@@ -5047,13 +5311,13 @@ export default function Dashboard() {
                                       <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
                                       <input
                                         type="number"
-                                        value={settings.futures.volume}
+                                        value={marketSettings.volume}
                                         onChange={(e) => {
                                           setExchangeSettings({
                                             ...exchangeSettings,
                                             [exchange]: {
                                               ...settings,
-                                              futures: { ...settings.futures, volume: e.target.value },
+                                              [market]: { ...marketSettings, volume: e.target.value },
                                             },
                                           });
                                         }}
@@ -5064,13 +5328,13 @@ export default function Dashboard() {
                                       <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
                                       <input
                                         type="number"
-                                        value={settings.futures.shadow}
+                                        value={marketSettings.shadow}
                                         onChange={(e) => {
                                           setExchangeSettings({
                                             ...exchangeSettings,
                                             [exchange]: {
                                               ...settings,
-                                              futures: { ...settings.futures, shadow: e.target.value },
+                                              [market]: { ...marketSettings, shadow: e.target.value },
                                             },
                                           });
                                         }}
@@ -5078,140 +5342,14 @@ export default function Dashboard() {
                                       />
                                     </div>
                                   </div>
-                                  
-                                  {exchange === "binance" && (
-                                    <div className="flex justify-end">
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          const key = `${exchange}_futures`;
-                                          setOpenPairs({
-                                            ...openPairs,
-                                            [key]: !openPairs[key],
-                                          });
-                                        }}
-                                        className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg transition-colors"
-                                      >
-                                        Открыть дополнительные пары
-                                      </button>
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                              
-                              {/* Блок с дополнительными парами для Futures */}
-                              {exchange === "binance" && openPairs[`${exchange}_futures`] && (
-                                <>
-                                  <div className="flex justify-end mb-4">
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        const key = `${exchange}_futures`;
-                                        setOpenPairs({
-                                          ...openPairs,
-                                          [key]: false,
-                                        });
-                                      }}
-                                      className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg transition-colors"
-                                    >
-                                      Скрыть пары
-                                    </button>
-                                  </div>
-                                  <div className="bg-zinc-950 rounded-lg p-4 border border-zinc-700">
-                                  <h4 className="text-sm font-medium text-white mb-4">Дополнительные пары для Futures</h4>
-                                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {getPairsForExchange(exchange, "futures").map((pair) => {
-                                      const pairKey = `${exchange}_futures_${pair}`;
-                                      const savedPairData = pairSettings[pairKey];
-                                      const futuresSettings = settings.futures;
-                                      
-                                      // Используем общие настройки Futures, если для пары не заданы индивидуальные
-                                      // По умолчанию все пары отключены и пустые
-                                      const pairData = savedPairData || {
-                                        enabled: false,
-                                        delta: futuresSettings.delta || "",
-                                        volume: futuresSettings.volume || "",
-                                        shadow: futuresSettings.shadow || ""
-                                      };
-                                      
-                                      return (
-                                        <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2">
-                                          <div className="flex items-center justify-between mb-2">
-                                            <div className="text-white font-medium text-sm">{pair}</div>
-                                            <div
-                                              className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${
-                                                pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
-                                              }`}
-                                              onClick={() => {
-                                                setPairSettings({
-                                                  ...pairSettings,
-                                                  [pairKey]: { ...pairData, enabled: !pairData.enabled },
-                                                });
-                                              }}
-                                            >
-                                              <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
-                                                pairData.enabled ? "translate-x-5" : "translate-x-1"
-                                              }`} />
-                                            </div>
-                                          </div>
-                                          <div>
-                                            <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
-                                            <input
-                                              type="number"
-                                              value={pairData.delta}
-                                              onChange={(e) => {
-                                                setPairSettings({
-                                                  ...pairSettings,
-                                                  [pairKey]: { ...pairData, delta: e.target.value },
-                                                });
-                                              }}
-                                              className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder=""
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
-                                            <input
-                                              type="number"
-                                              value={pairData.volume}
-                                              onChange={(e) => {
-                                                setPairSettings({
-                                                  ...pairSettings,
-                                                  [pairKey]: { ...pairData, volume: e.target.value },
-                                                });
-                                              }}
-                                              className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder=""
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
-                                            <input
-                                              type="number"
-                                              value={pairData.shadow}
-                                              onChange={(e) => {
-                                                setPairSettings({
-                                                  ...pairSettings,
-                                                  [pairKey]: { ...pairData, shadow: e.target.value },
-                                                });
-                                              }}
-                                              className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                              placeholder=""
-                                            />
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
                                 </div>
-                                </>
                               )}
                             </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
                   </div>
                 </div>
                 
