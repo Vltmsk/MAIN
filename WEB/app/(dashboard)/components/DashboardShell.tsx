@@ -1501,10 +1501,15 @@ export default function Dashboard() {
     Object.keys(chartSettings).forEach((key) => {
       // Проверяем, является ли ключ ключом пары (формат: exchange_market_quote)
       if (pairSettings[key]) {
-        pairSettingsWithCharts[key] = {
-          ...pairSettings[key],
+        const currentSettings = pairSettings[key];
+        const newSettings: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean } = {
+          enabled: currentSettings.enabled,
+          delta: currentSettings.delta,
+          volume: currentSettings.volume,
+          shadow: currentSettings.shadow,
           sendChart: chartSettings[key]
         };
+        pairSettingsWithCharts[key] = newSettings;
       } else {
         // Проверяем, является ли ключ ключом биржи/рынка (формат: exchange_market)
         const parts = key.split('_');
@@ -1512,15 +1517,20 @@ export default function Dashboard() {
           const [exchange, market] = parts;
           if (!exchangeSettingsWithCharts[exchange]) {
             exchangeSettingsWithCharts[exchange] = {
-              spot: { enabled: false, delta: "", volume: "", shadow: "" },
-              futures: { enabled: false, delta: "", volume: "", shadow: "" }
+              spot: { enabled: false, delta: "", volume: "", shadow: "", sendChart: undefined },
+              futures: { enabled: false, delta: "", volume: "", shadow: "", sendChart: undefined }
             };
           }
           if (market === "spot" || market === "futures") {
-            exchangeSettingsWithCharts[exchange][market] = {
-              ...exchangeSettingsWithCharts[exchange][market],
+            const currentMarketSettings = exchangeSettingsWithCharts[exchange][market];
+            const newMarketSettings: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean } = {
+              enabled: currentMarketSettings.enabled,
+              delta: currentMarketSettings.delta,
+              volume: currentMarketSettings.volume,
+              shadow: currentMarketSettings.shadow,
               sendChart: chartSettings[key]
             };
+            exchangeSettingsWithCharts[exchange][market] = newMarketSettings;
           }
         }
       }
