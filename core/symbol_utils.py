@@ -56,8 +56,9 @@ def _extract_base_currency_algorithmic(symbol: str, exchange: str, market: str) 
             if symbol_upper not in QUOTE_CURRENCIES:
                 return symbol_upper
         elif market == "spot":
-            # Для spot на Hyperliquid формат: PURR/USDC, BTC/USDC
-            # Разделитель - слэш
+            # Для spot на Hyperliquid может быть два формата:
+            # 1. С разделителем: PURR/USDC, BTC/USDC
+            # 2. Слитный формат: TNSRUSDC, XPLUSDC, STRKUSDC
             if "/" in symbol_upper:
                 parts = symbol_upper.split("/")
                 if len(parts) == 2:
@@ -66,7 +67,22 @@ def _extract_base_currency_algorithmic(symbol: str, exchange: str, market: str) 
                     # Проверяем, что quote - это котируемая валюта
                     if quote in QUOTE_CURRENCIES:
                         return base
-            # Если формат не соответствует ожидаемому, пробуем стандартную обработку
+            # Для слитного формата (TNSRUSDC, XPLUSDC) ищем котируемую валюту в конце
+            # Ищем самую длинную котируемую валюту, которая совпадает с концом символа
+            matched_quote = None
+            max_length = 0
+            
+            for quote in QUOTE_CURRENCIES:
+                if symbol_upper.endswith(quote) and len(quote) > max_length:
+                    matched_quote = quote
+                    max_length = len(quote)
+            
+            if matched_quote:
+                base = symbol_upper[:-len(matched_quote)]
+                if base and len(base) >= 2:
+                    return base
+            
+            # Если не удалось определить, пробуем стандартную обработку
             return _extract_base_standard(symbol_upper)
     
     # Стандартная обработка для всех остальных бирж
@@ -121,6 +137,175 @@ def _extract_base_standard(symbol: str) -> Optional[str]:
     # В крайнем случае возвращаем None
     logger.warning(f"Не удалось нормализовать символ: {symbol}")
     return None
+
+
+def _extract_quote_currency(symbol: str) -> Optional[str]:
+    """
+    Извлекает котируемую валюту из символа
+    
+    Args:
+        symbol: Символ в верхнем регистре
+        
+    Returns:
+        Котируемая валюта или None
+    """
+    symbol_upper = symbol.upper()
+    
+    # Сначала пробуем найти разделители
+    for sep in SEPARATORS:
+        if sep in symbol_upper:
+            parts = symbol_upper.split(sep)
+            if len(parts) >= 2:
+                quote = parts[1] if len(parts) > 1 else ""
+                # Проверяем, что quote - это котируемая валюта
+                if quote in QUOTE_CURRENCIES:
+                    return quote
+    
+    # Если разделителей нет, пробуем найти котируемую валюту в конце
+    # Ищем самую длинную котируемую валюту, которая совпадает с концом символа
+    matched_quote = None
+    max_length = 0
+    
+    for quote in QUOTE_CURRENCIES:
+        if symbol_upper.endswith(quote) and len(quote) > max_length:
+            matched_quote = quote
+            max_length = len(quote)
+    
+    if matched_quote:
+        return matched_quote
+    
+    return None
+
+
+async def get_quote_currency(symbol: str, exchange: str, market: str) -> Optional[str]:
+    """
+    Извлекает котируемую валюту из символа торговой пары
+    
+    Args:
+        symbol: Символ торговой пары (например, BTCUSDT, ETH_USDT, BTC/USDC)
+        exchange: Название биржи
+        market: Тип рынка (spot/linear)
+        
+    Returns:
+        Котируемая валюта (USDT, USDC, TRY и т.д.) или None если не удалось определить
+    """
+    if not symbol:
+        return None
+    
+    symbol_upper = symbol.upper()
+    
+    # Специальная обработка для Hyperliquid
+    if exchange.lower() == "hyperliquid":
+        if market == "linear":
+            # Для linear на Hyperliquid символы уже нормализованы (BTC, ETH), котируемая валюта - USDC
+            return "USDC"
+        elif market == "spot":
+            # Для spot на Hyperliquid может быть два формата:
+            # 1. С разделителем: PURR/USDC, BTC/USDC
+            # 2. Слитный формат: TNSRUSDC, XPLUSDC, STRKUSDC
+            if "/" in symbol_upper:
+                parts = symbol_upper.split("/")
+                if len(parts) == 2:
+                    quote = parts[1]
+                    if quote in QUOTE_CURRENCIES:
+                        return quote
+            # Для слитного формата ищем котируемую валюту в конце
+            matched_quote = None
+            max_length = 0
+            
+            for quote in QUOTE_CURRENCIES:
+                if symbol_upper.endswith(quote) and len(quote) > max_length:
+                    matched_quote = quote
+                    max_length = len(quote)
+            
+            if matched_quote:
+                return matched_quote
+    
+    # Стандартная обработка для всех остальных бирж
+    # Ищем самую длинную котируемую валюту, которая совпадает с концом символа
+    matched_quote = None
+    max_length = 0
+    
+    for quote in QUOTE_CURRENCIES:
+        if symbol_upper.endswith(quote) and len(quote) > max_length:
+            matched_quote = quote
+            max_length = len(quote)
+    
+    # Также проверяем разделители
+    for sep in SEPARATORS:
+        if sep in symbol_upper:
+            parts = symbol_upper.split(sep)
+            if len(parts) == 2:
+                quote = parts[1]
+                if quote in QUOTE_CURRENCIES:
+                    return quote
+    
+    return matched_quote
+
+
+async def get_symbol_with_pair(symbol: str, exchange: str, market: str) -> str:
+    """
+    Получает символ в формате "BASE-QUOTE" (например, "BTC-USDT")
+    
+    Args:
+        symbol: Оригинальный символ (например, "BTCUSDT")
+        exchange: Название биржи
+        market: Тип рынка (spot/linear)
+        
+    Returns:
+        Символ в формате "BASE-QUOTE" или просто базовую монету, если не удалось определить пару
+    """
+    if not symbol:
+        return symbol
+    
+    symbol_upper = symbol.upper()
+    
+    # Специальная обработка для Hyperliquid
+    if exchange.lower() == "hyperliquid":
+        if market == "linear":
+            # Для linear на Hyperliquid символы уже нормализованы (BTC, ETH, ADA и т.д.)
+            # Проверяем, что это не котируемая валюта
+            if symbol_upper not in QUOTE_CURRENCIES:
+                # Для Hyperliquid linear обычно используется USDC как котируемая валюта
+                return f"{symbol_upper}-USDC"
+        elif market == "spot":
+            # Для spot на Hyperliquid может быть два формата:
+            # 1. С разделителем: PURR/USDC, BTC/USDC
+            # 2. Слитный формат: TNSRUSDC, XPLUSDC, STRKUSDC
+            if "/" in symbol_upper:
+                parts = symbol_upper.split("/")
+                if len(parts) == 2:
+                    base = parts[0]
+                    quote = parts[1]
+                    # Проверяем, что quote - это котируемая валюта
+                    if quote in QUOTE_CURRENCIES:
+                        return f"{base}-{quote}"
+            # Для слитного формата (TNSRUSDC, XPLUSDC) ищем котируемую валюту в конце
+            matched_quote = None
+            max_length = 0
+            
+            for quote in QUOTE_CURRENCIES:
+                if symbol_upper.endswith(quote) and len(quote) > max_length:
+                    matched_quote = quote
+                    max_length = len(quote)
+            
+            if matched_quote:
+                base = symbol_upper[:-len(matched_quote)]
+                if base and len(base) >= 2:
+                    return f"{base}-{matched_quote}"
+    
+    # Стандартная обработка для всех остальных бирж
+    base = _extract_base_standard(symbol_upper)
+    quote = _extract_quote_currency(symbol_upper)
+    
+    if base and quote:
+        return f"{base}-{quote}"
+    elif base:
+        # Если не удалось определить котируемую валюту, возвращаем только базовую
+        return base
+    else:
+        # Если не удалось определить, возвращаем исходный символ
+        return symbol_upper
 
 
 async def normalize_symbol(symbol: str, exchange: str, market: str) -> str:

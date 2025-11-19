@@ -748,8 +748,30 @@ async def get_user_spikes_stats(
             # limit не указываем - получаем все записи
         )
         
+        # Извлекаем настройки Binance Spot USDT для пользователя Stats (даже если нет alerts)
+        binance_spot_settings = None
+        if user.lower() == "stats":
+            import json
+            try:
+                options_json = user_data.get("options_json", "{}")
+                if options_json:
+                    options = json.loads(options_json)
+                    exchange_settings = options.get("exchangeSettings", {})
+                    binance_settings = exchange_settings.get("binance", {})
+                    spot_settings = binance_settings.get("spot", {})
+                    
+                    if spot_settings:
+                        binance_spot_settings = {
+                            "delta": spot_settings.get("delta", ""),
+                            "volume": spot_settings.get("volume", ""),
+                            "shadow": spot_settings.get("shadow", "")
+                        }
+            except (json.JSONDecodeError, ValueError, TypeError):
+                # Если ошибка парсинга, просто не добавляем настройки
+                pass
+        
         if not alerts:
-            return {
+            result = {
                 "total_count": 0,
                 "avg_delta": 0,
                 "avg_volume": 0,
@@ -762,6 +784,10 @@ async def get_user_spikes_stats(
                 "top_by_volume": [],
                 "spikes": []
             }
+            # Добавляем настройки Binance Spot USDT, если они есть
+            if binance_spot_settings:
+                result["binance_spot_settings"] = binance_spot_settings
+            return result
         
         # Вычисляем статистику
         total_count = len(alerts)
@@ -874,7 +900,7 @@ async def get_user_spikes_stats(
             key=lambda x: x["month"]
         )
         
-        return {
+        result = {
             "total_count": total_count,
             "avg_delta": avg_delta,
             "avg_volume": avg_volume,
@@ -888,6 +914,12 @@ async def get_user_spikes_stats(
             "top_by_volume": top_by_volume,
             "spikes": recent_spikes
         }
+        
+        # Добавляем настройки Binance Spot USDT, если они есть
+        if binance_spot_settings:
+            result["binance_spot_settings"] = binance_spot_settings
+        
+        return result
     except HTTPException:
         raise
     except Exception as e:

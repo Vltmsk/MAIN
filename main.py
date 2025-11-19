@@ -116,6 +116,75 @@ class ExchangeManager:
 exchange_manager = ExchangeManager()
 
 
+async def _send_chart_async(
+    candle: Candle,
+    delta: float,
+    volume_usdt: float,
+    wick_pct: float,
+    token: str,
+    chat_id: str,
+    user_name: str
+) -> None:
+    """
+    Асинхронно отправляет график прострела пользователю
+    
+    Args:
+        candle: Свеча с детектом
+        delta: Дельта в процентах
+        volume_usdt: Объём в USDT
+        wick_pct: Процент тени
+        token: Telegram Bot Token
+        chat_id: Telegram Chat ID
+        user_name: Имя пользователя (для логирования)
+    """
+    try:
+        from core.chart_generator import chart_generator
+        
+        # Генерируем график
+        chart_bytes = await chart_generator.generate_chart(
+            candle=candle,
+            delta=delta,
+            volume_usdt=volume_usdt,
+            wick_pct=wick_pct
+        )
+        
+        if chart_bytes:
+            # Отправляем график
+            success, error_msg = await telegram_notifier.send_photo(
+                token=token,
+                chat_id=chat_id,
+                photo_bytes=chart_bytes
+            )
+            
+            if success:
+                logger.info(f"График успешно отправлен пользователю {user_name} ({candle.exchange} {candle.symbol})")
+            else:
+                logger.warning(
+                    f"Не удалось отправить график пользователю {user_name}: {error_msg}",
+                    extra={
+                        "log_to_db": False,  # Не критично, не логируем в БД
+                        "error_type": "chart_send_error",
+                        "exchange": candle.exchange,
+                        "market": candle.market,
+                        "symbol": candle.symbol,
+                    },
+                )
+        else:
+            logger.debug(f"Не удалось сгенерировать график для пользователя {user_name} ({candle.exchange} {candle.symbol})")
+    except Exception as e:
+        logger.warning(
+            f"Ошибка при отправке графика пользователю {user_name}: {e}",
+            exc_info=True,
+            extra={
+                "log_to_db": False,  # Не критично, не логируем в БД
+                "error_type": "chart_send_exception",
+                "exchange": candle.exchange,
+                "market": candle.market,
+                "symbol": candle.symbol,
+            },
+        )
+
+
 async def on_candle(candle: Candle) -> None:
     """
     Обработчик завершённых свечей.
@@ -197,6 +266,7 @@ async def on_candle(candle: Candle) -> None:
                 message_template = None
                 conditional_templates = None
                 user_timezone = "UTC"  # По умолчанию UTC
+                should_send_chart = False  # По умолчанию графики отключены
                 try:
                     options_json = user_data.get("options_json", "{}")
                     if options_json:
@@ -204,6 +274,28 @@ async def on_candle(candle: Candle) -> None:
                         message_template = options.get("messageTemplate")
                         conditional_templates = options.get("conditionalTemplates")
                         user_timezone = options.get("timezone", "UTC")  # Получаем timezone пользователя
+                        
+                        # Проверяем настройку отправки графиков
+                        # Сначала проверяем индивидуальные настройки пары
+                        from core.symbol_utils import get_quote_currency
+                        quote_currency = await get_quote_currency(candle.symbol, candle.exchange, candle.market)
+                        exchange_key = candle.exchange.lower()
+                        market_key = "spot" if candle.market == "spot" else "futures"
+                        
+                        pair_settings = options.get("pairSettings", {})
+                        if quote_currency:
+                            pair_key = f"{exchange_key}_{market_key}_{quote_currency}"
+                            if pair_key in pair_settings:
+                                pair_config = pair_settings[pair_key]
+                                should_send_chart = pair_config.get("sendChart", False)
+                        
+                        # Если не найдено в индивидуальных настройках, проверяем глобальные настройки биржи/рынка
+                        if not should_send_chart:
+                            exchange_settings = options.get("exchangeSettings", {})
+                            if exchange_key in exchange_settings:
+                                exchange_config = exchange_settings[exchange_key]
+                                market_config = exchange_config.get(market_key, {})
+                                should_send_chart = market_config.get("sendChart", False)
                 except json.JSONDecodeError as e:
                     logger.debug(f"Ошибка парсинга JSON для пользователя {user_name}: {e}")
                 except (ValueError, TypeError) as e:
@@ -237,6 +329,19 @@ async def on_candle(candle: Candle) -> None:
                                     "symbol": candle.symbol,
                                 },
                             )
+                        
+                        # Асинхронно отправляем график, если включено
+                        if should_send_chart and success:
+                            # Запускаем отправку графика в фоне (не блокируем основной поток)
+                            asyncio.create_task(_send_chart_async(
+                                candle=candle,
+                                delta=delta,
+                                volume_usdt=volume_usdt,
+                                wick_pct=wick_pct,
+                                token=tg_token,
+                                chat_id=chat_id,
+                                user_name=user_name
+                            ))
                     except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                         # Эти ошибки уже обработаны в telegram_notifier, но логируем для полноты
                         logger.error(

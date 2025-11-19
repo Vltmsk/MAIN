@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 # 3. Бот вернет JSON с полем "custom_emoji_id" - это и есть нужный ID
 # 4. Или используйте метод getCustomEmojiStickers через Bot API
 # 
-# Если ID не указаны, будут использоваться стандартные emoji (fallback: 📈/📉)
+# Если ID не указаны, будут использоваться стандартные emoji (fallback: ⬆️/⬇️)
 CUSTOM_EMOJI_UP_ID = "5285307907448014606"  # ID зеленой стрелы вверх из пака Strelk167
 CUSTOM_EMOJI_DOWN_ID = "5287552508896507917"  # ID красной стрелы вниз из пака Strelk167
 
@@ -30,6 +30,7 @@ class TelegramNotifier:
     """Класс для отправки уведомлений в Telegram"""
     
     TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
+    TELEGRAM_PHOTO_API_URL = "https://api.telegram.org/bot{token}/sendPhoto"
     TELEGRAM_CUSTOM_EMOJI_API_URL = "https://api.telegram.org/bot{token}/getCustomEmojiStickers"
     
     @staticmethod
@@ -90,19 +91,25 @@ class TelegramNotifier:
         """
         Форматирует кастомное emoji или возвращает fallback
         
+        Логика работы:
+        1. Сначала пытается использовать кастомное emoji из пака Strelk167
+        2. Если кастомное emoji недоступно (ID пустой или пак не установлен у получателя),
+           Telegram автоматически покажет fallback emoji (⬆️/⬇️)
+        
         Args:
-            emoji_id: ID кастомного emoji из пака
-            fallback_emoji: Стандартный emoji для fallback
+            emoji_id: ID кастомного emoji из пака Strelk167
+            fallback_emoji: Стандартный emoji для fallback (⬆️ или ⬇️)
             
         Returns:
-            Отформатированная строка с кастомным emoji или fallback
+            Отформатированная строка с кастомным emoji (если доступно) или fallback
         """
-        if emoji_id:
+        if emoji_id and emoji_id.strip():  # Проверяем, что ID не пустой
             # Используем формат Telegram для кастомных emoji
-            # Fallback emoji (🔴) будет заменен на кастомный на клиенте Telegram
-            return f'<tg-emoji emoji-id="{emoji_id}">🔴</tg-emoji>'
+            # Telegram сначала попытается показать кастомное emoji из пака
+            # Если пак не установлен у получателя, автоматически покажет fallback emoji
+            return f'<tg-emoji emoji-id="{emoji_id}">{fallback_emoji}</tg-emoji>'
         else:
-            # Fallback на стандартный emoji
+            # Если ID не указан, сразу используем стандартный emoji
             return fallback_emoji
     
     @staticmethod
@@ -508,15 +515,16 @@ class TelegramNotifier:
         is_up = candle.close > candle.open
         direction_text = "ВЫРОС" if is_up else "УПАЛ"
         
-        # Используем кастомные emoji из пака (с fallback на стандартные)
+        # Используем кастомные emoji из пака Strelk167 (https://t.me/addemoji/Strelk167)
+        # Сначала пытаемся использовать кастомные эмодзи, если не получится - используем стандартные ⬆️/⬇️
         # Получаем ID кастомных emoji из констант
         if is_up:
             emoji_id = CUSTOM_EMOJI_UP_ID
         else:
             emoji_id = CUSTOM_EMOJI_DOWN_ID
         
-        # Форматируем emoji с fallback
-        fallback_emoji = "📈" if is_up else "📉"
+        # Форматируем emoji: сначала кастомные из пака, если недоступны - стандартные Telegram эмодзи ⬆️/⬇️
+        fallback_emoji = "⬆️" if is_up else "⬇️"
         direction_emoji = TelegramNotifier._format_custom_emoji(emoji_id, fallback_emoji)
         
         # Форматируем числа
@@ -536,9 +544,9 @@ class TelegramNotifier:
         # Тип рынка
         market_text = "SPOT" if candle.market == "spot" else "FUTURES"
         
-        # Нормализуем символ для плейсхолдеров
-        from core.symbol_utils import normalize_symbol
-        normalized_symbol = await normalize_symbol(
+        # Получаем символ с торговой парой для плейсхолдеров (например, "BTC-USDT")
+        from core.symbol_utils import get_symbol_with_pair
+        symbol_with_pair = await get_symbol_with_pair(
             candle.symbol,
             candle.exchange,
             candle.market
@@ -553,7 +561,7 @@ class TelegramNotifier:
             ("{direction}", direction_emoji),  # Используем emoji (кастомное или fallback)
             ("{exchange_market}", f"{candle.exchange.upper()} | {market_text}"),  # Объединенная вставка
             ("{exchange}", candle.exchange.upper()),  # Оставляем для обратной совместимости
-            ("{symbol}", normalized_symbol),  # Используем нормализованный символ
+            ("{symbol}", symbol_with_pair),  # Используем символ с торговой парой (например, "BTC-USDT")
             ("{market}", market_text),  # Оставляем для обратной совместимости
             ("{time}", time_str),
         ]
@@ -585,7 +593,7 @@ class TelegramNotifier:
 🚨 <b>НАЙДЕНА СТРЕЛА!</b> {direction_emoji}
 
 <b>{candle.exchange.upper()} | {market_text}</b>
-💰 <b>{normalized_symbol}</b>
+💰 <b>{symbol_with_pair}</b>
 
 📊 <b>Метрики:</b>
 • Изменение: <b>{delta_formatted}</b> {direction_emoji}
@@ -655,6 +663,88 @@ class TelegramNotifier:
                 error_message += "Не указан Chat ID"
         
         return success, error_message
+    
+    @staticmethod
+    async def send_photo(token: str, chat_id: str, photo_bytes: bytes, caption: Optional[str] = None) -> Tuple[bool, str]:
+        """
+        Отправляет фото в Telegram
+        
+        Args:
+            token: Telegram Bot Token
+            chat_id: Telegram Chat ID
+            photo_bytes: Байты изображения
+            caption: Подпись к фото (опционально)
+            
+        Returns:
+            tuple[bool, str]: (успех, сообщение_об_ошибке)
+        """
+        if not token or not chat_id:
+            error_msg = "Не указан token или chat_id для отправки фото"
+            logger.warning(error_msg)
+            return False, error_msg
+        
+        if not photo_bytes:
+            error_msg = "Пустые байты изображения"
+            logger.warning(error_msg)
+            return False, error_msg
+        
+        url = TelegramNotifier.TELEGRAM_PHOTO_API_URL.format(token=token)
+        
+        # Используем FormData для отправки фото
+        form_data = aiohttp.FormData()
+        form_data.add_field('chat_id', chat_id)
+        form_data.add_field('photo', photo_bytes, filename='chart.png', content_type='image/png')
+        if caption:
+            form_data.add_field('caption', caption)
+            form_data.add_field('parse_mode', 'HTML')
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=form_data, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    if response.status == 200:
+                        logger.info(f"Фото успешно отправлено в Telegram (chat_id: {chat_id})")
+                        return True, ""
+                    
+                    # Получаем детали ошибки от Telegram API
+                    try:
+                        error_data = await response.json()
+                        error_description = error_data.get("description", "Unknown error")
+                        error_code = error_data.get("error_code", response.status)
+                        error_msg = f"Telegram API error {error_code}: {error_description}"
+                        logger.warning(f"Ошибка отправки фото в Telegram: {error_msg}")
+                        return False, error_msg
+                    except:
+                        error_text = await response.text()
+                        error_msg = f"HTTP {response.status}: {error_text[:200]}"
+                        logger.warning(f"Ошибка отправки фото в Telegram: {error_msg}")
+                        return False, error_msg
+        except asyncio.TimeoutError:
+            error_msg = "Таймаут при подключении к Telegram API (проверьте интернет-соединение)"
+            logger.error(error_msg, extra={
+                "log_to_db": True,
+                "error_type": "telegram_timeout",
+                "market": "telegram",
+                "symbol": chat_id,
+            })
+            return False, error_msg
+        except aiohttp.ClientError as e:
+            error_msg = f"Ошибка сети при отправке фото в Telegram: {str(e)}"
+            logger.error(error_msg, extra={
+                "log_to_db": True,
+                "error_type": "telegram_network_error",
+                "market": "telegram",
+                "symbol": chat_id,
+            })
+            return False, error_msg
+        except Exception as e:
+            error_msg = f"Неожиданная ошибка при отправке фото в Telegram: {str(e)}"
+            logger.error(error_msg, exc_info=True, extra={
+                "log_to_db": True,
+                "error_type": "telegram_error",
+                "market": "telegram",
+                "symbol": chat_id,
+            })
+            return False, error_msg
     
     @staticmethod
     async def send_test_message(token: str, chat_id: str) -> Tuple[bool, str]:
