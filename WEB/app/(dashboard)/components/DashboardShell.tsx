@@ -2554,36 +2554,36 @@ export default function Dashboard() {
       )}
 
       {/* Sidebar */}
-      <div className={`fixed md:static inset-y-0 left-0 z-50 w-64 glass-strong border-r border-zinc-800 flex flex-col animate-slide-in transform transition-transform duration-300 ease-in-out ${
+      <div className={`fixed md:static inset-y-0 left-0 z-50 w-96 glass-strong border-r border-zinc-800 flex flex-col animate-slide-in transform transition-transform duration-300 ease-in-out ${
         isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
       }`}>
         {/* Header */}
-        <div className="p-6 border-b border-zinc-800">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="w-8 h-8 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-lg flex items-center justify-center shadow-emerald hover-glow">
-              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div className="p-9 border-b border-zinc-800">
+          <div className="flex items-center gap-[18px] mb-[18px]">
+            <div className="w-12 h-12 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-lg flex items-center justify-center shadow-emerald hover-glow">
+              <svg className="w-[30px] h-[30px] text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
               </svg>
             </div>
-            <h1 className="text-xl font-bold gradient-text">Exchange Monitor</h1>
+            <h1 className="text-3xl font-bold gradient-text">CRYPTO Monitor</h1>
           </div>
-          <p className="text-sm text-zinc-400">{userLogin || "user"}</p>
+          <p className="text-base text-zinc-400">{userLogin || "user"}</p>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-4 space-y-2">
+        <nav className="flex-1 p-6 space-y-3">
           <button
             onClick={() => {
               setActiveTab("monitoring");
               setIsMobileMenuOpen(false);
             }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg smooth-transition ripple ${
+            className={`w-full flex items-center gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
               activeTab === "monitoring"
                 ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-emerald nav-active"
                 : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
             }`}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-[30px] h-[30px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
             </svg>
             Мониторинг
@@ -2594,13 +2594,13 @@ export default function Dashboard() {
               setActiveTab("statistics");
               setIsMobileMenuOpen(false);
             }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg smooth-transition ripple ${
+            className={`w-full flex items-center gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
               activeTab === "statistics"
                 ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-emerald nav-active"
                 : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
             }`}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-[30px] h-[30px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
             </svg>
             Статистика стрел
@@ -2611,13 +2611,13 @@ export default function Dashboard() {
               setActiveTab("settings");
               setIsMobileMenuOpen(false);
             }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg smooth-transition ripple ${
+            className={`w-full flex items-center gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
               activeTab === "settings"
                 ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-emerald nav-active"
                 : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
             }`}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-[30px] h-[30px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
@@ -2631,13 +2631,13 @@ export default function Dashboard() {
                 setActiveTab("admin");
                 setIsMobileMenuOpen(false);
               }}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg smooth-transition ripple ${
+              className={`w-full flex items-center gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
                 activeTab === "admin"
                   ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-emerald nav-active"
                   : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
               }`}
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-[30px] h-[30px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
               </svg>
               Админ панель
@@ -2646,16 +2646,16 @@ export default function Dashboard() {
         </nav>
 
         {/* Logout */}
-        <div className="p-4 border-t border-zinc-800">
+        <div className="p-6 border-t border-zinc-800">
           <button
             onClick={() => {
               localStorage.removeItem("auth_token");
               localStorage.removeItem("user_login");
               router.push("/login");
             }}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800/50 smooth-transition ripple hover-glow"
+            className="w-full flex items-center gap-[18px] px-6 py-5 rounded-lg text-base text-zinc-400 hover:text-white hover:bg-zinc-800/50 smooth-transition ripple hover-glow"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-[30px] h-[30px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
             </svg>
             Выход
@@ -2665,7 +2665,7 @@ export default function Dashboard() {
 
       {/* Main Content */}
       <div className="flex-1 overflow-auto">
-        <div className="p-4 md:p-8 max-w-7xl mx-auto">
+        <div className={`p-4 md:p-8 ${activeTab === "settings" ? "max-w-7xl mx-auto" : ""}`}>
           {/* Mobile Header with Hamburger */}
           <div className="md:hidden mb-4 flex items-center justify-between">
             <button
@@ -2683,7 +2683,7 @@ export default function Dashboard() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
               </div>
-              <h1 className="text-lg font-bold gradient-text">Exchange Monitor</h1>
+              <h1 className="text-lg font-bold gradient-text">CRYPTO Monitor</h1>
             </div>
           </div>
 
@@ -3355,42 +3355,54 @@ export default function Dashboard() {
 
           {activeTab === "settings" && (
             <div className="mb-6 md:mb-8">
-              <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">Настройки</h1>
-              <p className="text-zinc-400 mb-8">
-                Управление профилями, фильтрами и интеграциями
-              </p>
-              
-              {/* Уведомление по центру экрана */}
-              {saveMessage && (
-                <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50">
-                  <div className={`p-6 rounded-xl shadow-2xl max-w-md ${
-                    saveMessage.type === "success" 
-                      ? "bg-green-500/95 text-white border-2 border-green-400" 
-                      : "bg-red-500/95 text-white border-2 border-red-400"
-                  }`}>
-                    <div className="flex items-start gap-3">
-                      {saveMessage.type === "success" ? (
-                        <svg className="w-6 h-6 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      ) : (
-                        <svg className="w-6 h-6 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      )}
-                      <div className="flex-1">
-                        <p className="font-semibold text-lg">{saveMessage.type === "success" ? "Успешно сохранено" : "Ошибка"}</p>
-                        <p className="text-sm mt-2 opacity-90">{saveMessage.text}</p>
+              {/* Центральный контейнер с ограничением ширины */}
+              <div className="max-w-[1400px] mx-auto px-6 md:px-8">
+                {/* Заголовок страницы */}
+                <div className="mb-8">
+                  <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">Настройки</h1>
+                  <p className="text-sm md:text-base text-zinc-400 max-w-2xl">
+                    Управление профилями, фильтрами и интеграциями
+                  </p>
+                </div>
+                
+                {/* Уведомление по центру экрана */}
+                {saveMessage && (
+                  <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50">
+                    <div className={`p-6 rounded-xl shadow-2xl max-w-md ${
+                      saveMessage.type === "success" 
+                        ? "bg-green-500/95 text-white border-2 border-green-400" 
+                        : "bg-red-500/95 text-white border-2 border-red-400"
+                    }`}>
+                      <div className="flex items-start gap-3">
+                        {saveMessage.type === "success" ? (
+                          <svg className="w-6 h-6 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-6 h-6 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        )}
+                        <div className="flex-1">
+                          <p className="font-semibold text-lg">{saveMessage.type === "success" ? "Успешно сохранено" : "Ошибка"}</p>
+                          <p className="text-sm mt-2 opacity-90">{saveMessage.text}</p>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              )}
-              
-              {/* Интеграция с Telegram */}
-              <div className={`mb-8 bg-zinc-900 border border-zinc-800 rounded-xl transition-all duration-300 ${
-                isTelegramConfigured && !isEditingTelegram ? "p-4" : "p-6"
-              }`}>
+                )}
+                
+                {/* Определяем, открыта ли какая-либо карточка для редактирования */}
+                {(() => {
+                  const isAnyCardExpanded = isMessageFormatExpanded || isConditionalTemplatesExpanded || isChartSettingsExpanded;
+                  
+                  return (
+                    <div className={`grid grid-cols-1 md:grid-cols-12 gap-6 ${isAnyCardExpanded ? 'md:grid-cols-1' : ''}`}>
+                      {/* Интеграция с Telegram - всегда на всю ширину */}
+                      <div className={`${isAnyCardExpanded ? 'col-span-1' : 'col-span-1 md:col-span-12'}`}>
+                        <div className={`bg-zinc-900 border border-zinc-800 rounded-xl transition-all duration-300 ${
+                          isTelegramConfigured && !isEditingTelegram ? "p-4" : "p-6"
+                        }`}>
                 <div className="flex items-center gap-2 mb-1">
                   <h2 className="text-xl font-bold text-white">Интеграция с Telegram</h2>
                   <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3635,26 +3647,30 @@ export default function Dashboard() {
                     </div>
                   </>
                 )}
-              </div>
-              {/* Формат отправки детекта */}
-              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6 w-full 2xl:max-w-5xl 2xl:mx-auto">
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-xl font-bold text-white">Формат отправки детекта</h2>
-                    <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <title>Настройте формат сообщений, которые будут отправляться в Telegram при обнаружении стрелы. Используйте вставки для добавления данных о детекте (дельта, объём, биржа и т.д.).</title>
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  {!isMessageFormatExpanded && (
-                    <button
-                      onClick={() => setIsMessageFormatExpanded(true)}
-                      className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-medium rounded-lg smooth-transition ripple hover-glow shadow-emerald"
-                    >
-                      Изменить
-                    </button>
-                  )}
-                </div>
+                        </div>
+                      </div>
+                      
+                      {/* Формат отправки детекта - раскрытый режим */}
+                      {isMessageFormatExpanded && (
+                        <div className="col-span-1 md:col-span-12">
+                          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                <h2 className="text-xl font-bold text-white">Формат отправки детекта</h2>
+                                <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <title>Настройте формат сообщений, которые будут отправляться в Telegram при обнаружении стрелы. Используйте вставки для добавления данных о детекте (дельта, объём, биржа и т.д.).</title>
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                              </div>
+                              {!isMessageFormatExpanded && (
+                                <button
+                                  onClick={() => setIsMessageFormatExpanded(true)}
+                                  className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-medium rounded-lg smooth-transition ripple hover-glow shadow-emerald"
+                                >
+                                  Изменить
+                                </button>
+                              )}
+                            </div>
                 
                 {isMessageFormatExpanded && (
                   <>
@@ -3999,50 +4015,54 @@ export default function Dashboard() {
                   </div>
                 </div>
                 
-                {/* Кнопки сохранения и скрытия */}
-                <div className="flex gap-3 mt-4">
-                  <button
-                    onClick={async () => {
-                      await saveAllSettings();
-                    }}
-                    className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-medium rounded-lg smooth-transition ripple hover-glow shadow-emerald"
-                  >
-                    Сохранить формат сообщения
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsMessageFormatExpanded(false);
-                    }}
-                    className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white font-medium rounded-lg smooth-transition"
-                  >
-                    Скрыть
-                  </button>
-                </div>
-                  </>
-                )}
-              </div>
-              
-              {/* Условные шаблоны сообщений */}
-              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6 w-full 2xl:max-w-5xl 2xl:mx-auto">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-xl font-bold text-white">Условные форматы сообщений</h2>
-                    <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <title>Создайте дополнительные шаблоны сообщений, которые будут использоваться при выполнении определённых условий (например, большой объём или дельта). Все подходящие шаблоны будут отправлены одновременно.</title>
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  <button
-                    onClick={() => setIsConditionalTemplatesExpanded(!isConditionalTemplatesExpanded)}
-                    className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg smooth-transition"
-                  >
-                    {isConditionalTemplatesExpanded ? "Скрыть" : "Показать"}
-                  </button>
-                </div>
-                <p className="text-sm text-zinc-400 mb-4">
-                  Создайте дополнительные шаблоны сообщений, которые будут использоваться при выполнении определённых условий (объём, дельта, серия стрел). 
-                  Можно задать несколько условий одновременно (все условия должны выполняться). Все подходящие шаблоны будут отправлены одновременно при обнаружении стрелы.
-                </p>
+                            {/* Кнопки сохранения и скрытия */}
+                            <div className="flex gap-3 mt-4">
+                              <button
+                                onClick={async () => {
+                                  await saveAllSettings();
+                                }}
+                                className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-medium rounded-lg smooth-transition ripple hover-glow shadow-emerald"
+                              >
+                                Сохранить формат сообщения
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setIsMessageFormatExpanded(false);
+                                }}
+                                className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white font-medium rounded-lg smooth-transition"
+                              >
+                                Скрыть
+                              </button>
+                            </div>
+                          </>
+                        )}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Условные форматы сообщений - раскрытый режим */}
+                      {isConditionalTemplatesExpanded && (
+                        <div className="col-span-1 md:col-span-12">
+                          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                <h2 className="text-xl font-bold text-white">Условные форматы сообщений</h2>
+                                <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <title>Создайте дополнительные шаблоны сообщений, которые будут использоваться при выполнении определённых условий (например, большой объём или дельта). Все подходящие шаблоны будут отправлены одновременно.</title>
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                              </div>
+                              <button
+                                onClick={() => setIsConditionalTemplatesExpanded(!isConditionalTemplatesExpanded)}
+                                className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg smooth-transition"
+                              >
+                                {isConditionalTemplatesExpanded ? "Скрыть" : "Показать"}
+                              </button>
+                            </div>
+                            <p className="text-sm text-zinc-400 mb-4 mt-2">
+                              Создайте дополнительные шаблоны сообщений, которые будут использоваться при выполнении определённых условий (объём, дельта, серия стрел). 
+                              Можно задать несколько условий одновременно (все условия должны выполняться). Все подходящие шаблоны будут отправлены одновременно при обнаружении стрелы.
+                            </p>
                 
                 {isConditionalTemplatesExpanded && (
                   <>
@@ -4907,28 +4927,32 @@ export default function Dashboard() {
                     </div>
                   </>
                 )}
-              </div>
-              
-              {/* Настройка отправки графиков */}
-              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6 w-full 2xl:max-w-6xl 2xl:mx-auto">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-xl font-bold text-white">Отправка графиков прострелов</h2>
-                    <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <title>Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.</title>
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  <button
-                    onClick={() => setIsChartSettingsExpanded(!isChartSettingsExpanded)}
-                    className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg smooth-transition"
-                  >
-                    {isChartSettingsExpanded ? "Скрыть" : "Показать"}
-                  </button>
-                </div>
-                <p className="text-sm text-zinc-400 mb-4">
-                  Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.
-                </p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Отправка графиков прострелов - раскрытый режим */}
+                      {isChartSettingsExpanded && (
+                        <div className="col-span-1 md:col-span-12">
+                          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                <h2 className="text-xl font-bold text-white">Отправка графиков прострелов</h2>
+                                <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <title>Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.</title>
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                              </div>
+                              <button
+                                onClick={() => setIsChartSettingsExpanded(!isChartSettingsExpanded)}
+                                className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg smooth-transition"
+                              >
+                                {isChartSettingsExpanded ? "Скрыть" : "Показать"}
+                              </button>
+                            </div>
+                            <p className="text-sm text-zinc-400 mb-4 mt-2">
+                              Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.
+                            </p>
                 
                 {isChartSettingsExpanded && (
                   <div className="space-y-4">
@@ -5078,12 +5102,81 @@ export default function Dashboard() {
                     </button>
                   </div>
                 )}
-              </div>
-              
-              {/* Фильтры по биржам */}
-              <div className="mb-8 flex gap-4 flex-col lg:flex-row w-full 2xl:max-w-6xl 2xl:mx-auto">
-                {/* Левая часть - блок с фильтрами */}
-                <div className="w-full lg:w-1/2 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Левая колонка - основные настройки (свернутый режим) */}
+                      {!isAnyCardExpanded && (
+                        <div className="col-span-1 md:col-span-8 space-y-6">
+                          {/* Формат отправки детекта - свернутый */}
+                          {!isMessageFormatExpanded && (
+                            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-2">
+                                  <h2 className="text-xl font-bold text-white">Формат отправки детекта</h2>
+                                  <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <title>Настройте формат сообщений, которые будут отправляться в Telegram при обнаружении стрелы. Используйте вставки для добавления данных о детекте (дельта, объём, биржа и т.д.).</title>
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                  </svg>
+                                </div>
+                                <button
+                                  onClick={() => setIsMessageFormatExpanded(true)}
+                                  className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-medium rounded-lg smooth-transition ripple hover-glow shadow-emerald"
+                                >
+                                  Изменить
+                                </button>
+                              </div>
+                              <p className="text-sm text-zinc-400 mt-2">Настройте формат сообщений для отправки в Telegram при обнаружении стрелы.</p>
+                            </div>
+                          )}
+                          
+                          {/* Условные форматы сообщений - свернутый */}
+                          {!isConditionalTemplatesExpanded && (
+                            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-2">
+                                  <h2 className="text-xl font-bold text-white">Условные форматы сообщений</h2>
+                                  <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <title>Создайте дополнительные шаблоны сообщений, которые будут использоваться при выполнении определённых условий (например, большой объём или дельта). Все подходящие шаблоны будут отправлены одновременно.</title>
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                  </svg>
+                                </div>
+                                <button
+                                  onClick={() => setIsConditionalTemplatesExpanded(true)}
+                                  className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg smooth-transition"
+                                >
+                                  Показать
+                                </button>
+                              </div>
+                              <p className="text-sm text-zinc-400 mt-2">Создайте дополнительные шаблоны сообщений с условиями (объём, дельта, серия стрел).</p>
+                            </div>
+                          )}
+                          
+                          {/* Отправка графиков прострелов - свернутый */}
+                          {!isChartSettingsExpanded && (
+                            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-2">
+                                  <h2 className="text-xl font-bold text-white">Отправка графиков прострелов</h2>
+                                  <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <title>Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.</title>
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                  </svg>
+                                </div>
+                                <button
+                                  onClick={() => setIsChartSettingsExpanded(true)}
+                                  className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg smooth-transition"
+                                >
+                                  Показать
+                                </button>
+                              </div>
+                              <p className="text-sm text-zinc-400 mt-2">Включите отправку тиковых графиков для выбранных торговых пар.</p>
+                            </div>
+                          )}
+                          
+                          {/* Фильтры по биржам */}
+                          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
                       <h2 className="text-xl font-bold text-white">Фильтры по биржам</h2>
@@ -5353,12 +5446,15 @@ export default function Dashboard() {
                       );
                     });
                   })()}
-                  </div>
-                </div>
-                
-                {/* Правая часть - таблица с актуальными фильтрами */}
-                <div className="w-full lg:w-1/2 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
-                  <h2 className="text-xl font-bold text-white mb-4">Активные фильтры</h2>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Правая колонка - Активные фильтры */}
+                      {!isAnyCardExpanded && (
+                        <div className="col-span-1 md:col-span-4">
+                          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 sticky top-6">
+                            <h2 className="text-xl font-bold text-white mb-4">Активные фильтры</h2>
                   
                   <div className="overflow-x-auto">
                     {(() => {
@@ -5517,12 +5613,16 @@ export default function Dashboard() {
                         </div>
                       );
                     })()}
-                  </div>
-                </div>
-              </div>
-              
-              {/* Чёрный список монет */}
-              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                          </div>
+                        </div>
+                      </div>
+                      )}
+                    </div>
+                  )}
+                )}
+                
+                {/* Чёрный список монет */}
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mt-6">
                 <div className="flex items-center gap-2 mb-1">
                   <h2 className="text-xl font-bold text-white">Чёрный список монет</h2>
                   <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
