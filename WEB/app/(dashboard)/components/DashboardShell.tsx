@@ -5108,6 +5108,7 @@ export default function Dashboard() {
                       
                       {/* Левая колонка - основные настройки (свернутый режим) */}
                       {!isAnyCardExpanded && (
+                        <>
                         <div className="col-span-1 md:col-span-8 space-y-6">
                           {/* Формат отправки детекта - свернутый */}
                           {!isMessageFormatExpanded && (
@@ -5451,12 +5452,11 @@ export default function Dashboard() {
                       </div>
                       
                       {/* Правая колонка - Активные фильтры */}
-                      {!isAnyCardExpanded && (
-                        <div className="col-span-1 md:col-span-4">
-                          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 sticky top-6">
-                            <h2 className="text-xl font-bold text-white mb-4">Активные фильтры</h2>
-                  
-                  <div className="overflow-x-auto">
+                      <div className="col-span-1 md:col-span-4">
+                        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 sticky top-6">
+                          <h2 className="text-xl font-bold text-white mb-4">Активные фильтры</h2>
+                          
+                          <div className="overflow-x-auto">
                     {(() => {
                       const tableRows: Array<{
                         exchange: string;
@@ -5616,6 +5616,7 @@ export default function Dashboard() {
                           </div>
                         </div>
                       </div>
+                        </>
                       )}
                     </div>
                   )}
