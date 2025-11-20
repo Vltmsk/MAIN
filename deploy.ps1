@@ -2,8 +2,8 @@
 # This script checks for Git updates and restarts Windows services when changes are detected
 
 # Settings
-$RepoPath = "C:\onlyWS"  # Path to repository on server
-$ServiceNames = @("CryptoSpikesAPI", "CryptoSpikesWeb")  # Windows service names (CryptoSpikesMain excluded to prevent restart)
+$RepoPath = "C:\onlyWS"
+$ServiceNames = @("CryptoSpikesAPI", "CryptoSpikesWeb")
 $LogFile = "C:\onlyWS\deploy.log"
 
 # Logging function
@@ -71,7 +71,7 @@ try {
     # Update code from Git
     Write-Log "Updating code from Git..."
     
-    # First do hard reset for full synchronization (will delete files not in repository)
+    # First do hard reset for full synchronization
     Write-Log "Synchronizing working directory with remote repository..."
     $resetOutput = git reset --hard origin/$currentBranch 2>&1 | ForEach-Object {
         Write-Log $_
@@ -96,7 +96,7 @@ try {
         Write-Log $_
     }
     
-    # Use pull for additional check (though after reset --hard this is redundant)
+    # Use pull for additional check
     $pullOutput = git pull origin $currentBranch 2>&1 | ForEach-Object {
         Write-Log $_
         $_
@@ -116,12 +116,10 @@ try {
             foreach ($line in $lines) {
                 if ($line -match "would be overwritten by merge") {
                     $foundMarker = $true
-                    # File may be on same line or next line
                     if ($line -match "would be overwritten by merge[:\s]+(.+)") {
                         $conflictFiles += $matches[1].Trim()
                     }
                 } elseif ($foundMarker -and $line.Trim() -and -not ($line -match "Please move or remove")) {
-                    # File on next line (usually with indentation)
                     $fileName = $line.Trim()
                     if ($fileName -and -not ($fileName -match "^\s*$")) {
                         $conflictFiles += $fileName
@@ -174,11 +172,11 @@ try {
         }
     }
     
-    # Update Python dependencies (optional)
+    # Update Python dependencies
     Write-Log "Updating Python dependencies..."
     pip install -r requirements.txt --upgrade 2>&1 | Out-Null
     
-    # Update Node.js dependencies and build Next.js (if needed)
+    # Update Node.js dependencies and build Next.js
     if (Test-Path "WEB\package.json") {
         Write-Log "Updating Node.js dependencies..."
         Set-Location "WEB"

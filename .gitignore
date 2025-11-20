@@ -73,4 +73,5 @@ WEB/.next/
 *.temp
 *.bak
 *.backup
+.main_start_time
 

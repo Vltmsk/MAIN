@@ -123,10 +123,11 @@ async def _send_chart_async(
     wick_pct: float,
     token: str,
     chat_id: str,
-    user_name: str
+    user_name: str,
+    message_text: str
 ) -> None:
     """
-    Асинхронно отправляет график прострела пользователю
+    Асинхронно отправляет график прострела пользователю с текстом как подписью
     
     Args:
         candle: Свеча с детектом
@@ -136,6 +137,7 @@ async def _send_chart_async(
         token: Telegram Bot Token
         chat_id: Telegram Chat ID
         user_name: Имя пользователя (для логирования)
+        message_text: Текст сообщения для подписи к графику
     """
     try:
         logger.debug(
@@ -158,16 +160,24 @@ async def _send_chart_async(
                 f"График сгенерирован для {user_name} "
                 f"({candle.exchange} {candle.symbol}), размер: {len(chart_bytes)} байт"
             )
-            # Отправляем график
-            logger.debug(f"Отправка графика в Telegram для {user_name}...")
+            # Обрезаем текст, если он превышает лимит Telegram (1024 символа)
+            # Telegram API ограничивает длину caption до 1024 символов
+            caption_text = message_text
+            if len(caption_text) > 1024:
+                caption_text = caption_text[:1021] + "..."
+                logger.debug(f"Текст подписи обрезан до 1024 символов для {user_name}")
+            
+            # Отправляем график с текстом как подписью
+            logger.debug(f"Отправка графика с текстом в Telegram для {user_name}...")
             success, error_msg = await telegram_notifier.send_photo(
                 token=token,
                 chat_id=chat_id,
-                photo_bytes=chart_bytes
+                photo_bytes=chart_bytes,
+                caption=caption_text
             )
             
             if success:
-                logger.info(f"График успешно отправлен пользователю {user_name} ({candle.exchange} {candle.symbol})")
+                logger.info(f"График с текстом успешно отправлен пользователю {user_name} ({candle.exchange} {candle.symbol})")
             else:
                 logger.warning(
                     f"Не удалось отправить график пользователю {user_name}: {error_msg}",
@@ -336,61 +346,83 @@ async def on_candle(candle: Candle) -> None:
                 
                 if tg_token and chat_id:
                     try:
-                        # Передаем user_id для проверки условий серий и timezone для форматирования времени
-                        success, error_msg = await telegram_notifier.notify_spike(
+                        # Сначала формируем сообщения
+                        messages = await telegram_notifier.format_spike_messages(
                             candle=candle,
-                            token=tg_token,
-                            chat_id=chat_id,
                             delta=delta,
                             wick_pct=wick_pct,
                             volume_usdt=volume_usdt,
                             template=message_template,
                             conditional_templates=conditional_templates,
                             user_id=user_id,
-                            timezone=user_timezone
+                            token=tg_token,
+                            timezone=user_timezone,
+                            default_chat_id=chat_id
                         )
-                        if success:
-                            logger.info(f"Уведомление отправлено пользователю {user_name} ({candle.exchange} {candle.symbol})")
-                        else:
-                            logger.error(
-                                f"Не удалось отправить уведомление пользователю {user_name}: {error_msg}",
-                                extra={
-                                    "log_to_db": True,
-                                    "error_type": "telegram_error",
-                                    "exchange": candle.exchange,
-                                    "market": candle.market,
-                                    "symbol": candle.symbol,
-                                },
-                            )
                         
-                        # Асинхронно отправляем график, если включено
-                        if should_send_chart and success:
-                            logger.info(
-                                f"Запуск отправки графика для {user_name} "
-                                f"({candle.exchange} {candle.market} {candle.symbol})"
-                            )
-                            # Запускаем отправку графика в фоне (не блокируем основной поток)
-                            asyncio.create_task(_send_chart_async(
-                                candle=candle,
-                                delta=delta,
-                                volume_usdt=volume_usdt,
-                                wick_pct=wick_pct,
-                                token=tg_token,
-                                chat_id=chat_id,
-                                user_name=user_name
-                            ))
-                        elif should_send_chart and not success:
-                            logger.warning(
-                                f"График не отправлен для {user_name} "
-                                f"({candle.exchange} {candle.market} {candle.symbol}): "
-                                f"уведомление не было отправлено успешно (success={success})"
-                            )
-                        elif not should_send_chart:
-                            logger.debug(
-                                f"График не отправлен для {user_name} "
-                                f"({candle.exchange} {candle.market} {candle.symbol}): "
-                                f"отправка графиков отключена (should_send_chart=False)"
-                            )
+                        # Если график включен, отправляем график с текстом как подписью
+                        if should_send_chart:
+                            # Для каждого сообщения отправляем график с текстом
+                            for msg_info in messages:
+                                message_text = msg_info.get("message", "")
+                                target_chat_id = msg_info.get("chatId") or chat_id
+                                
+                                if target_chat_id:
+                                    logger.info(
+                                        f"Запуск отправки графика с текстом для {user_name} "
+                                        f"({candle.exchange} {candle.market} {candle.symbol})"
+                                    )
+                                    # Запускаем отправку графика с текстом в фоне (не блокируем основной поток)
+                                    asyncio.create_task(_send_chart_async(
+                                        candle=candle,
+                                        delta=delta,
+                                        volume_usdt=volume_usdt,
+                                        wick_pct=wick_pct,
+                                        token=tg_token,
+                                        chat_id=target_chat_id,
+                                        user_name=user_name,
+                                        message_text=message_text
+                                    ))
+                        else:
+                            # Если график не включен, отправляем только текстовые сообщения
+                            success = True
+                            error_message = ""
+                            
+                            for msg_info in messages:
+                                message_text = msg_info.get("message", "")
+                                target_chat_id = msg_info.get("chatId") or chat_id
+                                
+                                if target_chat_id:
+                                    msg_success, msg_error = await telegram_notifier.send_message(
+                                        token=tg_token,
+                                        chat_id=target_chat_id,
+                                        message=message_text
+                                    )
+                                    if not msg_success:
+                                        success = False
+                                        if error_message:
+                                            error_message += "; "
+                                        error_message += f"Chat {target_chat_id}: {msg_error}"
+                                else:
+                                    logger.warning(f"Не указан Chat ID для отправки сообщения")
+                                    success = False
+                                    if error_message:
+                                        error_message += "; "
+                                    error_message += "Не указан Chat ID"
+                            
+                            if success:
+                                logger.info(f"Уведомление отправлено пользователю {user_name} ({candle.exchange} {candle.symbol})")
+                            else:
+                                logger.error(
+                                    f"Не удалось отправить уведомление пользователю {user_name}: {error_message}",
+                                    extra={
+                                        "log_to_db": True,
+                                        "error_type": "telegram_error",
+                                        "exchange": candle.exchange,
+                                        "market": candle.market,
+                                        "symbol": candle.symbol,
+                                    },
+                                )
                     except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                         # Эти ошибки уже обработаны в telegram_notifier, но логируем для полноты
                         logger.error(
@@ -835,6 +867,17 @@ async def main():
     """Главная функция."""
     # Настройка логирования с ротацией
     setup_root_logger(config.log_level, enable_file_logging=True)
+    
+    # Сохраняем время запуска main.py в файл для использования в api_server.py
+    main_start_time = time.time()
+    try:
+        import os
+        start_time_file = os.path.join(os.path.dirname(__file__), ".main_start_time")
+        with open(start_time_file, 'w') as f:
+            f.write(str(main_start_time))
+        logger.debug(f"Время запуска main.py сохранено: {main_start_time}")
+    except Exception as e:
+        logger.warning(f"Не удалось сохранить время запуска main.py: {e}")
     
     logger.info("=" * 60)
     logger.info("START: Запуск сборщика данных со всех бирж")

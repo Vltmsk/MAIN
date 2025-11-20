@@ -30,7 +30,7 @@ export default function Dashboard() {
   
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [totalDetects, setTotalDetects] = useState(0);
-  const [uptimeSeconds, setUptimeSeconds] = useState(0);
+  const [uptimeSeconds, setUptimeSeconds] = useState<number | null>(0);
   const [startTime, setStartTime] = useState<number | null>(null);
   
   // Состояния для настроек Telegram
@@ -993,7 +993,7 @@ export default function Dashboard() {
       }
       
       // Получаем статус системы и общее количество детектов
-      let uptimeSecondsValue = 0;
+      let uptimeSecondsValue: number | null = null;
       let totalDetectsValue = 0;
       let startTimeValue: number | null = null;
       
@@ -1002,8 +1002,9 @@ export default function Dashboard() {
           const statusData = await statusResult.json();
           // Используем только alerts_since_start для детектов с момента запуска
           totalDetectsValue = statusData.alerts_since_start ?? 0;
-          uptimeSecondsValue = statusData.uptime_seconds || 0;
-          startTimeValue = statusData.start_time || null;
+          // Если uptime_seconds === null, значит main.py не запущен
+          uptimeSecondsValue = statusData.uptime_seconds !== undefined ? statusData.uptime_seconds : null;
+          startTimeValue = statusData.start_time !== undefined ? statusData.start_time : null;
         } catch (e) {
           console.warn("Не удалось получить статус системы:", e);
         }
@@ -2399,7 +2400,10 @@ export default function Dashboard() {
   };
 
   // Форматирование времени работы программы
-  const formatUptime = (seconds: number): string => {
+  const formatUptime = (seconds: number | null): string => {
+    if (seconds === null || seconds === undefined) {
+      return "не запущено";
+    }
     if (seconds === 0) {
       return "неизвестно";
     }
@@ -2661,7 +2665,7 @@ export default function Dashboard() {
 
       {/* Main Content */}
       <div className="flex-1 overflow-auto">
-        <div className="p-4 md:p-8">
+        <div className="p-4 md:p-8 max-w-7xl mx-auto">
           {/* Mobile Header with Hamburger */}
           <div className="md:hidden mb-4 flex items-center justify-between">
             <button
@@ -2747,7 +2751,7 @@ export default function Dashboard() {
                   year: 'numeric', 
                   hour: '2-digit', 
                   minute: '2-digit' 
-                }) : 'Неизвестно'}
+                }) : 'Не запущено'}
               </div>
             </div>
           </div>
@@ -3633,7 +3637,7 @@ export default function Dashboard() {
                 )}
               </div>
               {/* Формат отправки детекта */}
-              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6 w-full 2xl:max-w-5xl 2xl:mx-auto">
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
                     <h2 className="text-xl font-bold text-white">Формат отправки детекта</h2>
@@ -3864,7 +3868,7 @@ export default function Dashboard() {
                       onContextMenu={handleContextMenu}
                       onKeyDown={handleKeyDown}
                       onClick={() => setContextMenu(null)}
-                      className="w-auto max-w-2xl min-h-64 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
+                      className="w-full min-h-64 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
                       style={{ whiteSpace: 'pre-wrap' }}
                       onPaste={(e) => {
                         // Разрешаем вставку emoji из буфера обмена
@@ -4019,7 +4023,7 @@ export default function Dashboard() {
               </div>
               
               {/* Условные шаблоны сообщений */}
-              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6 w-full 2xl:max-w-5xl 2xl:mx-auto">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
                     <h2 className="text-xl font-bold text-white">Условные форматы сообщений</h2>
@@ -4062,7 +4066,7 @@ export default function Dashboard() {
                                     setConditionalTemplates(newTemplates);
                                   }}
                                   placeholder={`Шаблон #${index + 1}`}
-                                  className="w-64 px-3 py-1.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  className="flex-1 px-3 py-1.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                 />
                                 <div className="flex items-center gap-2">
                                   <label className="flex items-center gap-2 cursor-pointer">
@@ -4674,7 +4678,7 @@ export default function Dashboard() {
                                 newTemplates[index].template = convertToTechnicalKeys(textContent);
                                 setConditionalTemplates(newTemplates);
                               }}
-                              className="w-auto max-w-2xl min-h-32 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
+                              className="w-full min-h-32 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
                               style={{ whiteSpace: 'pre-wrap' }}
                               onPaste={(e) => {
                                 // Разрешаем вставку emoji из буфера обмена
@@ -4906,7 +4910,7 @@ export default function Dashboard() {
               </div>
               
               {/* Настройка отправки графиков */}
-              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+              <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6 w-full 2xl:max-w-6xl 2xl:mx-auto">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
                     <h2 className="text-xl font-bold text-white">Отправка графиков прострелов</h2>
@@ -4939,8 +4943,8 @@ export default function Dashboard() {
                     </div>
                     
                     {/* Компактная таблица настроек */}
-                    <div className="overflow-x-auto">
-                      <table className="border-collapse">
+                    <div className="overflow-x-auto w-full">
+                      <table className="border-collapse w-full">
                         <thead>
                           <tr className="border-b border-zinc-700">
                             <th className="text-left py-2 px-3 text-sm font-semibold text-zinc-300">Биржа</th>
@@ -4959,7 +4963,7 @@ export default function Dashboard() {
                                 <td className="py-3 px-3 align-top">
                                   <span className="text-sm font-medium text-white">{exchangeDisplayName}</span>
                                 </td>
-                                <td className="py-3 px-3 align-top" style={{ maxWidth: '400px' }}>
+                                <td className="py-3 px-3 align-top w-full">
                                   <div className="space-y-2">
                                     {/* Глобальная настройка для Spot */}
                                     <div className="flex items-center justify-between mb-2">
@@ -4981,7 +4985,7 @@ export default function Dashboard() {
                                       </div>
                                     </div>
                                     {/* Компактная сетка пар с ограниченной шириной */}
-                                    <div className="grid grid-cols-8 gap-1.5 max-w-full">
+                                    <div className="grid grid-cols-8 gap-1.5 w-full">
                                       {pairs.map((pair) => {
                                         const pairKey = `${exchange}_spot_${pair}`;
                                         return (
@@ -5008,7 +5012,7 @@ export default function Dashboard() {
                                     </div>
                                   </div>
                                 </td>
-                                <td className="py-3 px-3 align-top" style={{ maxWidth: '400px' }}>
+                                <td className="py-3 px-3 align-top w-full">
                                   <div className="space-y-2">
                                     {/* Глобальная настройка для Futures */}
                                     <div className="flex items-center justify-between mb-2">
@@ -5030,7 +5034,7 @@ export default function Dashboard() {
                                       </div>
                                     </div>
                                     {/* Компактная сетка пар с ограниченной шириной */}
-                                    <div className="grid grid-cols-8 gap-1.5 max-w-full">
+                                    <div className="grid grid-cols-8 gap-1.5 w-full">
                                       {futuresPairs.map((pair) => {
                                         const pairKey = `${exchange}_futures_${pair}`;
                                         return (
@@ -5077,7 +5081,7 @@ export default function Dashboard() {
               </div>
               
               {/* Фильтры по биржам */}
-              <div className="mb-8 flex gap-4 flex-col lg:flex-row">
+              <div className="mb-8 flex gap-4 flex-col lg:flex-row w-full 2xl:max-w-6xl 2xl:mx-auto">
                 {/* Левая часть - блок с фильтрами */}
                 <div className="w-full lg:w-1/2 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-1">
@@ -5181,10 +5185,10 @@ export default function Dashboard() {
                             <div className="px-4 pb-4">
                               {showPairsImmediately ? (
                                 // Для Binance Spot, Binance Futures и Bybit Spot - показываем таблицу всех пар
-                                <div className="bg-zinc-900 rounded-lg p-4 border border-zinc-700 inline-block">
+                                <div className="bg-zinc-900 rounded-lg p-4 border border-zinc-700 w-full">
                                   <h4 className="text-sm font-medium text-white mb-4">Торговые пары</h4>
-                                  <div className="overflow-x-auto">
-                                    <table className="border-collapse">
+                                  <div className="overflow-x-auto w-full">
+                                    <table className="border-collapse w-full">
                                       <thead>
                                         <tr className="border-b border-zinc-700">
                                           <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Пара</th>

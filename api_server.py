@@ -31,8 +31,23 @@ app = FastAPI(title="Crypto Spikes API", version="1.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Время запуска API сервера для расчета uptime
-_start_time = time.time()
+# Функция для получения времени запуска main.py
+def get_main_start_time() -> Optional[float]:
+    """
+    Получает время запуска main.py из файла.
+    Если файл не существует (main.py не запущен), возвращает None.
+    """
+    try:
+        import os
+        start_time_file = os.path.join(os.path.dirname(__file__), ".main_start_time")
+        if os.path.exists(start_time_file):
+            with open(start_time_file, 'r') as f:
+                main_start_time = float(f.read().strip())
+            return main_start_time
+    except Exception as e:
+        logger.debug(f"Не удалось прочитать время запуска main.py: {e}")
+    # Если файл не существует, main.py не запущен
+    return None
 
 # Настройка CORS для работы с Next.js
 # Поддержка локальной разработки и production домена
@@ -1112,15 +1127,33 @@ async def get_status():
     try:
         users_count = len(await db.get_all_users())
         
-        # Вычисляем uptime как время работы API сервера
-        uptime_seconds = int(time.time() - _start_time)
+        # Получаем время запуска main.py
+        main_start_time = get_main_start_time()
+        
+        # Если main.py не запущен, возвращаем None для uptime и start_time
+        if main_start_time is None:
+            # Получаем общее количество детектов
+            total_alerts = await db.get_alerts_count()
+            
+            return {
+                "users": users_count,
+                "total_alerts": total_alerts,
+                "alerts_since_start": 0,  # Нет детектов, так как main.py не запущен
+                "uptime_seconds": None,  # None означает, что main.py не запущен
+                "start_time": None,  # None означает, что main.py не запущен
+                "start_datetime": None,  # None означает, что main.py не запущен
+                "status": "running"
+            }
+        
+        # Вычисляем uptime как время работы main.py
+        uptime_seconds = int(time.time() - main_start_time)
         
         # Конвертируем время запуска в формат TIMESTAMP для SQL
         from datetime import datetime
-        start_datetime = datetime.fromtimestamp(_start_time)
+        start_datetime = datetime.fromtimestamp(main_start_time)
         start_timestamp_str = start_datetime.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Получаем количество детектов только с момента запуска
+        # Получаем количество детектов только с момента запуска main.py
         alerts_since_start = await db.get_alerts_count(created_after=start_timestamp_str)
         
         # Получаем общее количество детектов (для обратной совместимости)
@@ -1129,9 +1162,9 @@ async def get_status():
         return {
             "users": users_count,
             "total_alerts": total_alerts,  # Все детекты (для обратной совместимости)
-            "alerts_since_start": alerts_since_start,  # Детекты с момента запуска
+            "alerts_since_start": alerts_since_start,  # Детекты с момента запуска main.py
             "uptime_seconds": uptime_seconds,
-            "start_time": _start_time,  # Unix timestamp времени запуска
+            "start_time": main_start_time,  # Unix timestamp времени запуска main.py
             "start_datetime": start_timestamp_str,  # Время запуска в читаемом формате
             "status": "running"
         }
