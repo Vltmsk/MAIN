@@ -5624,16 +5624,16 @@ export default function Dashboard() {
                 
                 {/* Чёрный список монет */}
                 <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mt-6">
-                <div className="flex items-center gap-2 mb-1">
-                  <h2 className="text-xl font-bold text-white">Чёрный список монет</h2>
-                  <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <title>Добавьте монеты в чёрный список, чтобы исключить их из детектирования. Монеты из этого списка не будут отслеживаться, даже если они соответствуют всем критериям детектирования.</title>
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </div>
-                <p className="text-sm text-zinc-400 mb-6">Исключите монеты из детектирования. Монеты из чёрного списка не будут отслеживаться системой.</p>
-                
-                <div className="space-y-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h2 className="text-xl font-bold text-white">Чёрный список монет</h2>
+                    <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <title>Добавьте монеты в чёрный список, чтобы исключить их из детектирования. Монеты из этого списка не будут отслеживаться, даже если они соответствуют всем критериям детектирования.</title>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <p className="text-sm text-zinc-400 mb-6">Исключите монеты из детектирования. Монеты из чёрного списка не будут отслеживаться системой.</p>
+                  
+                  <div className="space-y-4">
                   <div className="flex gap-3">
                     <input
                       type="text"
@@ -5682,6 +5682,7 @@ export default function Dashboard() {
                   ) : (
                     <p className="text-zinc-500 text-sm">Черный список пуст</p>
                   )}
+                  </div>
                 </div>
               </div>
             </div>
