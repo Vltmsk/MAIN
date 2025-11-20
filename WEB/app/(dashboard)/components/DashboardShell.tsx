@@ -5619,8 +5619,8 @@ export default function Dashboard() {
                         </>
                       )}
                     </div>
-                  )}
-                )}
+                  )
+                })()}
                 
                 {/* Чёрный список монет */}
                 <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mt-6">
