@@ -1,12 +1,12 @@
-# PowerShell скрипт для автоматической синхронизации кода и перезапуска служб
-# Этот скрипт проверяет обновления в Git и перезапускает службы Windows при обнаружении изменений
+# PowerShell script for automatic code synchronization and service restart
+# This script checks for Git updates and restarts Windows services when changes are detected
 
-# Настройки
-$RepoPath = "C:\onlyWS"  # Путь к репозиторию на сервере
-$ServiceNames = @("CryptoSpikesMain", "CryptoSpikesAPI", "CryptoSpikesWeb")  # Имена служб Windows
+# Settings
+$RepoPath = "C:\onlyWS"  # Path to repository on server
+$ServiceNames = @("CryptoSpikesAPI", "CryptoSpikesWeb")  # Windows service names (CryptoSpikesMain excluded to prevent restart)
 $LogFile = "C:\onlyWS\deploy.log"
 
-# Функция для логирования
+# Logging function
 function Write-Log {
     param([string]$Message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -15,74 +15,100 @@ function Write-Log {
     Add-Content -Path $LogFile -Value $logMessage
 }
 
-# Проверка существования репозитория
+# Check if repository exists
 if (-not (Test-Path $RepoPath)) {
-    Write-Log "ОШИБКА: Репозиторий не найден по пути $RepoPath"
+    Write-Log "ERROR: Repository not found at path $RepoPath"
     exit 1
 }
 
-# Переход в директорию репозитория
+# Change to repository directory
 Set-Location $RepoPath
 
-# Сохранение текущей ветки и состояния
+# Save current branch and state
 $currentBranch = git rev-parse --abbrev-ref HEAD
 $remoteHash = $null
 $localHash = $null
 
 try {
-    # Получение информации об удаленном репозитории
+    # Get information about remote repository
     git fetch origin 2>&1 | Out-Null
     
-    # Получение хешей коммитов
+    # Get commit hashes
     $remoteHash = git rev-parse origin/$currentBranch 2>&1
     $localHash = git rev-parse HEAD 2>&1
     
     if ($LASTEXITCODE -ne 0) {
-        Write-Log "ОШИБКА: Не удалось получить информацию о коммитах"
+        Write-Log "ERROR: Failed to get commit information"
         exit 1
     }
     
-    # Сравнение хешей
+    # Compare hashes
     if ($remoteHash -eq $localHash) {
-        Write-Log "Изменений не обнаружено. Локальный коммит: $localHash"
+        Write-Log "No changes detected. Local commit: $localHash"
         exit 0
     }
     
-    Write-Log "Обнаружены изменения! Удаленный: $remoteHash, Локальный: $localHash"
-    Write-Log "Начинаем обновление..."
+    Write-Log "Changes detected! Remote: $remoteHash, Local: $localHash"
+    Write-Log "Starting update..."
     
-    # Остановка служб
-    Write-Log "Останавливаем службы..."
+    # Stop services
+    Write-Log "Stopping services..."
     foreach ($serviceName in $ServiceNames) {
         $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
         if ($service) {
             if ($service.Status -eq "Running") {
                 Stop-Service -Name $serviceName -Force
-                Write-Log "Служба $serviceName остановлена"
+                Write-Log "Service $serviceName stopped"
             }
         } else {
-            Write-Log "ПРЕДУПРЕЖДЕНИЕ: Служба $serviceName не найдена (возможно, еще не создана)"
+            Write-Log "WARNING: Service $serviceName not found (may not be created yet)"
         }
     }
     
-    # Ожидание полной остановки служб
+    # Wait for services to fully stop
     Start-Sleep -Seconds 5
     
-    # Обновление кода из Git
-    Write-Log "Обновляем код из Git..."
+    # Update code from Git
+    Write-Log "Updating code from Git..."
     
+    # First do hard reset for full synchronization (will delete files not in repository)
+    Write-Log "Synchronizing working directory with remote repository..."
+    $resetOutput = git reset --hard origin/$currentBranch 2>&1 | ForEach-Object {
+        Write-Log $_
+        $_
+    }
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "ERROR: Failed to synchronize working directory"
+        # Try to restart services even on error
+        foreach ($serviceName in $ServiceNames) {
+            $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+            if ($service) {
+                Start-Service -Name $serviceName
+            }
+        }
+        exit 1
+    }
+    
+    # Clean untracked files and directories
+    Write-Log "Cleaning untracked files..."
+    git clean -fd 2>&1 | ForEach-Object {
+        Write-Log $_
+    }
+    
+    # Use pull for additional check (though after reset --hard this is redundant)
     $pullOutput = git pull origin $currentBranch 2>&1 | ForEach-Object {
         Write-Log $_
         $_
     }
     
     if ($LASTEXITCODE -ne 0) {
-        # Проверяем, связана ли ошибка с неотслеживаемыми файлами
+        # Check if error is related to untracked files
         $pullOutputString = $pullOutput -join "`n"
         if ($pullOutputString -match "untracked working tree files would be overwritten by merge") {
-            Write-Log "Обнаружены конфликтующие неотслеживаемые файлы. Обрабатываем..."
+            Write-Log "Conflicting untracked files detected. Processing..."
             
-            # Извлекаем имена файлов из сообщения об ошибке
+            # Extract file names from error message
             $conflictFiles = @()
             $lines = $pullOutputString -split "`n"
             $foundMarker = $false
@@ -90,12 +116,12 @@ try {
             foreach ($line in $lines) {
                 if ($line -match "would be overwritten by merge") {
                     $foundMarker = $true
-                    # Файл может быть в этой же строке или на следующей
+                    # File may be on same line or next line
                     if ($line -match "would be overwritten by merge[:\s]+(.+)") {
                         $conflictFiles += $matches[1].Trim()
                     }
                 } elseif ($foundMarker -and $line.Trim() -and -not ($line -match "Please move or remove")) {
-                    # Файл на следующей строке (обычно с отступами)
+                    # File on next line (usually with indentation)
                     $fileName = $line.Trim()
                     if ($fileName -and -not ($fileName -match "^\s*$")) {
                         $conflictFiles += $fileName
@@ -105,28 +131,28 @@ try {
                 }
             }
             
-            # Удаляем конфликтующие файлы
+            # Remove conflicting files
             foreach ($file in $conflictFiles) {
                 if ($file -and (Test-Path $file)) {
-                    Write-Log "Удаляем конфликтующий файл: $file"
+                    Write-Log "Removing conflicting file: $file"
                     Remove-Item -Path $file -Force -ErrorAction SilentlyContinue
                     if (Test-Path $file) {
-                        Write-Log "ПРЕДУПРЕЖДЕНИЕ: Не удалось удалить $file, пробуем переместить..."
+                        Write-Log "WARNING: Failed to delete $file, trying to move..."
                         $backupPath = "$file.backup.$(Get-Date -Format 'yyyyMMddHHmmss')"
                         Move-Item -Path $file -Destination $backupPath -Force -ErrorAction SilentlyContinue
                     }
                 }
             }
             
-            # Повторяем pull
-            Write-Log "Повторяем обновление из Git..."
+            # Retry pull
+            Write-Log "Retrying update from Git..."
             git pull origin $currentBranch 2>&1 | ForEach-Object {
                 Write-Log $_
             }
             
             if ($LASTEXITCODE -ne 0) {
-                Write-Log "ОШИБКА: Не удалось обновить код из Git после обработки конфликтов"
-                # Попытка перезапустить службы даже при ошибке
+                Write-Log "ERROR: Failed to update code from Git after conflict resolution"
+                # Try to restart services even on error
                 foreach ($serviceName in $ServiceNames) {
                     $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
                     if ($service) {
@@ -136,8 +162,8 @@ try {
                 exit 1
             }
         } else {
-            Write-Log "ОШИБКА: Не удалось обновить код из Git"
-            # Попытка перезапустить службы даже при ошибке
+            Write-Log "ERROR: Failed to update code from Git"
+            # Try to restart services even on error
             foreach ($serviceName in $ServiceNames) {
                 $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
                 if ($service) {
@@ -148,13 +174,13 @@ try {
         }
     }
     
-    # Обновление Python зависимостей (опционально)
-    Write-Log "Обновляем Python зависимости..."
+    # Update Python dependencies (optional)
+    Write-Log "Updating Python dependencies..."
     pip install -r requirements.txt --upgrade 2>&1 | Out-Null
     
-    # Обновление Node.js зависимостей и сборка Next.js (если нужно)
+    # Update Node.js dependencies and build Next.js (if needed)
     if (Test-Path "WEB\package.json") {
-        Write-Log "Обновляем Node.js зависимости..."
+        Write-Log "Updating Node.js dependencies..."
         Set-Location "WEB"
         npm install 2>&1 | Out-Null
         npm run build 2>&1 | ForEach-Object {
@@ -163,8 +189,8 @@ try {
         Set-Location $RepoPath
     }
     
-    # Запуск служб
-    Write-Log "Запускаем службы..."
+    # Start services
+    Write-Log "Starting services..."
     Start-Sleep -Seconds 2
     
     foreach ($serviceName in $ServiceNames) {
@@ -174,20 +200,19 @@ try {
             Start-Sleep -Seconds 2
             $service = Get-Service -Name $serviceName
             if ($service.Status -eq "Running") {
-                Write-Log "Служба $serviceName успешно запущена"
+                Write-Log "Service $serviceName started successfully"
             } else {
-                Write-Log "ОШИБКА: Служба $serviceName не запустилась. Статус: $($service.Status)"
+                Write-Log "ERROR: Service $serviceName failed to start. Status: $($service.Status)"
             }
         } else {
-            Write-Log "ПРЕДУПРЕЖДЕНИЕ: Служба $serviceName не найдена, пропускаем запуск"
+            Write-Log "WARNING: Service $serviceName not found, skipping start"
         }
     }
     
-    Write-Log "Обновление завершено успешно!"
+    Write-Log "Update completed successfully!"
     
 } catch {
-    Write-Log "КРИТИЧЕСКАЯ ОШИБКА: $($_.Exception.Message)"
+    Write-Log "CRITICAL ERROR: $($_.Exception.Message)"
     Write-Log $_.ScriptStackTrace
     exit 1
 }
-

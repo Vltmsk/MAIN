@@ -5079,7 +5079,7 @@ export default function Dashboard() {
               {/* Фильтры по биржам */}
               <div className="mb-8 flex gap-4 flex-col lg:flex-row">
                 {/* Левая часть - блок с фильтрами */}
-                <div className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                <div className="w-full lg:w-1/2 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
                       <h2 className="text-xl font-bold text-white">Фильтры по биржам</h2>
@@ -5353,8 +5353,8 @@ export default function Dashboard() {
                 </div>
                 
                 {/* Правая часть - таблица с актуальными фильтрами */}
-                <div className="lg:w-96 bg-zinc-900 border border-zinc-800 rounded-xl p-3">
-                  <h2 className="text-sm font-bold text-white mb-2">Активные фильтры</h2>
+                <div className="w-full lg:w-1/2 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                  <h2 className="text-xl font-bold text-white mb-4">Активные фильтры</h2>
                   
                   <div className="overflow-x-auto">
                     {(() => {
@@ -5428,8 +5428,14 @@ export default function Dashboard() {
                       
                       if (tableRows.length === 0) {
                         return (
-                          <div className="text-center py-2">
-                            <p className="text-zinc-500 text-xs">Нет активных фильтров</p>
+                          <div className="text-center py-8">
+                            <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-zinc-800/50 mb-3">
+                              <svg className="w-8 h-8 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </div>
+                            <p className="text-zinc-400 text-sm">Нет активных фильтров</p>
+                            <p className="text-zinc-500 text-xs mt-1">Включите биржи в левом блоке для отображения фильтров</p>
                           </div>
                         );
                       }
@@ -5449,54 +5455,56 @@ export default function Dashboard() {
                       }, {} as Record<string, { exchange: string; market: string; rows: typeof tableRows }>);
                       
                       return (
-                        <div className="space-y-3">
+                        <div className="space-y-4">
                           {Object.values(groupedRows).map((group, groupIdx) => (
-                            <div key={groupIdx} className="border-b border-zinc-800/50 pb-3 last:border-b-0 last:pb-0">
-                              <div className="flex items-center gap-2 mb-2">
-                                <span className="text-xs font-semibold text-white">{group.exchange}</span>
-                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                                  group.market === "Spot" ? "bg-emerald-500/20 text-emerald-400" : "bg-blue-500/20 text-blue-400"
+                            <div key={groupIdx} className="bg-zinc-800/50 rounded-lg p-4 border border-zinc-700/50">
+                              <div className="flex items-center gap-2 mb-3">
+                                <span className="text-sm font-semibold text-white">{group.exchange}</span>
+                                <span className={`text-xs px-2 py-1 rounded font-medium ${
+                                  group.market === "Spot" ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-blue-500/20 text-blue-400 border border-blue-500/30"
                                 }`}>
                                   {group.market}
                                 </span>
                                 {group.rows.length > 0 && group.rows[0].pair === null && (
-                                  <span className="text-xs text-zinc-500">USDT</span>
+                                  <span className="text-xs text-zinc-400 bg-zinc-700/50 px-2 py-1 rounded">USDT</span>
                                 )}
                               </div>
                               {group.rows.length > 1 || (group.rows.length === 1 && group.rows[0].pair !== null) ? (
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="border-b border-zinc-700">
-                                      <th className="text-left py-1 px-2 text-zinc-400 font-medium">Пара</th>
-                                      <th className="text-right py-1 px-2 text-zinc-400 font-medium">Δ%</th>
-                                      <th className="text-right py-1 px-2 text-zinc-400 font-medium">Объём</th>
-                                      <th className="text-right py-1 px-2 text-zinc-400 font-medium">Тень%</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {group.rows.map((row, idx) => (
-                                      <tr key={idx} className={`border-b border-zinc-800/30 last:border-b-0 ${row.pair ? 'bg-zinc-800/20' : ''}`}>
-                                        <td className="py-1 px-2 text-zinc-400">{row.pair || '-'}</td>
-                                        <td className="py-1 px-2 text-right text-white">{row.delta}</td>
-                                        <td className="py-1 px-2 text-right text-white">{row.volume}</td>
-                                        <td className="py-1 px-2 text-right text-white">{row.shadow}</td>
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-sm">
+                                    <thead>
+                                      <tr className="border-b border-zinc-700">
+                                        <th className="text-left py-2 px-3 text-zinc-300 font-semibold">Пара</th>
+                                        <th className="text-right py-2 px-3 text-zinc-300 font-semibold">Дельта %</th>
+                                        <th className="text-right py-2 px-3 text-zinc-300 font-semibold">Объём USDT</th>
+                                        <th className="text-right py-2 px-3 text-zinc-300 font-semibold">Тень %</th>
                                       </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
+                                    </thead>
+                                    <tbody>
+                                      {group.rows.map((row, idx) => (
+                                        <tr key={idx} className={`border-b border-zinc-800/50 last:border-b-0 hover:bg-zinc-800/30 transition-colors ${row.pair ? 'bg-zinc-800/10' : ''}`}>
+                                          <td className="py-2 px-3 text-zinc-300 font-medium">{row.pair || 'Все пары'}</td>
+                                          <td className="py-2 px-3 text-right text-white font-medium">{row.delta || '0'}</td>
+                                          <td className="py-2 px-3 text-right text-white font-medium">{row.volume || '0'}</td>
+                                          <td className="py-2 px-3 text-right text-white font-medium">{row.shadow || '0'}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
                               ) : (
-                                <div className="grid grid-cols-3 gap-2 text-xs">
-                                  <div>
-                                    <span className="text-zinc-400">Δ%: </span>
-                                    <span className="text-white">{group.rows[0].delta}</span>
+                                <div className="grid grid-cols-3 gap-3">
+                                  <div className="bg-zinc-800/30 rounded-lg p-3 border border-zinc-700/30">
+                                    <div className="text-xs text-zinc-400 mb-1">Дельта %</div>
+                                    <div className="text-sm text-white font-semibold">{group.rows[0].delta || '0'}</div>
                                   </div>
-                                  <div>
-                                    <span className="text-zinc-400">Объём: </span>
-                                    <span className="text-white">{group.rows[0].volume}</span>
+                                  <div className="bg-zinc-800/30 rounded-lg p-3 border border-zinc-700/30">
+                                    <div className="text-xs text-zinc-400 mb-1">Объём USDT</div>
+                                    <div className="text-sm text-white font-semibold">{group.rows[0].volume || '0'}</div>
                                   </div>
-                                  <div>
-                                    <span className="text-zinc-400">Тень%: </span>
-                                    <span className="text-white">{group.rows[0].shadow}</span>
+                                  <div className="bg-zinc-800/30 rounded-lg p-3 border border-zinc-700/30">
+                                    <div className="text-xs text-zinc-400 mb-1">Тень %</div>
+                                    <div className="text-sm text-white font-semibold">{group.rows[0].shadow || '0'}</div>
                                   </div>
                                 </div>
                               )}
