@@ -115,6 +115,8 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
   
   // Состояние для управления видимостью блока формата отправки детекта
   const isUserEditingRef = useRef(false);
+  // Отдельный флаг для редактирования условных шаблонов, чтобы не сбивать курсор
+  const isConditionalUserEditingRef = useRef(false);
   const [isMessageFormatExpanded, setIsMessageFormatExpanded] = useState(false);
   
   // Состояние для контекстного меню форматирования
@@ -153,7 +155,31 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
   const highlightTimeoutRef = useRef<number | null>(null);
   
   // Состояние для активной подтемы настроек
-  const [activeSubTab, setActiveSubTab] = useState<"telegram" | "format" | "spikes" | "blacklist">("telegram");
+  const [activeSubTab, setActiveSubTab] = useState<"telegram" | "format" | "spikes" | "blacklist">("spikes");
+
+  // Храним последнюю активную подтему настроек в localStorage (на пользователя)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const storageKey = `settings_active_subtab_${userLogin || "default"}`;
+    const stored = window.localStorage.getItem(storageKey) as
+      | "telegram"
+      | "format"
+      | "spikes"
+      | "blacklist"
+      | null;
+
+    if (stored) {
+      setActiveSubTab(stored);
+    }
+  }, [userLogin]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const storageKey = `settings_active_subtab_${userLogin || "default"}`;
+    window.localStorage.setItem(storageKey, activeSubTab);
+  }, [activeSubTab, userLogin]);
 
   const formatNumberCompact = (value: string): string => {
     if (!value) return "0";
@@ -1133,16 +1159,19 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
   useEffect(() => {
     if (isConditionalTemplatesExpanded) {
       const timer = setTimeout(() => {
-        conditionalTemplates.forEach((template, index) => {
-          const editorId = `conditionalTemplate_${index}`;
-          const editor = document.getElementById(editorId) as HTMLElement;
-          if (editor) {
-            const html = convertTemplateToHTML(convertToFriendlyNames(template.template));
-            if (editor.innerHTML !== html) {
-              editor.innerHTML = html;
+        // Не трогаем содержимое, пока пользователь редактирует, чтобы не сбивать курсор
+        if (!isConditionalUserEditingRef.current) {
+          conditionalTemplates.forEach((template, index) => {
+            const editorId = `conditionalTemplate_${index}`;
+            const editor = document.getElementById(editorId) as HTMLElement;
+            if (editor) {
+              const html = convertTemplateToHTML(convertToFriendlyNames(template.template));
+              if (editor.innerHTML !== html) {
+                editor.innerHTML = html;
+              }
             }
-          }
-        });
+          });
+        }
       }, 100);
       return () => clearTimeout(timer);
     }
@@ -1164,6 +1193,16 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
         <div className="mb-6">
           <div className="flex flex-wrap gap-3 bg-zinc-900 border border-zinc-800 rounded-xl p-2">
             <button
+              onClick={() => setActiveSubTab("spikes")}
+              className={`flex-1 min-w-[200px] px-6 py-3 rounded-lg font-medium smooth-transition ripple ${
+                activeSubTab === "spikes"
+                  ? "bg-zinc-700 text-white"
+                  : "text-zinc-400 hover:text-white hover:bg-zinc-800/50"
+              }`}
+            >
+              Настройки прострелов
+            </button>
+            <button
               onClick={() => setActiveSubTab("telegram")}
               className={`flex-1 min-w-[200px] px-6 py-3 rounded-lg font-medium smooth-transition ripple ${
                 activeSubTab === "telegram"
@@ -1184,16 +1223,6 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
               Формат отправки детекта
             </button>
             <button
-              onClick={() => setActiveSubTab("spikes")}
-              className={`flex-1 min-w-[200px] px-6 py-3 rounded-lg font-medium smooth-transition ripple ${
-                activeSubTab === "spikes"
-                  ? "bg-zinc-700 text-white"
-                  : "text-zinc-400 hover:text-white hover:bg-zinc-800/50"
-              }`}
-            >
-              Настройки прострелов
-            </button>
-            <button
               onClick={() => setActiveSubTab("blacklist")}
               className={`flex-1 min-w-[200px] px-6 py-3 rounded-lg font-medium smooth-transition ripple ${
                 activeSubTab === "blacklist"
@@ -1205,6 +1234,28 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
             </button>
           </div>
         </div>
+
+        {/* Предупреждение о незаполненных Telegram-данных */}
+        {(!telegramChatId || !telegramChatId.trim() || !telegramBotToken || !telegramBotToken.trim()) && (
+          <div className="mb-6">
+            <div className="bg-red-500/15 border border-red-500/60 text-red-300 px-4 py-3 rounded-lg text-sm flex items-start gap-2">
+              <svg
+                className="w-5 h-5 mt-0.5 flex-shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a1 1 0 00.86 1.5h18.64a1 1 0 00.86-1.5L13.71 3.86a1 1 0 00-1.72 0z"
+                />
+              </svg>
+              <span>Введите данные Телеграм для получения детектов</span>
+            </div>
+          </div>
+        )}
         
         {/* Уведомление по центру экрана */}
         {saveMessage && (
@@ -1677,52 +1728,6 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                         <label className="block text-sm font-medium text-zinc-300">
                           Шаблон сообщения
                         </label>
-                        <button
-                          ref={emojiButtonRef}
-                          type="button"
-                          onClick={(e) => {
-                            const button = e.currentTarget;
-                            const rect = button.getBoundingClientRect();
-                            const pickerWidth = 350;
-                            const pickerHeight = 400;
-                            const padding = 8;
-                            
-                            // Вычисляем позицию с учетом границ экрана
-                            let x = rect.left;
-                            let y = rect.bottom + padding;
-                            
-                            // Если picker не помещается справа, сдвигаем влево
-                            if (x + pickerWidth > window.innerWidth) {
-                              x = window.innerWidth - pickerWidth - padding;
-                            }
-                            
-                            // Если picker не помещается снизу, показываем сверху
-                            if (y + pickerHeight > window.innerHeight) {
-                              y = rect.top - pickerHeight - padding;
-                            }
-                            
-                            // Минимальная позиция слева
-                            if (x < padding) {
-                              x = padding;
-                            }
-                            
-                            // Минимальная позиция сверху
-                            if (y < padding) {
-                              y = padding;
-                            }
-                            
-                            setShowEmojiPicker({ 
-                              main: !showEmojiPicker.main, 
-                              conditional: null,
-                              position: { x, y }
-                            });
-                          }}
-                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-emerald-500/50 rounded-lg transition-colors text-sm font-medium text-zinc-300 hover:text-white flex items-center gap-2"
-                          title="Добавить emoji"
-                        >
-                          <span className="text-lg">😀</span>
-                          <span>Emoji</span>
-                        </button>
                       </div>
                       <div className="relative">
                         <div
@@ -1730,8 +1735,9 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                           contentEditable
                           suppressContentEditableWarning
                           onInput={(e) => {
-                            const editor = e.currentTarget;
+                            const editor = e.currentTarget as HTMLElement;
                             const content = editor.innerHTML;
+
                             // Извлекаем технические ключи из визуальных блоков
                             const tempDiv = document.createElement('div');
                             tempDiv.innerHTML = content;
@@ -1740,64 +1746,18 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                             blocks.forEach((block) => {
                               const key = block.getAttribute('data-placeholder-key');
                               if (key) {
-                                // Экранируем HTML для замены
                                 const blockHTML = block.outerHTML.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                                 textContent = textContent.replace(new RegExp(blockHTML, 'g'), key);
                               }
                             });
+
                             // Заменяем <br> обратно на переносы строк
                             textContent = textContent.replace(/<br\s*\/?>/gi, '\n');
-                            // Удаляем HTML теги форматирования, но сохраняем структуру
-                            const plainText = textContent.replace(/<[^>]*>/g, '');
-                            // Обновляем состояние
+
+                            // Обновляем только состояние, не пересоздавая HTML,
+                            // чтобы не сбивать позицию курсора при вводе
                             isUserEditingRef.current = true;
                             setMessageTemplate(textContent);
-                            // Пересоздаем HTML с визуальными блоками
-                            setTimeout(() => {
-                              const html = convertTemplateToHTML(convertToFriendlyNames(textContent));
-                              if (editor.innerHTML !== html) {
-                                // Сохраняем позицию курсора перед обновлением
-                                const selection = window.getSelection();
-                                let savedRange: Range | null = null;
-                                if (selection && selection.rangeCount > 0) {
-                                  savedRange = selection.getRangeAt(0).cloneRange();
-                                }
-                                
-                                editor.innerHTML = html;
-                                
-                                // Восстанавливаем позицию курсора
-                                if (savedRange && selection) {
-                                  try {
-                                    selection.removeAllRanges();
-                                    selection.addRange(savedRange);
-                                  } catch (e) {
-                                    // Если не удалось, пробуем восстановить приблизительно
-                                    try {
-                                      const textNodes = getTextNodes(editor);
-                                      if (textNodes.length > 0) {
-                                        const startOffset = savedRange.startOffset;
-                                        const targetNode = savedRange.startContainer.nodeType === Node.TEXT_NODE 
-                                          ? savedRange.startContainer 
-                                          : textNodes[0];
-                                        const maxOffset = targetNode.textContent?.length || 0;
-                                        const newRange = document.createRange();
-                                        newRange.setStart(targetNode, Math.min(startOffset, maxOffset));
-                                        newRange.collapse(true);
-                                        selection.removeAllRanges();
-                                        selection.addRange(newRange);
-                                      }
-                                    } catch (e2) {
-                                      // Игнорируем ошибки
-                                    }
-                                  }
-                                }
-                              }
-                              
-                              // Снимаем флаг редактирования после обновления
-                              setTimeout(() => {
-                                isUserEditingRef.current = false;
-                              }, 50);
-                            }, 0);
                           }}
                           onContextMenu={handleContextMenu}
                           onKeyDown={handleKeyDown}
@@ -2037,9 +1997,16 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                               </div>
                               
                               {/* Список условий для этого шаблона */}
-                              <div className="mb-3">
-                                <div className="flex items-center justify-between mb-2">
-                                  <label className="block text-xs font-medium text-zinc-300">Условия (все должны выполняться):</label>
+                              <div className="mb-4">
+                                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-3">
+                                  <div>
+                                    <p className="text-xs font-medium text-zinc-200">
+                                      Условия <span className="text-[11px] text-zinc-400">(все должны выполняться)</span>
+                                    </p>
+                                    <p className="text-[11px] text-zinc-500 mt-0.5">
+                                      Можно добавить несколько строк с разными параметрами (объём, дельта, серия и т.д.).
+                                    </p>
+                                  </div>
                                   <button
                                     onClick={() => {
                                       const newTemplates = [...conditionalTemplates];
@@ -2049,17 +2016,21 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                       });
                                       setConditionalTemplates(newTemplates);
                                     }}
-                                    className="px-2 py-1 bg-zinc-700 hover:bg-zinc-600 text-white text-xs font-medium rounded transition-colors"
+                                    className="inline-flex items-center justify-center px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-medium rounded-lg border border-zinc-700 hover:border-emerald-500/60 transition-colors"
                                   >
-                                    + Добавить условие
+                                    <span className="mr-1 text-emerald-400 text-sm">+</span>
+                                    Добавить условие
                                   </button>
                                 </div>
                                 
-                                <div className="space-y-2">
+                                <div className="space-y-3">
                                   {template.conditions.map((condition, condIndex) => (
-                                    <div key={condIndex} className="bg-zinc-900/50 border border-zinc-700/50 rounded-lg p-3">
+                                    <div
+                                      key={condIndex}
+                                      className="bg-zinc-900/50 border border-zinc-700/50 rounded-lg p-3 md:p-4 max-w-4xl"
+                                    >
                                       <div className="flex gap-2 items-end mb-2">
-                                        <div className="flex-1">
+                                        <div className="w-full md:w-56">
                                           <label className="block text-xs text-zinc-400 mb-1">Параметр</label>
                                           <select
                                             value={condition.type}
@@ -2182,7 +2153,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                   newTemplates[index].description = updatedDescription;
                                                   setConditionalTemplates(newTemplates);
                                                 }}
-                                                className="w-32 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                                 placeholder="2"
                                               />
                                             </div>
@@ -2202,7 +2173,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                   newTemplates[index].description = updatedDescription;
                                                   setConditionalTemplates(newTemplates);
                                                 }}
-                                                className="w-32 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                                 placeholder="300"
                                               />
                                             </div>
@@ -2210,7 +2181,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                         ) : condition.type === "delta" ? (
                                           // Для дельты - только минимум, максимум всегда бесконечность
                                           <div className="flex-1">
-                                            <label className="block text-xs text-zinc-400 mb-1">Дельта (%)</label>
+                                            <label className="block text-xs text-zinc-400 mb-1">Дельта от (%)</label>
                                             <input
                                               type="number"
                                               step="0.1"
@@ -2230,7 +2201,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                 newTemplates[index].description = updatedDescription;
                                                 setConditionalTemplates(newTemplates);
                                               }}
-                                              className="w-32 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                              className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                               placeholder="0"
                                             />
                                           </div>
@@ -2277,7 +2248,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                     newTemplates[index].description = updatedDescription;
                                                     setConditionalTemplates(newTemplates);
                                                   }}
-                                                  className="w-24 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                  className="w-full max-w-[140px] px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                                   placeholder="0"
                                                 />
                                               </div>
@@ -2312,7 +2283,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                     }
                                                   }}
                                                   placeholder="∞"
-                                                  className="w-24 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                  className="w-full max-w-[140px] px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                                   title="Введите число от 0 до 100 или оставьте ∞ для бесконечности"
                                                 />
                                               </div>
@@ -2381,7 +2352,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                           </div>
                                         ) : (
                                           // Для объёма - одно значение как было
-                                          <div className="flex-1">
+                                          <div className="w-full md:w-auto md:min-w-[220px]">
                                             <label className="block text-xs text-zinc-400 mb-1">Значение (≥)</label>
                                             <input
                                               type="number"
@@ -2395,7 +2366,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                 newTemplates[index].description = updatedDescription;
                                                 setConditionalTemplates(newTemplates);
                                               }}
-                                              className="w-32 px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                              className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                               placeholder="0"
                                             />
                                           </div>
@@ -2420,13 +2391,93 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                 </div>
                               </div>
                               
-                              {/* Редактор шаблона сообщения для условного шаблона - упрощенная версия, остальное добавлю во втором этапе из-за ограничений размера */}
+                              {/* Редактор шаблона сообщения для условного шаблона с теми же вставками, что и в основном формате */}
                               <div className="mb-4">
                                 <div className="flex items-center justify-between mb-2">
                                   <label className="block text-xs text-zinc-400">
                                     Шаблон сообщения
                                   </label>
                                 </div>
+
+                                {/* Доступные вставки для условного шаблона */}
+                                <div className="mb-3">
+                                  <h4 className="text-xs font-medium text-zinc-300 mb-2">Доступные вставки:</h4>
+                                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                                    {[
+                                      { friendly: "[[Дельта стрелы]]", label: "Дельта стрелы", desc: "Например: 5.23%" },
+                                      { friendly: "[[Направление]]", label: "Направление", desc: "Эмодзи стрелки вверх ⬆️ или вниз ⬇️" },
+                                      { friendly: "[[Биржа и тип рынка]]", label: "Биржа и тип рынка", desc: "BINANCE | SPOT" },
+                                      { friendly: "[[Торговая пара]]", label: "Торговая пара", desc: "Например: BTC-USDT" },
+                                      { friendly: "[[Объём стрелы]]", label: "Объём стрелы", desc: "Объём в USDT" },
+                                      { friendly: "[[Тень свечи]]", label: "Тень свечи", desc: "Процент тени свечи" },
+                                      { friendly: "[[Время детекта]]", label: "Время детекта", desc: "Дата и время (YYYY-MM-DD HH:MM:SS)" },
+                                      { friendly: "[[Временная метка]]", label: "Временная метка", desc: "Unix timestamp" },
+                                    ].map((placeholder) => (
+                                      <button
+                                        key={placeholder.friendly}
+                                        type="button"
+                                        onClick={() => {
+                                          const editor = document.getElementById(`conditionalTemplate_${index}`) as HTMLElement;
+                                          if (editor) {
+                                            const selection = window.getSelection();
+                                            if (selection && selection.rangeCount > 0) {
+                                              const range = selection.getRangeAt(0);
+                                              range.deleteContents();
+
+                                              const block = document.createElement("span");
+                                              block.className =
+                                                "inline-flex items-center gap-1.5 px-2 py-1 mx-0.5 bg-emerald-500/20 border border-emerald-500/50 rounded text-emerald-300 text-xs font-medium cursor-default";
+                                              block.setAttribute("data-placeholder-key", placeholder.friendly);
+                                              block.setAttribute("contenteditable", "false");
+                                              block.innerHTML = `
+                                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"></path>
+                                                </svg>
+                                                <span>${placeholder.label}</span>
+                                              `;
+
+                                              range.insertNode(block);
+
+                                              const newRange = document.createRange();
+                                              newRange.setStartAfter(block);
+                                              newRange.collapse(true);
+                                              selection.removeAllRanges();
+                                              selection.addRange(newRange);
+
+                                              const updatedContent = editor.innerHTML;
+                                              const tempDiv = document.createElement("div");
+                                              tempDiv.innerHTML = updatedContent;
+                                              const blocks = tempDiv.querySelectorAll("[data-placeholder-key]");
+                                              let textContent = updatedContent;
+                                              blocks.forEach((b) => {
+                                                const key = b.getAttribute("data-placeholder-key");
+                                                if (key) {
+                                                  textContent = textContent.replace(b.outerHTML, key);
+                                                }
+                                              });
+
+                                              const newTemplates = [...conditionalTemplates];
+                                              newTemplates[index].template = convertToTechnicalKeys(
+                                                textContent.replace(/<br\s*\/?>/gi, "\n")
+                                              );
+                                              setConditionalTemplates(newTemplates);
+                                            }
+                                          }
+                                        }}
+                                        className="text-left px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border-2 border-zinc-600 hover:border-emerald-500 rounded-lg transition-all cursor-pointer group shadow-sm hover:shadow-md"
+                                        title={placeholder.desc}
+                                      >
+                                        <div className="text-xs font-medium text-white group-hover:text-emerald-300 mb-0.5">
+                                          {placeholder.label}
+                                        </div>
+                                        <div className="text-[11px] text-zinc-500 group-hover:text-zinc-400">
+                                          {placeholder.desc}
+                                        </div>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+
                                 <div className="relative">
                                   <div
                                     id={`conditionalTemplate_${index}`}
@@ -2435,29 +2486,67 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                     onInput={(e) => {
                                       const editor = e.currentTarget as HTMLElement;
                                       const content = editor.innerHTML;
-                                      const tempDiv = document.createElement('div');
+                                      const tempDiv = document.createElement("div");
                                       tempDiv.innerHTML = content;
-                                      const blocks = tempDiv.querySelectorAll('[data-placeholder-key]');
+                                      const blocks = tempDiv.querySelectorAll("[data-placeholder-key]");
                                       let textContent = content;
                                       blocks.forEach((block) => {
-                                        const key = block.getAttribute('data-placeholder-key');
+                                        const key = block.getAttribute("data-placeholder-key");
                                         if (key) {
-                                          const blockHTML = block.outerHTML.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                                          textContent = textContent.replace(new RegExp(blockHTML, 'g'), key);
+                                          const blockHTML = block.outerHTML.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                                          textContent = textContent.replace(new RegExp(blockHTML, "g"), key);
                                         }
                                       });
-                                      textContent = textContent.replace(/<br\s*\/?>/gi, '\n');
-                                      
+                                      // Заменяем HTML-переносы строк на обычные \n
+                                      textContent = textContent.replace(/<br\s*\/?>/gi, "\n");
+
+                                      // Помечаем, что пользователь сейчас редактирует условный шаблон,
+                                      // чтобы эффект инициализации не перезатирал содержимое и не сбивал курсор
+                                      isConditionalUserEditingRef.current = true;
+
                                       const newTemplates = [...conditionalTemplates];
                                       newTemplates[index].template = convertToTechnicalKeys(textContent);
                                       setConditionalTemplates(newTemplates);
+
+                                      // Через небольшой таймаут снимаем флаг редактирования
+                                      setTimeout(() => {
+                                        isConditionalUserEditingRef.current = false;
+                                      }, 150);
                                     }}
                                     className="w-full min-h-32 px-4 py-3 bg-zinc-800 border-2 border-zinc-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:border-emerald-500 focus:ring-emerald-500 resize-none overflow-y-auto template-editor cursor-text"
-                                    style={{ whiteSpace: 'pre-wrap' }}
-                                    dangerouslySetInnerHTML={{
-                                      __html: convertTemplateToHTML(convertToFriendlyNames(template.template || ""))
-                                    }}
+                                    style={{ whiteSpace: "pre-wrap" }}
                                   />
+
+                                  {/* Emoji Picker для условных шаблонов */}
+                                  {showEmojiPicker.conditional === index && showEmojiPicker.position && (
+                                    <>
+                                      <div
+                                        className="fixed inset-0 z-40"
+                                        onClick={() =>
+                                          setShowEmojiPicker({ main: false, conditional: null, position: undefined })
+                                        }
+                                      />
+                                      <div
+                                        className="fixed z-50"
+                                        style={{
+                                          left: `${showEmojiPicker.position.x}px`,
+                                          top: `${showEmojiPicker.position.y}px`,
+                                        }}
+                                      >
+                                        <EmojiPicker
+                                          onEmojiClick={(emojiData) =>
+                                            insertEmoji(emojiData as any, `conditionalTemplate_${index}`, true)
+                                          }
+                                          theme={"dark" as any}
+                                          width={350}
+                                          height={400}
+                                          previewConfig={{
+                                            showPreview: false,
+                                          }}
+                                        />
+                                      </div>
+                                    </>
+                                  )}
                                 </div>
                               </div>
                             </div>

@@ -7,11 +7,13 @@ export default function LoginPage() {
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setSuccessMessage("");
     setLoading(true);
 
     try {
@@ -95,15 +97,28 @@ export default function LoginPage() {
         return;
       }
 
-      const storedLogin = responseData.user || normalizedLogin;
-
+      const storedLogin = (responseData.user || normalizedLogin) as string;
+      
       // Успешный вход - сохраняем токен и логин
       if (typeof window !== "undefined") {
         localStorage.setItem("auth_token", "demo_token");
         localStorage.setItem("user_login", storedLogin);
       }
 
-      // Перенаправление на dashboard
+      // Специальное поздравительное сообщение для пользователя Valera
+      if (storedLogin.trim().toLowerCase() === "valera") {
+        const message =
+          "Молодец чемпион! Ты смог войти на сайт, это маленькая, но победа! Если ты смог зайти на сайт, ты сможешь всё в этой жизни!";
+        setSuccessMessage(message);
+
+        // Показываем сообщение 10 секунд, затем перенаправляем на dashboard
+        setTimeout(() => {
+          router.push("/dashboard");
+        }, 10000);
+        return;
+      }
+
+      // Перенаправление на dashboard для остальных пользователей
       router.push("/dashboard");
     } catch (err) {
       console.error("Ошибка при входе:", err);
@@ -148,6 +163,12 @@ export default function LoginPage() {
             {error && (
               <div className="bg-red-500/20 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg text-sm animate-fade-in relative z-10">
                 {error}
+              </div>
+            )}
+
+            {successMessage && (
+              <div className="bg-emerald-500/15 border border-emerald-500/60 text-emerald-300 px-4 py-3 rounded-lg text-sm animate-fade-in relative z-10">
+                {successMessage}
               </div>
             )}
 

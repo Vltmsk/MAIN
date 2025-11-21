@@ -456,8 +456,8 @@ class Database:
         Returns:
             int: ID созданного пользователя
             
-        Raises:
-            ValueError: Если пользователь не существует или уже зарегистрирован
+            Raises:
+                ValueError: Если пользователь не существует или уже зарегистрирован
         """
         normalized_user = self._normalize_username(user)
         if not normalized_user:
@@ -475,7 +475,10 @@ class Database:
                     async with conn.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)) as cursor2:
                         password_row = await cursor2.fetchone()
                         if password_row and password_row[0]:
-                            raise ValueError(f"Пользователь с логином '{existing_username}' уже зарегистрирован. Используйте страницу входа.")
+                            # Пользователь уже имеет установленный пароль — регистрация недоступна
+                            # Важно: это сообщение уходит на фронтенд и показывается пользователю как есть
+                            # Требование: текст должен быть строго "Такой пользователь уже зарегистрирован"
+                            raise ValueError("Такой пользователь уже зарегистрирован")
                 else:
                     raise ValueError("Регистрация для этого логина не разрешена. Обратитесь к администратору.")
 
@@ -561,8 +564,14 @@ class Database:
                 
                 # Пароль обязателен для всех пользователей - проверяем его строго
                 if not password_hash:
-                    logger.warning(f"Пользователь '{user_data.get('user')}' не имеет пароля - доступ запрещён. Необходимо зарегистрироваться или установить пароль.")
-                    return None
+                    # Специальный кейс: логин существует, но пароль ещё не установлен
+                    # Это должно трактоваться как необходимость сначала пройти регистрацию
+                    logger.warning(
+                        f"Пользователь '{user_data.get('user')}' не имеет пароля - доступ запрещён. "
+                        "Необходимо сначала пройти регистрацию."
+                    )
+                    # Сообщение возвращаем через ValueError, чтобы API-слой мог отдать его пользователю
+                    raise ValueError("Сначала пройдите регистрацию")
                 
                 # Проверяем пароль
                 if not self._verify_password(password, password_hash):

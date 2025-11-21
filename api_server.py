@@ -317,7 +317,11 @@ async def login_user(request: Request, user: str, login_data: UserLogin):
             raise HTTPException(status_code=400, detail="Пароль не может быть пустым")
         
         # ТОЛЬКО проверка пароля и чтение данных - никаких обновлений
-        user_data = await db.authenticate_user(user, login_data.password)
+        try:
+            user_data = await db.authenticate_user(user, login_data.password)
+        except ValueError as e:
+            # Специальные пользовательские ошибки (например, нет пароля / не завершена регистрация)
+            raise HTTPException(status_code=400, detail=str(e))
         if not user_data:
             # Пользователь не найден или пароль неверный
             raise HTTPException(status_code=401, detail="Неверный логин или пароль")

@@ -22,7 +22,7 @@ type Exchange = {
 
 export default function Dashboard() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState("monitoring");
+  const [activeTab, setActiveTab] = useState<"monitoring" | "statistics" | "settings" | "admin">("monitoring");
   const [userLogin, setUserLogin] = useState("");
   const [loading, setLoading] = useState(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -59,6 +59,28 @@ export default function Dashboard() {
 
   // Проверка, является ли текущий пользователь администратором (без учета регистра)
   const isAdmin = userLogin?.toLowerCase() === "влад";
+
+  // Восстанавливаем последнюю активную вкладку при загрузке
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const stored = window.localStorage.getItem("dashboard_active_tab") as
+      | "monitoring"
+      | "statistics"
+      | "settings"
+      | "admin"
+      | null;
+
+    if (stored) {
+      setActiveTab(stored);
+    }
+  }, []);
+
+  // Сохраняем активную вкладку между обновлениями страницы
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("dashboard_active_tab", activeTab);
+  }, [activeTab]);
 
   const fetchMetrics = async () => {
     try {
@@ -585,7 +607,7 @@ export default function Dashboard() {
             }}
             className={`w-full flex items-center gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
               activeTab === "monitoring"
-                ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-emerald nav-active"
+                ? "bg-zinc-700 text-white nav-active"
                 : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
             }`}
           >
@@ -602,7 +624,7 @@ export default function Dashboard() {
             }}
             className={`w-full flex items-center gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
               activeTab === "statistics"
-                ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-emerald nav-active"
+                ? "bg-zinc-700 text-white nav-active"
                 : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
             }`}
           >
@@ -619,7 +641,7 @@ export default function Dashboard() {
             }}
             className={`w-full flex items-center gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
               activeTab === "settings"
-                ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-emerald nav-active"
+                ? "bg-zinc-700 text-white nav-active"
                 : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
             }`}
           >
@@ -639,7 +661,7 @@ export default function Dashboard() {
               }}
               className={`w-full flex items-center gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
                 activeTab === "admin"
-                  ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-emerald nav-active"
+                  ? "bg-zinc-700 text-white nav-active"
                   : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
               }`}
             >

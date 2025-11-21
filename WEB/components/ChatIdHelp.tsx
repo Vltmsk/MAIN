@@ -309,7 +309,7 @@ export default function ChatIdHelp({ variant = "default", showBotTokenWarning = 
                 >
                   @BotFather
                 </a>
-                {" "}бота в группу, чтобы получать туда детекты.
+                {" "}бота в группу, чтобы получать туда детекты. У бота должно быть разрешение на отправку сообщений в эту группу или канал.
               </p>
             </div>
           </div>
