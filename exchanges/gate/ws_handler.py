@@ -156,10 +156,22 @@ async def _ws_connection_worker(
                             await asyncio.sleep(DELAY_BETWEEN_SUBSCRIBE)
                     
                     # Читаем сообщения
+                    last_error_message = None
                     while True:
                         try:
                             message = await asyncio.wait_for(websocket.recv(), timeout=120)
                             message_dict = json.loads(message)
+                            
+                            # Логируем error-сообщения от Gate (важно для диагностики code:3, code:5 и т.п.)
+                            if (
+                                message_dict.get("event") == "error"
+                                or "error" in message_dict
+                                or (isinstance(message_dict.get("code"), int) and message_dict.get("code") != 0)
+                            ):
+                                last_error_message = message_dict
+                                logger.warning(
+                                    f"Gate WS error message on {market} {connection_id}: {message_dict}"
+                                )
                             
                             # Обработка pong
                             if message_dict.get("channel") in ["spot.pong", "futures.pong"]:
@@ -238,7 +250,24 @@ async def _ws_connection_worker(
                         except asyncio.TimeoutError:
                             # При таймауте продолжаем чтение (ping отправляется отдельной задачей)
                             continue
-                        except websockets.exceptions.ConnectionClosed:
+                        except websockets.exceptions.ConnectionClosed as e:
+                            # Логируем код и причину закрытия, плюс последнее error-сообщение от Gate
+                            close_code = getattr(e, "code", None)
+                            close_reason = getattr(e, "reason", None)
+                            logger.warning(
+                                f"Gate WS connection {connection_id} ({market}) closed: "
+                                f"code={close_code}, reason={close_reason}, "
+                                f"last_error_message={last_error_message}"
+                            )
+                            await on_error({
+                                "exchange": "gate",
+                                "market": market,
+                                "connection_id": connection_id,
+                                "type": "connection_closed",
+                                "close_code": close_code,
+                                "close_reason": close_reason,
+                                "last_error_message": last_error_message,
+                            })
                             break
                 finally:
                     # Отменяем задачу ping при выходе

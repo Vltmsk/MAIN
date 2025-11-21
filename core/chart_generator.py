@@ -4,6 +4,10 @@
 import asyncio
 import aiohttp
 import time
+import ssl
+import certifi
+import sys
+import os
 from typing import Optional, List, Dict, Tuple
 from io import BytesIO
 import matplotlib
@@ -20,6 +24,37 @@ logger = get_logger(__name__)
 # Кэш для графиков: {cache_key: (image_bytes, timestamp)}
 _chart_cache: Dict[str, Tuple[bytes, float]] = {}
 CACHE_TTL = 600  # 10 минут
+
+
+def _create_ssl_connector() -> aiohttp.TCPConnector:
+    """
+    Создаёт SSL‑коннектор с использованием корневых сертификатов certifi.
+    Используется для всех REST‑запросов к биржам, чтобы избежать проблем с локальными сертификатами.
+    """
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    return aiohttp.TCPConnector(ssl=ssl_context)
+
+
+def _log_ssl_error(exchange: str, url: str, error: Exception) -> None:
+    """
+    Расширенное логирование SSL‑ошибок для диагностики проблем окружения.
+    """
+    logger.error(
+        f"SSL ошибка при запросе истории сделок: {exchange} {url}: {error}",
+        exc_info=True,
+        extra={
+            "log_to_db": True,
+            "error_type": "ssl_error",
+            "exchange": exchange,
+            "market": None,
+            "symbol": None,
+            "env_python_version": sys.version,
+            "env_certifi_path": certifi.where(),
+            "env_aiohttp_version": getattr(aiohttp, "__version__", "unknown"),
+            "env_https_proxy": os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"),
+            "env_http_proxy": os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"),
+        },
+    )
 
 
 class ChartGenerator:
@@ -116,7 +151,8 @@ class ChartGenerator:
                 "limit": 1000
             }
             
-            async with aiohttp.ClientSession() as session:
+            connector = _create_ssl_connector()
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -139,6 +175,9 @@ class ChartGenerator:
                     else:
                         logger.warning(f"Ошибка получения сделок Binance: HTTP {response.status}")
                         return []
+        except ssl.SSLError as e:
+            _log_ssl_error("binance", url, e)
+            return []
         except Exception as e:
             logger.warning(f"Ошибка получения сделок Binance: {e}")
             return []
@@ -175,7 +214,8 @@ class ChartGenerator:
                 "limit": 1000
             }
             
-            async with aiohttp.ClientSession() as session:
+            connector = _create_ssl_connector()
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -203,6 +243,9 @@ class ChartGenerator:
                     else:
                         logger.warning(f"Ошибка получения сделок Bybit: HTTP {response.status}")
                         return []
+        except ssl.SSLError as e:
+            _log_ssl_error("bybit", url, e)
+            return []
         except Exception as e:
             logger.warning(f"Ошибка получения сделок Bybit: {e}")
             return []
@@ -236,7 +279,8 @@ class ChartGenerator:
                 "limit": 1000
             }
             
-            async with aiohttp.ClientSession() as session:
+            connector = _create_ssl_connector()
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -262,6 +306,9 @@ class ChartGenerator:
                     else:
                         logger.warning(f"Ошибка получения сделок Gate.io: HTTP {response.status}")
                         return []
+        except ssl.SSLError as e:
+            _log_ssl_error("gate", url, e)
+            return []
         except Exception as e:
             logger.warning(f"Ошибка получения сделок Gate.io: {e}")
             return []
@@ -298,7 +345,8 @@ class ChartGenerator:
             if market != "spot":
                 params["productType"] = "umcbl"  # USDT-M perpetual
             
-            async with aiohttp.ClientSession() as session:
+            connector = _create_ssl_connector()
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -325,6 +373,9 @@ class ChartGenerator:
                     else:
                         logger.warning(f"Ошибка получения сделок Bitget: HTTP {response.status}")
                         return []
+        except ssl.SSLError as e:
+            _log_ssl_error("bitget", url, e)
+            return []
         except Exception as e:
             logger.warning(f"Ошибка получения сделок Bitget: {e}")
             return []
@@ -354,7 +405,8 @@ class ChartGenerator:
                 "n": 1000
             }
             
-            async with aiohttp.ClientSession() as session:
+            connector = _create_ssl_connector()
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -381,6 +433,9 @@ class ChartGenerator:
                     else:
                         logger.warning(f"Ошибка получения сделок Hyperliquid: HTTP {response.status}")
                         return []
+        except ssl.SSLError as e:
+            _log_ssl_error("hyperliquid", url, e)
+            return []
         except Exception as e:
             logger.warning(f"Ошибка получения сделок Hyperliquid: {e}")
             return []

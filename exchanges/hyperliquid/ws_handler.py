@@ -20,8 +20,10 @@ logger = get_logger(__name__)
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 
 # Конфигурация подключения
-SPOT_SYMBOLS_PER_CONNECTION = 50
-LINEAR_SYMBOLS_PER_CONNECTION = 50
+# Количество символов на одно WS-соединение для спота и перпов.
+# Уменьшено до 39 для снижения нагрузки и вероятности ошибок подписки.
+SPOT_SYMBOLS_PER_CONNECTION = 39
+LINEAR_SYMBOLS_PER_CONNECTION = 39
 PING_INTERVAL_SEC = 30
 RECONNECT_DELAY = 5
 MAX_RECONNECT_DELAY = 60

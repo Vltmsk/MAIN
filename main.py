@@ -177,7 +177,10 @@ async def _send_chart_async(
             )
             
             if success:
-                logger.info(f"График с текстом успешно отправлен пользователю {user_name} ({candle.exchange} {candle.symbol})")
+                logger.info(
+                    f"График с текстом успешно отправлен пользователю {user_name} "
+                    f"({candle.exchange} {candle.symbol})"
+                )
             else:
                 logger.warning(
                     f"Не удалось отправить график пользователю {user_name}: {error_msg}",
@@ -201,6 +204,54 @@ async def _send_chart_async(
             extra={
                 "log_to_db": False,  # Не критично, не логируем в БД
                 "error_type": "chart_send_exception",
+                "exchange": candle.exchange,
+                "market": candle.market,
+                "symbol": candle.symbol,
+            },
+        )
+
+
+async def _send_text_message_async(
+    candle: Candle,
+    tg_token: str,
+    target_chat_id: str,
+    user_name: str,
+    message_text: str,
+) -> None:
+    """
+    Асинхронно отправляет текстовое уведомление пользователю в Telegram.
+    Использует ретраи внутри TelegramNotifier и не блокирует основной поток детектора.
+    """
+    try:
+        msg_success, msg_error = await telegram_notifier.send_message(
+            token=tg_token,
+            chat_id=target_chat_id,
+            message=message_text,
+        )
+        if msg_success:
+            logger.info(
+                f"Уведомление отправлено пользователю {user_name} "
+                f"({candle.exchange} {candle.symbol}, chat_id={target_chat_id})"
+            )
+        else:
+            logger.error(
+                f"Не удалось отправить уведомление пользователю {user_name} "
+                f"(chat_id={target_chat_id}): {msg_error}",
+                extra={
+                    "log_to_db": True,
+                    "error_type": "telegram_error",
+                    "exchange": candle.exchange,
+                    "market": candle.market,
+                    "symbol": candle.symbol,
+                },
+            )
+    except Exception as e:
+        logger.error(
+            f"Неожиданная ошибка при отправке уведомления пользователю {user_name}: {e}",
+            exc_info=True,
+            extra={
+                "log_to_db": True,
+                "error_type": "telegram_error",
                 "exchange": candle.exchange,
                 "market": candle.market,
                 "symbol": candle.symbol,
@@ -385,43 +436,27 @@ async def on_candle(candle: Candle) -> None:
                                     ))
                         else:
                             # Если график не включен, отправляем только текстовые сообщения
-                            success = True
-                            error_message = ""
-                            
                             for msg_info in messages:
                                 message_text = msg_info.get("message", "")
                                 target_chat_id = msg_info.get("chatId") or chat_id
                                 
-                                if target_chat_id:
-                                    msg_success, msg_error = await telegram_notifier.send_message(
-                                        token=tg_token,
-                                        chat_id=target_chat_id,
-                                        message=message_text
+                                if not target_chat_id:
+                                    logger.warning("Не указан Chat ID для отправки сообщения")
+                                    continue
+
+                                logger.info(
+                                    f"Запуск асинхронной отправки уведомления пользователю {user_name} "
+                                    f"({candle.exchange} {candle.market} {candle.symbol}, chat_id={target_chat_id})"
+                                )
+                                # Отправляем сообщение в фоне, чтобы не блокировать детектор
+                                asyncio.create_task(
+                                    _send_text_message_async(
+                                        candle=candle,
+                                        tg_token=tg_token,
+                                        target_chat_id=target_chat_id,
+                                        user_name=user_name,
+                                        message_text=message_text,
                                     )
-                                    if not msg_success:
-                                        success = False
-                                        if error_message:
-                                            error_message += "; "
-                                        error_message += f"Chat {target_chat_id}: {msg_error}"
-                                else:
-                                    logger.warning(f"Не указан Chat ID для отправки сообщения")
-                                    success = False
-                                    if error_message:
-                                        error_message += "; "
-                                    error_message += "Не указан Chat ID"
-                            
-                            if success:
-                                logger.info(f"Уведомление отправлено пользователю {user_name} ({candle.exchange} {candle.symbol})")
-                            else:
-                                logger.error(
-                                    f"Не удалось отправить уведомление пользователю {user_name}: {error_message}",
-                                    extra={
-                                        "log_to_db": True,
-                                        "error_type": "telegram_error",
-                                        "exchange": candle.exchange,
-                                        "market": candle.market,
-                                        "symbol": candle.symbol,
-                                    },
                                 )
                     except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                         # Эти ошибки уже обработаны в telegram_notifier, но логируем для полноты
