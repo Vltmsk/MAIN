@@ -312,6 +312,12 @@ async def login_user(request: Request, user: str, login_data: UserLogin):
     Дополнительно при наличии информации о временной зоне обновляет её в профиле.
     """
     try:
+        # Проверяем, что параметр user не является строкой 'login' (это может быть ошибка маршрутизации)
+        if user.lower() == 'login':
+            logger.error(f"[Login] Обнаружена попытка входа с параметром 'login' вместо имени пользователя. URL: {request.url.path}")
+            raise HTTPException(status_code=400, detail="Некорректный параметр пользователя. Убедитесь, что имя пользователя указано правильно в URL.")
+        
+        logger.debug(f"[Login] Попытка входа для пользователя: '{user}' (URL path: {request.url.path})")
         # Проверяем, что пароль не пустой
         if not login_data.password or len(login_data.password.strip()) == 0:
             raise HTTPException(status_code=400, detail="Пароль не может быть пустым")
@@ -687,12 +693,12 @@ async def get_spikes(
             offset=offset
         )
         
-        # Используем normalized_symbol из БД для ответов (уже нормализован при записи)
+        # Используем оригинальный symbol для отображения (содержит полную информацию о паре)
         normalized_alerts = []
         for alert in alerts:
             alert_copy = dict(alert)
-            # Используем normalized_symbol из БД (уже нормализован при записи)
-            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
+            # Используем оригинальный symbol для отображения (содержит полную информацию о паре)
+            alert_copy["symbol"] = alert["symbol"]
             normalized_alerts.append(alert_copy)
         
         return {"spikes": normalized_alerts}
@@ -852,16 +858,16 @@ async def get_user_spikes_stats(
             key=lambda x: x["date"]
         )
         
-        # Последние 20 стрел для таблицы (используем normalized_symbol из БД)
+        # Последние 20 стрел для таблицы (используем оригинальный symbol для отображения)
         recent_spikes_raw = sorted(alerts, key=lambda x: x["ts"], reverse=True)[:20]
         recent_spikes = []
         for alert in recent_spikes_raw:
             alert_copy = dict(alert)
-            # Используем normalized_symbol из БД (уже нормализован при записи)
-            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
+            # Используем оригинальный symbol для отображения (содержит полную информацию о паре)
+            alert_copy["symbol"] = alert["symbol"]
             recent_spikes.append(alert_copy)
         
-        # Топ 10 стрел по дельте (абсолютное значение) (используем normalized_symbol из БД)
+        # Топ 10 стрел по дельте (абсолютное значение) (используем оригинальный symbol для отображения)
         top_by_delta_raw = sorted(
             alerts,
             key=lambda x: abs(x["delta"]),
@@ -870,11 +876,11 @@ async def get_user_spikes_stats(
         top_by_delta = []
         for alert in top_by_delta_raw:
             alert_copy = dict(alert)
-            # Используем normalized_symbol из БД (уже нормализован при записи)
-            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
+            # Используем оригинальный symbol для отображения (содержит полную информацию о паре)
+            alert_copy["symbol"] = alert["symbol"]
             top_by_delta.append(alert_copy)
         
-        # Топ 10 стрел по объёму (используем normalized_symbol из БД)
+        # Топ 10 стрел по объёму (используем оригинальный symbol для отображения)
         top_by_volume_raw = sorted(
             alerts,
             key=lambda x: x["volume_usdt"],
@@ -883,8 +889,8 @@ async def get_user_spikes_stats(
         top_by_volume = []
         for alert in top_by_volume_raw:
             alert_copy = dict(alert)
-            # Используем normalized_symbol из БД (уже нормализован при записи)
-            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
+            # Используем оригинальный symbol для отображения (содержит полную информацию о паре)
+            alert_copy["symbol"] = alert["symbol"]
             top_by_volume.append(alert_copy)
         
         # Группировка по месяцам
@@ -994,12 +1000,12 @@ async def get_user_spikes_by_symbol(
                 seen_ids.add(alert["id"])
                 unique_alerts.append(alert)
         
-        # Используем normalized_symbol из БД для ответов (уже нормализован при записи)
+        # Используем оригинальный symbol для отображения (содержит полную информацию о паре)
         normalized_alerts = []
         for alert in unique_alerts:
             alert_copy = dict(alert)
-            # Используем normalized_symbol из БД (уже нормализован при записи)
-            alert_copy["symbol"] = alert.get("normalized_symbol") or alert["symbol"]
+            # Используем оригинальный symbol для отображения (содержит полную информацию о паре)
+            alert_copy["symbol"] = alert["symbol"]
             normalized_alerts.append(alert_copy)
         
         # Сортируем по времени (новые первыми)

@@ -10,6 +10,18 @@ export async function POST(
     const { user } = await params;
     // Next.js автоматически декодирует параметры маршрута
     const decodedUser = typeof user === 'string' ? user : String(user);
+    
+    // Проверяем, что параметр user не является строкой 'login' (это может быть ошибка маршрутизации)
+    if (decodedUser.toLowerCase() === 'login') {
+      console.error(`[Login API Route] Обнаружена попытка входа с параметром 'login' вместо имени пользователя. URL: ${request.url}`);
+      return NextResponse.json(
+        { error: "Некорректный параметр пользователя", detail: "Убедитесь, что имя пользователя указано правильно в URL." },
+        { status: 400 }
+      );
+    }
+    
+    console.log(`[Login API Route] Попытка входа для пользователя: '${decodedUser}' (URL: ${request.url})`);
+    
     const body = await request.json();
     
     const res = await fetch(`${API_URL}/api/auth/login/${encodeURIComponent(decodedUser)}`, {

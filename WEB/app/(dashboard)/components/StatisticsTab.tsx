@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 const formatNumber = (num: number) => {
   return new Intl.NumberFormat("ru-RU").format(num);
 };
 
-// Извлечение пары из символа (например, BTCUSDT -> USDT)
+// Извлечение пары из символа (например, BTCUSDT -> USDT, ZECUSDC/USDC -> USDC)
 const extractQuoteCurrency = (symbol: string): string => {
   if (!symbol) return "";
   
@@ -19,24 +19,27 @@ const extractQuoteCurrency = (symbol: string): string => {
     "TRY", "EUR", "GBP", "AUD", "BRL"
   ];
   
-  // Ищем самую длинную котируемую валюту в конце символа
-  for (const quote of quoteCurrencies) {
-    if (symbolUpper.endsWith(quote)) {
-      return quote;
-    }
-  }
-  
-  // Также проверяем разделители
-  const separators = ["_", "-", "/"];
+  // Сначала проверяем разделители (приоритет для символов с разделителями)
+  const separators = ["/", "_", "-"];
   for (const sep of separators) {
     if (symbolUpper.includes(sep)) {
       const parts = symbolUpper.split(sep);
       if (parts.length >= 2) {
         const lastPart = parts[parts.length - 1];
+        // Проверяем, является ли последняя часть котируемой валютой
         if (quoteCurrencies.includes(lastPart)) {
           return lastPart;
         }
       }
+    }
+  }
+  
+  // Если разделителей нет, ищем самую длинную котируемую валюту в конце символа
+  // Сортируем по длине (от самой длинной к короткой) для правильного определения
+  const sortedQuotes = [...quoteCurrencies].sort((a, b) => b.length - a.length);
+  for (const quote of sortedQuotes) {
+    if (symbolUpper.endsWith(quote)) {
+      return quote;
     }
   }
   
@@ -93,70 +96,103 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [symbolSpikes, setSymbolSpikes] = useState<any[]>([]);
   const [symbolSpikesLoading, setSymbolSpikesLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
+
+  // Функция загрузки статистики
+  const fetchSpikesStats = useCallback(async (showLoading = true) => {
+    if (showLoading) {
+      setSpikesStatsLoading(true);
+    }
+    setIsRefreshing(true);
+    try {
+      let url: string;
+      if (statisticsMode === "personal") {
+        url = `/api/users/${encodeURIComponent(userLogin)}/spikes/stats?days=${statisticsPeriod}`;
+      } else {
+        url = `/api/users/Stats/spikes/stats?days=${statisticsPeriod}`;
+      }
+      
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        setSpikesStats(data);
+        setLastUpdateTime(new Date());
+      } else {
+        console.error("Ошибка загрузки статистики стрел:", res.status);
+        setSpikesStats(null);
+      }
+    } catch (error) {
+      console.error("Ошибка загрузки статистики стрел:", error);
+      setSpikesStats(null);
+    } finally {
+      if (showLoading) {
+        setSpikesStatsLoading(false);
+      }
+      setIsRefreshing(false);
+    }
+  }, [statisticsMode, statisticsPeriod, userLogin]);
 
   // Загрузка статистики
   useEffect(() => {
-    const fetchSpikesStats = async () => {
-      setSpikesStatsLoading(true);
+    // Загружаем данные сразу
+    fetchSpikesStats(true);
+    
+    // Автоматическое обновление каждые 15 секунд (без показа индикатора загрузки)
+    const interval = setInterval(() => {
+      fetchSpikesStats(false);
+    }, 15000);
+    
+    // Очищаем интервал при размонтировании или изменении зависимостей
+    return () => {
+      clearInterval(interval);
+    };
+  }, [fetchSpikesStats]);
+
+  // Функция загрузки деталей по монете
+  const fetchSymbolSpikes = useCallback(async () => {
+    if (selectedSymbol) {
+      setSymbolSpikesLoading(true);
       try {
         let url: string;
         if (statisticsMode === "personal") {
-          url = `/api/users/${encodeURIComponent(userLogin)}/spikes/stats?days=${statisticsPeriod}`;
+          url = `/api/users/${encodeURIComponent(userLogin)}/spikes/by-symbol/${encodeURIComponent(selectedSymbol)}`;
         } else {
-          url = `/api/users/Stats/spikes/stats?days=${statisticsPeriod}`;
+          url = `/api/users/Stats/spikes/by-symbol/${encodeURIComponent(selectedSymbol)}`;
         }
         
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
-          setSpikesStats(data);
+          setSymbolSpikes(data.spikes || []);
         } else {
-          console.error("Ошибка загрузки статистики стрел:", res.status);
-          setSpikesStats(null);
+          console.error("Ошибка загрузки деталей по монете:", res.status);
+          setSymbolSpikes([]);
         }
       } catch (error) {
-        console.error("Ошибка загрузки статистики стрел:", error);
-        setSpikesStats(null);
+        console.error("Ошибка загрузки деталей по монете:", error);
+        setSymbolSpikes([]);
       } finally {
-        setSpikesStatsLoading(false);
+        setSymbolSpikesLoading(false);
       }
-    };
-    
-    fetchSpikesStats();
-  }, [statisticsMode, statisticsPeriod, userLogin]);
+    }
+  }, [selectedSymbol, statisticsMode, userLogin]);
 
   // Загрузка деталей по монете
   useEffect(() => {
-    const fetchSymbolSpikes = async () => {
-      if (selectedSymbol) {
-        setSymbolSpikesLoading(true);
-        try {
-          let url: string;
-          if (statisticsMode === "personal") {
-            url = `/api/users/${encodeURIComponent(userLogin)}/spikes/by-symbol/${encodeURIComponent(selectedSymbol)}`;
-          } else {
-            url = `/api/users/Stats/spikes/by-symbol/${encodeURIComponent(selectedSymbol)}`;
-          }
-          
-          const res = await fetch(url);
-          if (res.ok) {
-            const data = await res.json();
-            setSymbolSpikes(data.spikes || []);
-          } else {
-            console.error("Ошибка загрузки деталей по монете:", res.status);
-            setSymbolSpikes([]);
-          }
-        } catch (error) {
-          console.error("Ошибка загрузки деталей по монете:", error);
-          setSymbolSpikes([]);
-        } finally {
-          setSymbolSpikesLoading(false);
-        }
-      }
-    };
-    
+    // Загружаем данные сразу, если выбрана монета
     fetchSymbolSpikes();
-  }, [selectedSymbol, statisticsMode, userLogin]);
+    
+    // Автоматическое обновление каждые 15 секунд, если выбрана монета
+    if (selectedSymbol) {
+      const interval = setInterval(fetchSymbolSpikes, 15000);
+      
+      // Очищаем интервал при размонтировании или изменении зависимостей
+      return () => {
+        clearInterval(interval);
+      };
+    }
+  }, [fetchSymbolSpikes, selectedSymbol]);
 
   // Функция для очистки статистики стрел пользователя
   const handleDeleteSpikes = async () => {
@@ -203,7 +239,29 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
     <div className="mb-6 md:mb-8 animate-fade-in">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold gradient-text mb-2">Статистика стрел</h1>
+          <div className="flex items-center gap-3 mb-2">
+            <h1 className="text-2xl md:text-3xl font-bold gradient-text">Статистика стрел</h1>
+            {/* Индикатор обновления */}
+            {isRefreshing && (
+              <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+            )}
+            {/* Кнопка ручного обновления */}
+            <button
+              onClick={() => fetchSpikesStats(true)}
+              disabled={isRefreshing || spikesStatsLoading}
+              className="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Обновить данные"
+            >
+              <svg 
+                className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} 
+                fill="none" 
+                stroke="currentColor" 
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
+          </div>
           <p className="text-zinc-400">
             {statisticsMode === "personal" 
               ? `Статистика по вашим детектам за последние ${statisticsPeriod} дней (с учетом ваших фильтров)`
@@ -232,6 +290,11 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                   return `Рыночная статистика по детектам за последние ${statisticsPeriod} дней (с учетом настроек пользователя Stats)`;
                 })()}
           </p>
+          {lastUpdateTime && (
+            <p className="text-zinc-500 text-sm mt-1">
+              Последнее обновление: {lastUpdateTime.toLocaleTimeString('ru-RU')}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {/* Селектор периода */}
@@ -664,7 +727,7 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                       <div key={idx} className="p-2 rounded-lg glass hover:bg-zinc-800/50 smooth-transition">
                         <div className="flex items-center justify-between mb-1">
                           <div className="text-zinc-400 text-xs font-medium">#{idx + 1}</div>
-                          <div className="text-white font-semibold text-xs">
+                          <div className="text-green-400 font-semibold text-xs">
                             ${formatNumber(Math.round(spike.volume_usdt))}
                           </div>
                         </div>
@@ -675,7 +738,7 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                         <div className="text-zinc-400 text-xs truncate mb-0.5">
                           {spike.exchange} • {spike.market === 'linear' ? 'Фьючерсы' : 'Спот'}
                           {spike.delta !== undefined && (
-                            <span className={`ml-1 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            <span className="ml-1 font-semibold text-zinc-400">
                               • {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
                             </span>
                           )}
@@ -712,6 +775,7 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Биржа</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Рынок</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Символ</th>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Пара</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Дельта %</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Объём USDT</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Тень %</th>
@@ -730,6 +794,9 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                           <td className="px-6 py-4 text-white font-medium">
                             {spike.symbol}
                             {quoteCurrency && <span className="text-zinc-400 ml-1">/{quoteCurrency}</span>}
+                          </td>
+                          <td className="px-6 py-4 text-white font-medium">
+                            {quoteCurrency || '-'}
                           </td>
                           <td className={`px-6 py-4 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                             {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%

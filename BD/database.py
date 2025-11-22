@@ -716,7 +716,14 @@ class Database:
                             logger.warning(f"[Database] Found user with different case: '{found_user['user']}' (requested: '{user}')")
                             return found_user
                 
-                logger.warning(f"[Database] User '{user}' not found. Available users: {all_users}")
+                # Проверяем, не является ли параметр 'login' (это может быть ошибка маршрутизации)
+                if user.lower() == 'login':
+                    logger.error(
+                        f"[Database] Обнаружена попытка получить пользователя с именем 'login'. "
+                        f"Это может быть ошибка маршрутизации. Доступные пользователи: {all_users}"
+                    )
+                else:
+                    logger.warning(f"[Database] User '{user}' not found. Available users: {all_users}")
                 return None
         except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
             logger.error(f"Ошибка БД при получении пользователя {user}: {e}", exc_info=True)

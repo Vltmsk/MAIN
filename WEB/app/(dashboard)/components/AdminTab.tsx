@@ -253,8 +253,10 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
           tg_token: "",
           chat_id: "",
           options_json: JSON.stringify({
-            thresholds: { delta_pct: 1.0, volume_usdt: 10000.0, wick_pct: 50.0 },
-            exchanges: { gate: true, binance: true, bitget: true, bybit: true, hyperliquid: true },
+            thresholds: { delta_pct: 0, volume_usdt: 0, wick_pct: 0 },
+            exchanges: { gate: false, binance: false, bitget: false, bybit: false, hyperliquid: false },
+            exchangeSettings: {},
+            pairSettings: {},
           }),
         }),
       });

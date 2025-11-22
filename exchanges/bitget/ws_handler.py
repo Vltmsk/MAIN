@@ -80,6 +80,7 @@ async def _ws_batch_worker(
     """
     reconnect_attempt = 0
     first_message_for_symbol = {}  # Отслеживаем первое сообщение для каждого символа
+    was_connected = False  # Флаг успешного подключения
     
     while True:
         reconnect_attempt += 1
@@ -118,6 +119,7 @@ async def _ws_batch_worker(
             ) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
+                was_connected = True  # Устанавливаем флаг успешного подключения
                 
                 _stats[market]["active_connections"] += 1
                 
@@ -176,6 +178,8 @@ async def _ws_batch_worker(
                                     f"превышен лимит таймаутов ({max_timeouts_before_reconnect}), "
                                     f"переподключение..."
                                 )
+                                # Переподключение будет подсчитано в начале следующей итерации цикла
+                                # чтобы избежать двойного подсчета (здесь и при reconnect_attempt > 1)
                                 break
                             continue
                         
@@ -185,6 +189,8 @@ async def _ws_batch_worker(
                                 f"Bitget {market} batch-{batch_id}: WebSocket закрыт (CLOSED), "
                                 f"код: {close_code}"
                             )
+                            # Переподключение будет подсчитано в начале следующей итерации цикла
+                            # чтобы избежать двойного подсчета (здесь и при reconnect_attempt > 1)
                             break
                         
                         if msg.type == aiohttp.WSMsgType.ERROR:
@@ -193,6 +199,8 @@ async def _ws_batch_worker(
                                 f"Bitget {market} batch-{batch_id}: WebSocket ошибка (ERROR), "
                                 f"данные: {error_data}"
                             )
+                            # Переподключение будет подсчитано в начале следующей итерации цикла
+                            # чтобы избежать двойного подсчета (здесь и при reconnect_attempt > 1)
                             break
                         
                         if msg.type == aiohttp.WSMsgType.TEXT:
@@ -296,6 +304,8 @@ async def _ws_batch_worker(
                         pass
                 
                 _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+                # Сбрасываем флаг подключения при выходе из контекста WebSocket
+                was_connected = False
                 
         except asyncio.CancelledError:
             break

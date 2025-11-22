@@ -80,6 +80,7 @@ async def _ws_connection_worker(
     ws_url = SPOT_WS_URL if market == "spot" else LINEAR_WS_URL
     reconnect_delay = RECONNECT_DELAY
     reconnect_attempt = 0
+    was_connected = False  # Флаг успешного подключения
     
     while True:
         reconnect_attempt += 1
@@ -117,6 +118,7 @@ async def _ws_connection_worker(
                 # Сбрасываем счётчики после успешного подключения
                 reconnect_attempt = 0
                 reconnect_delay = RECONNECT_DELAY
+                was_connected = True  # Устанавливаем флаг успешного подключения
                 
                 _stats[market]["active_connections"] += 1
                 
@@ -264,6 +266,8 @@ async def _ws_connection_worker(
                             # При таймауте продолжаем чтение (ping отправляется отдельной задачей)
                             continue
                         except websockets.exceptions.ConnectionClosed:
+                            # Переподключение будет подсчитано в начале следующей итерации цикла
+                            # чтобы избежать двойного подсчета (здесь и при reconnect_attempt > 1)
                             break
                 finally:
                     # Отменяем задачу ping при выходе
@@ -274,6 +278,8 @@ async def _ws_connection_worker(
                         pass
                     # Декрементируем счётчик соединений только если он был увеличен
                     _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+                    # Сбрасываем флаг подключения при выходе из контекста WebSocket
+                    was_connected = False
         
         except asyncio.CancelledError:
             break

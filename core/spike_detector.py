@@ -262,7 +262,9 @@ class SpikeDetector:
         }
         
         exchange_key = exchange_map.get(exchange.lower(), exchange.lower())
-        return exchanges.get(exchange_key, True)  # По умолчанию включено
+        # Если биржа не указана в настройках, считаем её отключенной (False)
+        # Это гарантирует, что пользователи с нулевыми настройками не будут получать детекты
+        return exchanges.get(exchange_key, False)
     
     def _check_thresholds(self, candle: Candle, user_options: Dict) -> Tuple[bool, Dict]:
         """
@@ -466,9 +468,9 @@ class SpikeDetector:
             logger.warning(f"Ошибка парсинга глобальных порогов пользователя: {e}")
             return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
 
-        if delta_min <= 0 or volume_min <= 0:
+        if delta_min <= 0 or volume_min <= 0 or wick_pct_max <= 0:
             logger.debug(
-                f"Игнорируем глобальные пороги: delta={delta_min}, volume={volume_min} (не заданы пользователем)"
+                f"Игнорируем глобальные пороги: delta={delta_min}, volume={volume_min}, shadow={wick_pct_max} (не заданы пользователем)"
             )
             return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
         

@@ -62,6 +62,7 @@ async def _ws_consumer_with_batches(
     
     reconnect_attempt = 0
     max_reconnect_delay = 60
+    was_connected = False  # Флаг успешного подключения
     
     while True:
         reconnect_attempt += 1
@@ -82,6 +83,7 @@ async def _ws_consumer_with_batches(
         try:
             ws = await session.ws_connect(ws_url, heartbeat=60, timeout=aiohttp.ClientTimeout(total=180))
             connected = True
+            was_connected = True  # Устанавливаем флаг успешного подключения
             _stats[market]["active_connections"] += 1
             
             # Сбрасываем счётчик переподключений после успешного подключения
@@ -162,10 +164,14 @@ async def _ws_consumer_with_batches(
                 
                 elif msg.type == aiohttp.WSMsgType.CLOSE:
                     logger.debug(f"WebSocket {connection_id} закрыт (CLOSE)")
+                    # Переподключение будет подсчитано в начале следующей итерации цикла
+                    # чтобы избежать двойного подсчета (здесь и при reconnect_attempt > 1)
                     break
                 
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     logger.warning(f"WebSocket {connection_id} ошибка (ERROR)")
+                    # Переподключение будет подсчитано в начале следующей итерации цикла
+                    # чтобы избежать двойного подсчета (здесь и при reconnect_attempt > 1)
                     break
             
         except asyncio.CancelledError:
@@ -181,6 +187,8 @@ async def _ws_consumer_with_batches(
         finally:
             if connected:
                 _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+                # Сбрасываем флаг подключения при выходе
+                was_connected = False
             if ping_task:
                 ping_task.cancel()
                 try:

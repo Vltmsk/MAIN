@@ -71,6 +71,7 @@ async def _ws_connection_worker(
     """
     reconnect_attempt = 0
     connection_state = {"is_scheduled_reconnect": False}
+    was_connected = False  # Флаг успешного подключения
     
     while True:
         reconnect_attempt += 1
@@ -107,6 +108,7 @@ async def _ws_connection_worker(
             async with _session.ws_connect(url, heartbeat=25) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
+                was_connected = True  # Устанавливаем флаг успешного подключения
                 
                 _stats[market]["active_connections"] += 1
                 
@@ -127,9 +129,27 @@ async def _ws_connection_worker(
                         
                         elif msg.type == aiohttp.WSMsgType.CLOSE:
                             logger.debug(f"Binance {market}: WebSocket закрыт (CLOSE)")
+                            # Если соединение было успешно установлено и это не плановое переподключение, это переподключение
+                            if was_connected and not connection_state.get("is_scheduled_reconnect", False):
+                                _stats[market]["reconnects"] += 1
+                                await on_error({
+                                    "exchange": "binance",
+                                    "market": market,
+                                    "connection_id": f"streams-{len(streams)}",
+                                    "type": "reconnect",
+                                })
                             break
                         elif msg.type == aiohttp.WSMsgType.ERROR:
                             logger.warning(f"Binance {market}: WebSocket ошибка (ERROR)")
+                            # Если соединение было успешно установлено и это не плановое переподключение, это переподключение
+                            if was_connected and not connection_state.get("is_scheduled_reconnect", False):
+                                _stats[market]["reconnects"] += 1
+                                await on_error({
+                                    "exchange": "binance",
+                                    "market": market,
+                                    "connection_id": f"streams-{len(streams)}",
+                                    "type": "reconnect",
+                                })
                             break
                 finally:
                     # Отменяем задачу планового переподключения, если соединение закрылось раньше
@@ -140,6 +160,8 @@ async def _ws_connection_worker(
                         pass
                 
                 _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+                # Сбрасываем флаг подключения при выходе из контекста WebSocket
+                was_connected = False
                 
         except asyncio.CancelledError:
             break
@@ -164,6 +186,7 @@ async def _ws_connection_worker_subscribe(
     """
     reconnect_attempt = 0
     connection_state = {"is_scheduled_reconnect": False}
+    was_connected = False  # Флаг успешного подключения
     
     while True:
         reconnect_attempt += 1
@@ -201,6 +224,7 @@ async def _ws_connection_worker_subscribe(
             async with _session.ws_connect(url, heartbeat=25) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
+                was_connected = True  # Устанавливаем флаг успешного подключения
                 
                 _stats[market]["active_connections"] += 1
                 
@@ -316,9 +340,27 @@ async def _ws_connection_worker_subscribe(
                             
                             elif msg.type == aiohttp.WSMsgType.CLOSE:
                                 logger.debug(f"Binance {market}: WebSocket закрыт (CLOSE)")
+                                # Если соединение было успешно установлено и это не плановое переподключение, это переподключение
+                                if was_connected and not connection_state.get("is_scheduled_reconnect", False):
+                                    _stats[market]["reconnects"] += 1
+                                    await on_error({
+                                        "exchange": "binance",
+                                        "market": market,
+                                        "connection_id": f"ws-subscribe-{len(streams)}",
+                                        "type": "reconnect",
+                                    })
                                 break
                             elif msg.type == aiohttp.WSMsgType.ERROR:
                                 logger.warning(f"Binance {market}: WebSocket ошибка (ERROR)")
+                                # Если соединение было успешно установлено и это не плановое переподключение, это переподключение
+                                if was_connected and not connection_state.get("is_scheduled_reconnect", False):
+                                    _stats[market]["reconnects"] += 1
+                                    await on_error({
+                                        "exchange": "binance",
+                                        "market": market,
+                                        "connection_id": f"ws-subscribe-{len(streams)}",
+                                        "type": "reconnect",
+                                    })
                                 break
                         
                         # Отменяем задачу таймаута, если она ещё активна
@@ -350,6 +392,8 @@ async def _ws_connection_worker_subscribe(
                 finally:
                     # Уменьшаем счётчик при выходе из соединения (включая случай неудачной подписки)
                     _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+                    # Сбрасываем флаг подключения при выходе из контекста WebSocket
+                    was_connected = False
         
         except asyncio.CancelledError:
             break

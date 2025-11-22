@@ -216,6 +216,53 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
     return result;
   };
 
+  // Функция для генерации превью сообщения с примерами значений
+  const generateMessagePreview = (template: string): string => {
+    if (!template || !template.trim()) {
+      return "";
+    }
+
+    // Примеры значений для превью
+    const exampleValues: Record<string, string> = {
+      "{delta_formatted}": "5.23%",
+      "{volume_formatted}": "1.5K$",
+      "{wick_formatted}": "45.2%",
+      "{timestamp}": "1699123456789",
+      "{direction}": "⬆️",
+      "{exchange_market}": "BINANCE | SPOT",
+      "{exchange}": "BINANCE",
+      "{symbol}": "BTC-USDT",
+      "{market}": "SPOT",
+      "{time}": "2024-01-15 14:30:25",
+      // Friendly names (для поддержки вставок из редактора)
+      "[[Дельта стрелы]]": "5.23%",
+      "[[Объём стрелы]]": "1.5K$",
+      "[[Тень свечи]]": "45.2%",
+      "[[Временная метка]]": "1699123456789",
+      "[[Направление]]": "⬆️",
+      "[[Биржа и тип рынка]]": "BINANCE | SPOT",
+      "[[Торговая пара]]": "BTC-USDT",
+      "[[Время детекта]]": "2024-01-15 14:30:25",
+    };
+
+    // Конвертируем friendly names в technical keys для замены
+    let preview = convertToTechnicalKeys(template);
+
+    // Заменяем все плейсхолдеры на примеры значений
+    // Важно: сначала заменяем технические ключи, затем friendly names
+    Object.entries(exampleValues).forEach(([placeholder, value]) => {
+      // Экранируем специальные символы для регулярного выражения
+      const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Заменяем все вхождения плейсхолдера на пример значения
+      preview = preview.replace(new RegExp(escapedPlaceholder, 'g'), value);
+    });
+
+    // Очищаем лишние пробелы и переносы строк
+    preview = preview.trim();
+
+    return preview;
+  };
+
   const generateTemplateDescription = (template: ConditionalTemplate): string => {
     if (!template.conditions || template.conditions.length === 0) {
       return "Нет условий";
@@ -1920,6 +1967,22 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                         </p>
                       </div>
                     </div>
+
+                    {/* Превью сообщения */}
+                    <div className="mb-4">
+                      <label className="block text-sm font-medium text-zinc-300 mb-2">
+                        Превью сообщения в Telegram
+                      </label>
+                      <div className="bg-zinc-800 border-2 border-zinc-700 rounded-lg p-4 min-h-[120px]">
+                        <div 
+                          className="text-white text-sm whitespace-pre-wrap font-sans"
+                          dangerouslySetInnerHTML={{ __html: generateMessagePreview(messageTemplate).replace(/\n/g, '<br>') }}
+                        />
+                      </div>
+                      <p className="text-xs text-zinc-500 mt-2">
+                        💡 Это пример того, как будет выглядеть сообщение в Telegram с примерами значений
+                      </p>
+                    </div>
                     
                     {/* Кнопки сохранения и скрытия */}
                     <div className="flex gap-3 mt-4">
@@ -2575,6 +2638,22 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                       </div>
                                     </>
                                   )}
+                                </div>
+
+                                {/* Превью сообщения для условного шаблона */}
+                                <div className="mt-3">
+                                  <label className="block text-xs font-medium text-zinc-300 mb-2">
+                                    Превью сообщения в Telegram
+                                  </label>
+                                  <div className="bg-zinc-800 border-2 border-zinc-700 rounded-lg p-4 min-h-[100px]">
+                                    <div 
+                                      className="text-white text-sm whitespace-pre-wrap font-sans"
+                                      dangerouslySetInnerHTML={{ __html: generateMessagePreview(template.template || "").replace(/\n/g, '<br>') }}
+                                    />
+                                  </div>
+                                  <p className="text-xs text-zinc-500 mt-2">
+                                    💡 Это пример того, как будет выглядеть сообщение в Telegram с примерами значений
+                                  </p>
                                 </div>
                               </div>
                             </div>

@@ -229,6 +229,7 @@ async def _ws_connection_worker(
     WebSocket worker для одного соединения.
     """
     reconnect_attempt = 0
+    was_connected = False  # Флаг успешного подключения
     
     while True:
         reconnect_attempt += 1
@@ -252,6 +253,7 @@ async def _ws_connection_worker(
             ) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
+                was_connected = True  # Устанавливаем флаг успешного подключения
                 
                 _stats[market]["active_connections"] += 1
                 
@@ -464,9 +466,13 @@ async def _ws_connection_worker(
                                 continue
                         
                         elif msg.type == aiohttp.WSMsgType.ERROR:
+                            # Переподключение будет подсчитано в начале следующей итерации цикла
+                            # чтобы избежать двойного подсчета (здесь и при reconnect_attempt > 1)
                             break
                         
                         elif msg.type == aiohttp.WSMsgType.CLOSE:
+                            # Переподключение будет подсчитано в начале следующей итерации цикла
+                            # чтобы избежать двойного подсчета (здесь и при reconnect_attempt > 1)
                             break
                 
                 finally:
@@ -477,6 +483,8 @@ async def _ws_connection_worker(
                         pass
                 
                 _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+                # Сбрасываем флаг подключения при выходе из контекста WebSocket
+                was_connected = False
         
         except asyncio.CancelledError:
             break
