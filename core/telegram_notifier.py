@@ -9,6 +9,30 @@ from core.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def format_volume_compact(volume: float) -> str:
+    """
+    Форматирует объём в кратком виде (тысячи, миллионы)
+    
+    Args:
+        volume: Объём в USDT
+        
+    Returns:
+        Строка в формате "1.5K$" или "2.5M$" или "500$"
+    """
+    if volume >= 1000000:
+        millions = volume / 1000000
+        if millions >= 100:
+            return f"{millions:.0f}M$"
+        return f"{millions:.1f}M$"
+    elif volume >= 1000:
+        thousands = volume / 1000
+        if thousands >= 100:
+            return f"{thousands:.0f}K$"
+        return f"{thousands:.1f}K$"
+    return f"{volume:.0f}$"
+
+
 # ID кастомных emoji из пака https://t.me/addemoji/Strelk167
 # Зеленая стрела вверх и красная стрела вниз
 # 
@@ -577,7 +601,7 @@ class TelegramNotifier:
         
         # Форматируем числа
         delta_formatted = f"{delta:.2f}%"
-        volume_formatted = f"{volume_usdt:,.0f}" if volume_usdt >= 1000 else f"{volume_usdt:.2f}"
+        volume_formatted = format_volume_compact(volume_usdt)
         wick_formatted = f"{wick_pct:.1f}%"
         
         # Цветные эмодзи для бирж
@@ -645,7 +669,7 @@ class TelegramNotifier:
 
 📊 <b>Метрики:</b>
 • Изменение: <b>{delta_formatted}</b> {direction_emoji}
-• Объём: <b>{volume_formatted} USDT</b>
+• Объём: <b>{volume_formatted}</b>
 • Тень: <b>{wick_formatted}</b>
 
 ⏰ <b>{time_str}</b>

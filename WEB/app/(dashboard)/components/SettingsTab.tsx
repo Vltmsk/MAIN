@@ -181,6 +181,17 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
     window.localStorage.setItem(storageKey, activeSubTab);
   }, [activeSubTab, userLogin]);
 
+  // Автоматическое скрытие уведомления через 3 секунды
+  useEffect(() => {
+    if (saveMessage) {
+      const timer = setTimeout(() => {
+        setSaveMessage(null);
+      }, 3000); // 3 секунды
+
+      return () => clearTimeout(timer);
+    }
+  }, [saveMessage]);
+
   const formatNumberCompact = (value: string): string => {
     if (!value) return "0";
     const num = Number(value);
@@ -688,6 +699,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
     
     Object.keys(chartSettings).forEach((key) => {
       if (pairSettings[key]) {
+        // Ключ уже существует в pairSettings - обновляем его
         const currentSettings = pairSettings[key];
         const newSettings: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean } = {
           enabled: currentSettings.enabled,
@@ -699,7 +711,23 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
         pairSettingsWithCharts[key] = newSettings;
       } else {
         const parts = key.split('_');
-        if (parts.length === 2) {
+        if (parts.length === 3) {
+          // Формат: exchange_market_pair (например, binance_spot_BTC)
+          const [exchange, market, pair] = parts;
+          if (market === "spot" || market === "futures") {
+            // Создаем новую запись в pairSettings, если её нет
+            const existingSettings = pairSettings[key];
+            const newSettings: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean } = {
+              enabled: existingSettings?.enabled || false,
+              delta: existingSettings?.delta || "",
+              volume: existingSettings?.volume || "",
+              shadow: existingSettings?.shadow || "",
+              sendChart: chartSettings[key]
+            };
+            pairSettingsWithCharts[key] = newSettings;
+          }
+        } else if (parts.length === 2) {
+          // Формат: exchange_market (например, binance_spot)
           const [exchange, market] = parts;
           if (!exchangeSettingsWithCharts[exchange]) {
             exchangeSettingsWithCharts[exchange] = {

@@ -6,6 +6,61 @@ const formatNumber = (num: number) => {
   return new Intl.NumberFormat("ru-RU").format(num);
 };
 
+// Извлечение пары из символа (например, BTCUSDT -> USDT)
+const extractQuoteCurrency = (symbol: string): string => {
+  if (!symbol) return "";
+  
+  const symbolUpper = symbol.toUpperCase();
+  
+  // Список известных котируемых валют (по длине, от самой длинной к короткой)
+  const quoteCurrencies = [
+    "USDC", "USDT", "FDUSD", "BIDR", "AEUR",
+    "BTC", "ETH", "BNB", "TUSD", "DOGE", "TRX",
+    "TRY", "EUR", "GBP", "AUD", "BRL"
+  ];
+  
+  // Ищем самую длинную котируемую валюту в конце символа
+  for (const quote of quoteCurrencies) {
+    if (symbolUpper.endsWith(quote)) {
+      return quote;
+    }
+  }
+  
+  // Также проверяем разделители
+  const separators = ["_", "-", "/"];
+  for (const sep of separators) {
+    if (symbolUpper.includes(sep)) {
+      const parts = symbolUpper.split(sep);
+      if (parts.length >= 2) {
+        const lastPart = parts[parts.length - 1];
+        if (quoteCurrencies.includes(lastPart)) {
+          return lastPart;
+        }
+      }
+    }
+  }
+  
+  return "";
+};
+
+// Форматирование объема в кратком виде (тысячи, миллионы)
+const formatVolumeCompact = (volume: number): string => {
+  if (volume >= 1000000) {
+    const millions = volume / 1000000;
+    if (millions >= 100) {
+      return `${millions.toFixed(0)}M`;
+    }
+    return `${millions.toFixed(1)}M`;
+  } else if (volume >= 1000) {
+    const thousands = volume / 1000;
+    if (thousands >= 100) {
+      return `${thousands.toFixed(0)}K`;
+    }
+    return `${thousands.toFixed(1)}K`;
+  }
+  return `${volume.toFixed(0)}`;
+};
+
 type SpikesStats = {
   total_count: number;
   avg_delta: number;
@@ -562,28 +617,36 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
               <h2 className="text-lg font-semibold gradient-text mb-3">Топ 10 стрел по дельте</h2>
               {spikesStats.top_by_delta && spikesStats.top_by_delta.length > 0 ? (
                 <div className="grid grid-cols-2 gap-2">
-                  {spikesStats.top_by_delta.map((spike: any, idx: number) => (
-                    <div key={idx} className="p-2 rounded-lg glass hover:bg-zinc-800/50 smooth-transition">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-zinc-400 text-xs font-medium">#{idx + 1}</div>
-                        <div className={`font-semibold text-xs ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
+                  {spikesStats.top_by_delta.map((spike: any, idx: number) => {
+                    const quoteCurrency = extractQuoteCurrency(spike.symbol);
+                    const volumeCompact = formatVolumeCompact(spike.volume_usdt || 0);
+                    return (
+                      <div key={idx} className="p-2 rounded-lg glass hover:bg-zinc-800/50 smooth-transition">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-zinc-400 text-xs font-medium">#{idx + 1}</div>
+                          <div className={`font-semibold text-xs ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
+                          </div>
+                        </div>
+                        <div className="text-white font-medium text-sm mb-0.5 truncate">
+                          {spike.symbol}
+                          {quoteCurrency && <span className="text-zinc-400 ml-1">/{quoteCurrency}</span>}
+                        </div>
+                        <div className="text-zinc-400 text-xs truncate mb-0.5">
+                          {spike.exchange} • {spike.market === 'linear' ? 'Фьючерсы' : 'Спот'}
+                          {volumeCompact && <span className="ml-1">• ${volumeCompact}</span>}
+                        </div>
+                        <div className="text-zinc-500 text-xs">
+                          {new Date(spike.ts).toLocaleString('ru-RU', { 
+                            day: '2-digit', 
+                            month: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
                         </div>
                       </div>
-                      <div className="text-white font-medium text-sm mb-0.5 truncate">{spike.symbol}</div>
-                      <div className="text-zinc-400 text-xs truncate mb-0.5">
-                        {spike.exchange} • {spike.market === 'linear' ? 'Фьючерсы' : 'Спот'}
-                      </div>
-                      <div className="text-zinc-500 text-xs">
-                        {new Date(spike.ts).toLocaleString('ru-RU', { 
-                          day: '2-digit', 
-                          month: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-zinc-500 text-center py-8 text-sm">Нет данных за выбранный период</div>
@@ -595,28 +658,39 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
               <h2 className="text-lg font-semibold gradient-text mb-3">Топ 10 стрел по объёму</h2>
               {spikesStats.top_by_volume && spikesStats.top_by_volume.length > 0 ? (
                 <div className="grid grid-cols-2 gap-2">
-                  {spikesStats.top_by_volume.map((spike: any, idx: number) => (
-                    <div key={idx} className="p-2 rounded-lg glass hover:bg-zinc-800/50 smooth-transition">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-zinc-400 text-xs font-medium">#{idx + 1}</div>
-                        <div className="text-white font-semibold text-xs">
-                          ${formatNumber(Math.round(spike.volume_usdt))}
+                  {spikesStats.top_by_volume.map((spike: any, idx: number) => {
+                    const quoteCurrency = extractQuoteCurrency(spike.symbol);
+                    return (
+                      <div key={idx} className="p-2 rounded-lg glass hover:bg-zinc-800/50 smooth-transition">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-zinc-400 text-xs font-medium">#{idx + 1}</div>
+                          <div className="text-white font-semibold text-xs">
+                            ${formatNumber(Math.round(spike.volume_usdt))}
+                          </div>
+                        </div>
+                        <div className="text-white font-medium text-sm mb-0.5 truncate">
+                          {spike.symbol}
+                          {quoteCurrency && <span className="text-zinc-400 ml-1">/{quoteCurrency}</span>}
+                        </div>
+                        <div className="text-zinc-400 text-xs truncate mb-0.5">
+                          {spike.exchange} • {spike.market === 'linear' ? 'Фьючерсы' : 'Спот'}
+                          {spike.delta !== undefined && (
+                            <span className={`ml-1 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              • {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-zinc-500 text-xs">
+                          {new Date(spike.ts).toLocaleString('ru-RU', { 
+                            day: '2-digit', 
+                            month: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
                         </div>
                       </div>
-                      <div className="text-white font-medium text-sm mb-0.5 truncate">{spike.symbol}</div>
-                      <div className="text-zinc-400 text-xs truncate mb-0.5">
-                        {spike.exchange} • {spike.market === 'linear' ? 'Фьючерсы' : 'Спот'}
-                      </div>
-                      <div className="text-zinc-500 text-xs">
-                        {new Date(spike.ts).toLocaleString('ru-RU', { 
-                          day: '2-digit', 
-                          month: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-zinc-500 text-center py-8 text-sm">Нет данных за выбранный период</div>
@@ -644,21 +718,27 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                     </tr>
                   </thead>
                   <tbody>
-                    {spikesStats.spikes.map((spike: any, idx: number) => (
-                      <tr key={idx} className="border-t border-zinc-800 hover:bg-zinc-800/30 transition-colors">
-                        <td className="px-6 py-4 text-zinc-300 text-sm">
-                          {new Date(spike.ts).toLocaleString('ru-RU')}
-                        </td>
-                        <td className="px-6 py-4 text-zinc-300 capitalize">{spike.exchange}</td>
-                        <td className="px-6 py-4 text-zinc-300 capitalize">{spike.market === 'linear' ? 'Фьючерсы' : spike.market}</td>
-                        <td className="px-6 py-4 text-white font-medium">{spike.symbol}</td>
-                        <td className={`px-6 py-4 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
-                        </td>
-                        <td className="px-6 py-4 text-zinc-300">${formatNumber(Math.round(spike.volume_usdt))}</td>
-                        <td className="px-6 py-4 text-zinc-300">{spike.wick_pct.toFixed(1)}%</td>
-                      </tr>
-                    ))}
+                    {spikesStats.spikes.map((spike: any, idx: number) => {
+                      const quoteCurrency = extractQuoteCurrency(spike.symbol);
+                      return (
+                        <tr key={idx} className="border-t border-zinc-800 hover:bg-zinc-800/30 transition-colors">
+                          <td className="px-6 py-4 text-zinc-300 text-sm">
+                            {new Date(spike.ts).toLocaleString('ru-RU')}
+                          </td>
+                          <td className="px-6 py-4 text-zinc-300 capitalize">{spike.exchange}</td>
+                          <td className="px-6 py-4 text-zinc-300 capitalize">{spike.market === 'linear' ? 'Фьючерсы' : spike.market}</td>
+                          <td className="px-6 py-4 text-white font-medium">
+                            {spike.symbol}
+                            {quoteCurrency && <span className="text-zinc-400 ml-1">/{quoteCurrency}</span>}
+                          </td>
+                          <td className={`px-6 py-4 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
+                          </td>
+                          <td className="px-6 py-4 text-zinc-300">${formatNumber(Math.round(spike.volume_usdt))}</td>
+                          <td className="px-6 py-4 text-zinc-300">{spike.wick_pct.toFixed(1)}%</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
