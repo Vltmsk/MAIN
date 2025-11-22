@@ -379,59 +379,62 @@ async def on_candle(candle: Candle) -> None:
                 conditional_templates = None
                 user_timezone = "UTC"  # По умолчанию UTC
                 should_send_chart = False  # По умолчанию графики отключены
-                try:
-                    options_json = user_data.get("options_json", "{}")
-                    if options_json:
-                        options = json.loads(options_json)
-                        message_template = options.get("messageTemplate")
-                        conditional_templates = options.get("conditionalTemplates")
-                        user_timezone = options.get("timezone", "UTC")  # Получаем timezone пользователя
-                        
-                        # Проверяем настройку отправки графиков
-                        # Сначала проверяем индивидуальные настройки пары
-                        from core.symbol_utils import get_quote_currency
-                        quote_currency = await get_quote_currency(candle.symbol, candle.exchange, candle.market)
-                        exchange_key = candle.exchange.lower()
-                        # Преобразуем market в формат настроек: "linear" -> "futures", "spot" -> "spot"
-                        # Это работает для всех бирж: Binance, Bybit, Bitget, Gate, Hyperliquid
-                        # Все они используют "linear" для фьючерсов в candle.market
-                        market_key = "futures" if candle.market == "linear" else "spot"
-                        
-                        logger.debug(
-                            f"Проверка отправки графика для {user_name}: "
-                            f"exchange={candle.exchange}, market={candle.market}, symbol={candle.symbol}, "
-                            f"exchange_key={exchange_key}, market_key={market_key}, quote_currency={quote_currency}"
-                        )
-                        
-                        pair_settings = options.get("pairSettings", {})
-                        if quote_currency:
-                            pair_key = f"{exchange_key}_{market_key}_{quote_currency}"
-                            logger.debug(f"Проверка индивидуальных настроек пары: pair_key={pair_key}, exists={pair_key in pair_settings}")
-                            if pair_key in pair_settings:
-                                pair_config = pair_settings[pair_key]
-                                should_send_chart = pair_config.get("sendChart", False)
-                                logger.debug(f"Найдены индивидуальные настройки пары: sendChart={should_send_chart}")
-                        
-                        # Если не найдено в индивидуальных настройках, проверяем глобальные настройки биржи/рынка
-                        if not should_send_chart:
-                            exchange_settings = options.get("exchangeSettings", {})
-                            logger.debug(f"Проверка глобальных настроек: exchange_key={exchange_key}, exists={exchange_key in exchange_settings}")
-                            if exchange_key in exchange_settings:
-                                exchange_config = exchange_settings[exchange_key]
-                                logger.debug(f"Настройки биржи {exchange_key}: {list(exchange_config.keys())}")
-                                market_config = exchange_config.get(market_key, {})
-                                logger.debug(f"Настройки рынка {market_key}: {market_config}")
-                                should_send_chart = market_config.get("sendChart", False)
-                                logger.debug(f"Глобальные настройки: sendChart={should_send_chart}")
-                        
-                        logger.info(
-                            f"Результат проверки отправки графика для {user_name} "
-                            f"({candle.exchange} {candle.market} {candle.symbol}): should_send_chart={should_send_chart}"
-                        )
-                except json.JSONDecodeError as e:
-                    logger.debug(f"Ошибка парсинга JSON для пользователя {user_name}: {e}")
-                except (ValueError, TypeError) as e:
-                    logger.debug(f"Ошибка обработки настроек для пользователя {user_name}: {e}")
+                
+                # Системный пользователь "Stats" - пропускаем всю проверку графиков для ускорения
+                if user_name.lower() != "stats":
+                    try:
+                        options_json = user_data.get("options_json", "{}")
+                        if options_json:
+                            options = json.loads(options_json)
+                            message_template = options.get("messageTemplate")
+                            conditional_templates = options.get("conditionalTemplates")
+                            user_timezone = options.get("timezone", "UTC")  # Получаем timezone пользователя
+                            
+                            # Проверяем настройку отправки графиков
+                            # Сначала проверяем индивидуальные настройки пары
+                            from core.symbol_utils import get_quote_currency
+                            quote_currency = await get_quote_currency(candle.symbol, candle.exchange, candle.market)
+                            exchange_key = candle.exchange.lower()
+                            # Преобразуем market в формат настроек: "linear" -> "futures", "spot" -> "spot"
+                            # Это работает для всех бирж: Binance, Bybit, Bitget, Gate, Hyperliquid
+                            # Все они используют "linear" для фьючерсов в candle.market
+                            market_key = "futures" if candle.market == "linear" else "spot"
+                            
+                            logger.debug(
+                                f"Проверка отправки графика для {user_name}: "
+                                f"exchange={candle.exchange}, market={candle.market}, symbol={candle.symbol}, "
+                                f"exchange_key={exchange_key}, market_key={market_key}, quote_currency={quote_currency}"
+                            )
+                            
+                            pair_settings = options.get("pairSettings", {})
+                            if quote_currency:
+                                pair_key = f"{exchange_key}_{market_key}_{quote_currency}"
+                                logger.debug(f"Проверка индивидуальных настроек пары: pair_key={pair_key}, exists={pair_key in pair_settings}")
+                                if pair_key in pair_settings:
+                                    pair_config = pair_settings[pair_key]
+                                    should_send_chart = pair_config.get("sendChart", False)
+                                    logger.debug(f"Найдены индивидуальные настройки пары: sendChart={should_send_chart}")
+                            
+                            # Если не найдено в индивидуальных настройках, проверяем глобальные настройки биржи/рынка
+                            if not should_send_chart:
+                                exchange_settings = options.get("exchangeSettings", {})
+                                logger.debug(f"Проверка глобальных настроек: exchange_key={exchange_key}, exists={exchange_key in exchange_settings}")
+                                if exchange_key in exchange_settings:
+                                    exchange_config = exchange_settings[exchange_key]
+                                    logger.debug(f"Настройки биржи {exchange_key}: {list(exchange_config.keys())}")
+                                    market_config = exchange_config.get(market_key, {})
+                                    logger.debug(f"Настройки рынка {market_key}: {market_config}")
+                                    should_send_chart = market_config.get("sendChart", False)
+                                    logger.debug(f"Глобальные настройки: sendChart={should_send_chart}")
+                            
+                            logger.info(
+                                f"Результат проверки отправки графика для {user_name} "
+                                f"({candle.exchange} {candle.market} {candle.symbol}): should_send_chart={should_send_chart}"
+                            )
+                    except json.JSONDecodeError as e:
+                        logger.debug(f"Ошибка парсинга JSON для пользователя {user_name}: {e}")
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Ошибка обработки настроек для пользователя {user_name}: {e}")
                 
                 if tg_token and chat_id:
                     try:

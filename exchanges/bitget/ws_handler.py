@@ -101,6 +101,12 @@ async def _ws_batch_worker(
                 })
                 await asyncio.sleep(delay)
             
+            # Проверяем, что сессия инициализирована и не закрыта
+            if _session is None or _session.closed:
+                logger.error(f"Bitget {market} batch-{batch_id}: сессия не инициализирована или закрыта")
+                await asyncio.sleep(5)
+                continue
+            
             async with _session.ws_connect(
                 BITGET_WS_URL,
                 heartbeat=None,
@@ -110,6 +116,9 @@ async def _ws_batch_worker(
                 autoping=False,
                 max_msg_size=0
             ) as ws:
+                # Сбрасываем счётчик после успешного подключения
+                reconnect_attempt = 0
+                
                 _stats[market]["active_connections"] += 1
                 
                 # Задержка перед подпиской после подключения
@@ -119,11 +128,19 @@ async def _ws_batch_worker(
                 # Подписываемся по чанкам
                 inst_type = "SPOT" if market == "spot" else "USDT-FUTURES"
                 
+                # Словарь для отслеживания подтверждений подписки
+                subscription_confirmations = {}
+                
                 # Разбиваем символы на чанки для подписки
                 for chunk_start in range(0, len(symbols), SUBSCRIBE_CHUNK_SIZE):
                     chunk = symbols[chunk_start:chunk_start + SUBSCRIBE_CHUNK_SIZE]
                     args = [{"instType": inst_type, "channel": "trade", "instId": s} for s in chunk]
-                    await ws.send_json({"op": "subscribe", "args": args})
+                    subscribe_msg = {"op": "subscribe", "args": args}
+                    await ws.send_json(subscribe_msg)
+                    
+                    # Сохраняем информацию о подписке для проверки подтверждения
+                    for symbol in chunk:
+                        subscription_confirmations[symbol] = False
                     
                     # Пауза между чанками (кроме последнего)
                     if chunk_start + SUBSCRIBE_CHUNK_SIZE < len(symbols):
@@ -140,18 +157,42 @@ async def _ws_batch_worker(
                 
                 heartbeat_task = asyncio.create_task(heartbeat_loop())
                 
+                # Счётчик таймаутов для отслеживания проблем с соединением
+                timeout_count = 0
+                max_timeouts_before_reconnect = 3  # Максимум таймаутов перед реконнектом
+                
                 try:
                     # Читаем сообщения
                     while True:
                         try:
                             msg = await asyncio.wait_for(ws.receive(), timeout=PING_GRACE_SEC)
+                            # Сбрасываем счётчик таймаутов при успешном получении сообщения
+                            timeout_count = 0
                         except asyncio.TimeoutError:
+                            timeout_count += 1
+                            if timeout_count >= max_timeouts_before_reconnect:
+                                logger.warning(
+                                    f"Bitget {market} batch-{batch_id}: "
+                                    f"превышен лимит таймаутов ({max_timeouts_before_reconnect}), "
+                                    f"переподключение..."
+                                )
+                                break
                             continue
                         
                         if msg.type == aiohttp.WSMsgType.CLOSED:
+                            close_code = getattr(msg, 'data', None)
+                            logger.warning(
+                                f"Bitget {market} batch-{batch_id}: WebSocket закрыт (CLOSED), "
+                                f"код: {close_code}"
+                            )
                             break
                         
                         if msg.type == aiohttp.WSMsgType.ERROR:
+                            error_data = getattr(msg, 'data', None)
+                            logger.error(
+                                f"Bitget {market} batch-{batch_id}: WebSocket ошибка (ERROR), "
+                                f"данные: {error_data}"
+                            )
                             break
                         
                         if msg.type == aiohttp.WSMsgType.TEXT:
@@ -164,11 +205,57 @@ async def _ws_batch_worker(
                             except Exception:
                                 continue
                             
+                            # Проверяем подтверждение подписки
+                            if data.get("event") == "subscribe" or data.get("op") == "subscribe":
+                                code = data.get("code")
+                                # Проверяем, успешна ли подписка
+                                # code может быть "0", 0, или отсутствовать (тогда считаем успешной)
+                                is_success = (
+                                    code == "0" or 
+                                    code == 0 or 
+                                    code is None  # Если code отсутствует, но есть event/op=subscribe, считаем успешной
+                                )
+                                
+                                if is_success:
+                                    # Подписка успешна
+                                    args_list = data.get("arg", [])
+                                    if isinstance(args_list, list):
+                                        for arg_item in args_list:
+                                            if isinstance(arg_item, dict):
+                                                inst_id = arg_item.get("instId")
+                                                if inst_id:
+                                                    subscription_confirmations[inst_id] = True
+                                    elif isinstance(args_list, dict):
+                                        inst_id = args_list.get("instId")
+                                        if inst_id:
+                                            subscription_confirmations[inst_id] = True
+                                else:
+                                    # Ошибка подписки
+                                    error_code = code if code is not None else "нет кода"
+                                    error_msg = data.get("msg", "Unknown error")
+                                    # Получаем информацию о символе для более детального логирования
+                                    args_list = data.get("arg", [])
+                                    symbol_info = "unknown"
+                                    if isinstance(args_list, list) and args_list:
+                                        symbol_info = ", ".join([arg.get("instId", "?") for arg in args_list if isinstance(arg, dict)])
+                                    elif isinstance(args_list, dict):
+                                        symbol_info = args_list.get("instId", "unknown")
+                                    
+                                    logger.warning(
+                                        f"Bitget {market} batch-{batch_id}: "
+                                        f"ошибка подписки на {symbol_info}: code={error_code}, msg={error_msg}, "
+                                        f"полный ответ: {json.dumps(data, ensure_ascii=False)}"
+                                    )
+                            
                             # Обрабатываем trades
                             arg = data.get("arg")
                             rows = data.get("data")
                             if arg and rows and isinstance(rows, list) and arg.get("channel") == "trade":
                                 sym = arg.get("instId")
+                                
+                                # Отмечаем, что подписка работает (получили данные)
+                                if sym:
+                                    subscription_confirmations[sym] = True
                                 
                                 # Проверяем, это первое сообщение для символа
                                 if sym and sym not in first_message_for_symbol:

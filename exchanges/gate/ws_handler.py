@@ -49,6 +49,22 @@ _stats = {
 }
 
 
+def _safe_float(x) -> float:
+    """Безопасное преобразование в float."""
+    try:
+        return float(x)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _safe_int(x) -> int:
+    """Безопасное преобразование в int."""
+    try:
+        return int(float(x))
+    except (ValueError, TypeError):
+        return 0
+
+
 async def _ws_connection_worker(
     symbols: List[str],
     market: str,
@@ -68,10 +84,6 @@ async def _ws_connection_worker(
     while True:
         reconnect_attempt += 1
         is_reconnect = reconnect_attempt > 1
-        
-        # Инициализируем ping_task как None для безопасной обработки в finally
-        ping_task = None
-        connection_established = False
         
         try:
             if is_reconnect:
@@ -102,12 +114,11 @@ async def _ws_connection_worker(
                 close_timeout=10,
                 ssl=ssl_context,
             ) as websocket:
-                connection_established = True
-                _stats[market]["active_connections"] += 1
-                
-                # Сбрасываем reconnect_delay и reconnect_attempt после успешного подключения
-                reconnect_delay = RECONNECT_DELAY
+                # Сбрасываем счётчики после успешного подключения
                 reconnect_attempt = 0
+                reconnect_delay = RECONNECT_DELAY
+                
+                _stats[market]["active_connections"] += 1
                 
                 # Задача для отправки ping сообщений
                 ping_channel = "spot.ping" if market == "spot" else "futures.ping"
@@ -141,161 +152,8 @@ async def _ws_connection_worker(
                 ping_task = asyncio.create_task(ping_loop())
                 
                 try:
-                    # Функция для обработки сообщения (используется и во время подписки, и в основном цикле)
-                    # ВАЖНО: Gate.io может сразу начать отправлять данные о трейдах после подписки,
-                    # поэтому мы обрабатываем все типы сообщений, а не только ответы на подписку
-                    async def process_message(message_str: str) -> dict | None:
-                        """Обрабатывает сообщение и возвращает результат обработки"""
-                        try:
-                            message_dict = json.loads(message_str)
-                            
-                            # Обработка pong
-                            if message_dict.get("channel") in ["spot.pong", "futures.pong"]:
-                                return {"type": "pong"}
-                            
-                            # Обработка сделок
-                            channel = message_dict.get("channel", "")
-                            if "trades" in channel:
-                                trade_result = message_dict.get("result")
-                                
-                                if not trade_result:
-                                    return {"type": "unknown"}
-                                
-                                # SPOT: trade_result это объект
-                                if isinstance(trade_result, dict) and "currency_pair" in trade_result:
-                                    symbol = trade_result.get("currency_pair")
-                                    
-                                    # Проверка на валидный symbol
-                                    if not symbol or not isinstance(symbol, str):
-                                        return {"type": "invalid"}
-                                    
-                                    create_time_ms = trade_result.get("create_time_ms")
-                                    if isinstance(create_time_ms, str):
-                                        try:
-                                            timestamp = int(float(create_time_ms))
-                                        except (ValueError, TypeError):
-                                            create_time = trade_result.get("create_time", 0)
-                                            timestamp = int(create_time * 1000) if create_time > 0 else 0
-                                    elif isinstance(create_time_ms, (int, float)):
-                                        timestamp = int(create_time_ms)
-                                    else:
-                                        create_time = trade_result.get("create_time", 0)
-                                        timestamp = int(create_time * 1000) if create_time > 0 else 0
-                                    
-                                    # Валидация timestamp (должен быть в разумных пределах)
-                                    if timestamp <= 0 or timestamp > int(time.time()) * 1000 + 60000:
-                                        return {"type": "invalid"}
-                                    
-                                    price_str = trade_result.get("price", "0")
-                                    amount_str = trade_result.get("amount", "0")
-                                    try:
-                                        price = float(price_str) if price_str else 0.0
-                                        amount = float(amount_str) if amount_str else 0.0
-                                    except (ValueError, TypeError):
-                                        return {"type": "invalid"}
-                                    
-                                    if _builder and price > 0 and amount > 0:
-                                        finished = await _builder.add_trade(
-                                            exchange="gate",
-                                            market=market,
-                                            symbol=symbol,
-                                            price=price,
-                                            qty=amount,
-                                            ts_ms=timestamp,
-                                        )
-                                        if finished is not None:
-                                            await on_candle(finished)
-                                    
-                                    return {"type": "trade"}
-                                
-                                # LINEAR: trade_result это массив
-                                elif isinstance(trade_result, list):
-                                    for trade in trade_result:
-                                        if not isinstance(trade, dict):
-                                            continue
-                                        
-                                        symbol = trade.get("contract") or trade.get("symbol")
-                                        
-                                        # Проверка на валидный symbol
-                                        if not symbol or not isinstance(symbol, str):
-                                            continue
-                                        
-                                        create_time_ms = trade.get("create_time_ms")
-                                        if isinstance(create_time_ms, str):
-                                            try:
-                                                timestamp = int(float(create_time_ms))
-                                            except (ValueError, TypeError):
-                                                create_time = trade.get("create_time", 0)
-                                                timestamp = int(create_time * 1000) if create_time > 0 else 0
-                                        elif isinstance(create_time_ms, (int, float)):
-                                            timestamp = int(create_time_ms)
-                                        else:
-                                            create_time = trade.get("create_time", 0)
-                                            timestamp = int(create_time * 1000) if create_time > 0 else 0
-                                        
-                                        # Валидация timestamp (должен быть в разумных пределах)
-                                        if timestamp <= 0 or timestamp > int(time.time()) * 1000 + 60000:
-                                            continue
-                                        
-                                        price_str = trade.get("price", "0")
-                                        size_raw = trade.get("size", 0)
-                                        
-                                        # Безопасное преобразование size
-                                        try:
-                                            if isinstance(size_raw, str):
-                                                size = int(float(size_raw))
-                                            elif isinstance(size_raw, (int, float)):
-                                                size = int(size_raw)
-                                            else:
-                                                size = 0
-                                        except (ValueError, TypeError):
-                                            size = 0
-                                        
-                                        try:
-                                            price = float(price_str) if price_str else 0.0
-                                        except (ValueError, TypeError):
-                                            continue
-                                        
-                                        amount = abs(size)
-                                        
-                                        if _builder and price > 0 and amount > 0:
-                                            finished = await _builder.add_trade(
-                                                exchange="gate",
-                                                market=market,
-                                                symbol=symbol,
-                                                price=price,
-                                                qty=amount,
-                                                ts_ms=timestamp,
-                                            )
-                                            if finished is not None:
-                                                await on_candle(finished)
-                                    
-                                    return {"type": "trade"}
-                            
-                            # Проверка на ошибки
-                            if (
-                                message_dict.get("event") == "error"
-                                or "error" in message_dict
-                                or (isinstance(message_dict.get("code"), int) and message_dict.get("code") != 0)
-                            ):
-                                return {"type": "error", "data": message_dict}
-                            
-                            # Ответ на подписку (не ошибка)
-                            if message_dict.get("event") == "subscribe":
-                                return {"type": "subscription_response", "data": message_dict}
-                            
-                            return {"type": "unknown", "data": message_dict}
-                        except Exception as e:
-                            logger.warning(f"Gate WS: ошибка обработки сообщения в {connection_id}: {e}")
-                            return {"type": "error", "data": {"error": str(e)}}
-                    
-                    # Отправляем подписки и проверяем ответы
-                    subscription_responses = []
+                    # Отправляем подписки
                     for i, symbol in enumerate(symbols):
-                        if not symbol or not isinstance(symbol, str):
-                            logger.warning(f"Gate WS: пропущен невалидный символ в {connection_id}: {symbol}")
-                            continue
-                        
                         if market == "spot":
                             subscribe_msg = {
                                 "time": int(time.time()),
@@ -313,107 +171,108 @@ async def _ws_connection_worker(
                         
                         await websocket.send(json.dumps(subscribe_msg))
                         
-                        # Пытаемся получить ответ на подписку (с таймаутом)
-                        # ВАЖНО: Gate.io может сразу начать отправлять данные о трейдах,
-                        # поэтому мы обрабатываем любое сообщение, а не только ответы на подписку
-                        try:
-                            response = await asyncio.wait_for(websocket.recv(), timeout=2.0)
-                            result = await process_message(response)
-                            
-                            if result:
-                                msg_type = result.get("type")
-                                
-                                # Если это данные о трейдах - они уже обработаны в process_message
-                                if msg_type == "trade":
-                                    # Трейды обработаны, продолжаем
-                                    subscription_responses.append((symbol, True, None))
-                                # Если это ошибка подписки
-                                elif msg_type == "error":
-                                    error_data = result.get("data", {})
-                                    logger.error(
-                                        f"Gate WS: ошибка подписки на {symbol} в {connection_id} ({market}): {error_data}"
-                                    )
-                                    subscription_responses.append((symbol, False, error_data))
-                                # Если это ответ на подписку (успешный)
-                                elif msg_type == "subscription_response":
-                                    subscription_responses.append((symbol, True, result.get("data")))
-                                # Если это pong или неизвестное сообщение - игнорируем
-                                else:
-                                    subscription_responses.append((symbol, None, None))
-                            else:
-                                subscription_responses.append((symbol, None, None))
-                        except asyncio.TimeoutError:
-                            # Таймаут при получении ответа - возможно, ответ придет позже
-                            # Продолжаем работу, но логируем
-                            logger.debug(f"Gate WS: таймаут ответа на подписку для {symbol} в {connection_id}")
-                            subscription_responses.append((symbol, None, None))
-                        except Exception as e:
-                            # Ошибка при обработке ответа - продолжаем работу
-                            logger.warning(f"Gate WS: ошибка обработки ответа подписки для {symbol} в {connection_id}: {e}")
-                            subscription_responses.append((symbol, None, None))
-                        
                         # Задержка между подписками
                         if i < len(symbols) - 1:
                             await asyncio.sleep(DELAY_BETWEEN_SUBSCRIBE)
                     
-                    # Логируем итоги подписок
-                    failed_subscriptions = [s for s, success, _ in subscription_responses if success is False]
-                    if failed_subscriptions:
-                        logger.warning(
-                            f"Gate WS: неудачные подписки в {connection_id} ({market}): {failed_subscriptions}"
-                        )
-                    
                     # Читаем сообщения
-                    last_error_message = None
                     while True:
                         try:
                             message = await asyncio.wait_for(websocket.recv(), timeout=120)
-                            result = await process_message(message)
+                            try:
+                                message_dict = json.loads(message)
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"Gate {connection_id}: ошибка парсинга JSON сообщения: {e}")
+                                logger.debug(f"Gate {connection_id}: сообщение (первые 200 символов): {message[:200] if len(message) > 200 else message}")
+                                continue
                             
-                            if result:
-                                msg_type = result.get("type")
+                            # Обработка pong
+                            if message_dict.get("channel") in ["spot.pong", "futures.pong"]:
+                                continue
+                            
+                            # Обработка сделок
+                            channel = message_dict.get("channel", "")
+                            if "trades" in channel:
+                                trade_result = message_dict.get("result")
                                 
-                                # Логируем error-сообщения от Gate
-                                if msg_type == "error":
-                                    last_error_message = result.get("data")
-                                    logger.warning(
-                                        f"Gate WS error message on {market} {connection_id}: {last_error_message}"
-                                    )
-                                # Трейды уже обработаны в process_message
-                                # Pong и другие типы игнорируются
+                                if not trade_result:
+                                    continue
+                                
+                                # SPOT: trade_result это объект
+                                if isinstance(trade_result, dict) and "currency_pair" in trade_result:
+                                    symbol = trade_result.get("currency_pair")
+                                    create_time_ms = trade_result.get("create_time_ms")
+                                    if isinstance(create_time_ms, str):
+                                        timestamp = _safe_int(create_time_ms)
+                                    elif isinstance(create_time_ms, (int, float)):
+                                        timestamp = int(create_time_ms)
+                                    else:
+                                        create_time = trade_result.get("create_time", 0)
+                                        timestamp = int(create_time * 1000) if create_time > 0 else 0
+                                    
+                                    price_str = trade_result.get("price", "0")
+                                    amount_str = trade_result.get("amount", "0")
+                                    price = _safe_float(price_str) if price_str else 0.0
+                                    amount = _safe_float(amount_str) if amount_str else 0.0
+                                    
+                                    if _builder and price > 0 and amount > 0:
+                                        finished = await _builder.add_trade(
+                                            exchange="gate",
+                                            market=market,
+                                            symbol=symbol,
+                                            price=price,
+                                            qty=amount,
+                                            ts_ms=timestamp,
+                                        )
+                                        if finished is not None:
+                                            await on_candle(finished)
+                                
+                                # LINEAR: trade_result это массив
+                                elif isinstance(trade_result, list):
+                                    for trade in trade_result:
+                                        if not isinstance(trade, dict):
+                                            continue
+                                        
+                                        symbol = trade.get("contract") or trade.get("symbol")
+                                        create_time_ms = trade.get("create_time_ms")
+                                        if isinstance(create_time_ms, str):
+                                            timestamp = _safe_int(create_time_ms)
+                                        elif isinstance(create_time_ms, (int, float)):
+                                            timestamp = int(create_time_ms)
+                                        else:
+                                            create_time = trade.get("create_time", 0)
+                                            timestamp = int(create_time * 1000) if create_time > 0 else 0
+                                        
+                                        price_str = trade.get("price", "0")
+                                        size = _safe_int(trade.get("size", 0))
+                                        price = _safe_float(price_str) if price_str else 0.0
+                                        amount = abs(size)
+                                        
+                                        if _builder and price > 0 and amount > 0:
+                                            finished = await _builder.add_trade(
+                                                exchange="gate",
+                                                market=market,
+                                                symbol=symbol,
+                                                price=price,
+                                                qty=amount,
+                                                ts_ms=timestamp,
+                                            )
+                                            if finished is not None:
+                                                await on_candle(finished)
                         
                         except asyncio.TimeoutError:
                             # При таймауте продолжаем чтение (ping отправляется отдельной задачей)
                             continue
-                        except websockets.exceptions.ConnectionClosed as e:
-                            # Логируем код и причину закрытия, плюс последнее error-сообщение от Gate
-                            close_code = getattr(e, "code", None)
-                            close_reason = getattr(e, "reason", None)
-                            logger.warning(
-                                f"Gate WS connection {connection_id} ({market}) closed: "
-                                f"code={close_code}, reason={close_reason}, "
-                                f"last_error_message={last_error_message}"
-                            )
-                            await on_error({
-                                "exchange": "gate",
-                                "market": market,
-                                "connection_id": connection_id,
-                                "type": "connection_closed",
-                                "close_code": close_code,
-                                "close_reason": close_reason,
-                                "last_error_message": last_error_message,
-                            })
+                        except websockets.exceptions.ConnectionClosed:
                             break
                 finally:
-                    # Отменяем задачу ping при выходе (если она была создана)
-                    if ping_task is not None:
-                        ping_task.cancel()
-                        try:
-                            await ping_task
-                        except asyncio.CancelledError:
-                            pass
-                
-                if connection_established:
+                    # Отменяем задачу ping при выходе
+                    ping_task.cancel()
+                    try:
+                        await ping_task
+                    except asyncio.CancelledError:
+                        pass
+                    # Декрементируем счётчик соединений только если он был увеличен
                     _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
         
         except asyncio.CancelledError:
@@ -426,9 +285,8 @@ async def _ws_connection_worker(
                 "connection_id": connection_id,
                 "error": str(e),
             })
-            
-            if connection_established:
-                _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+            # Не декрементируем здесь, так как соединение могло не быть установлено
+            # или уже было декрементировано в finally блоке
 
 
 async def start(

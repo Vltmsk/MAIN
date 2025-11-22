@@ -212,135 +212,104 @@ async def _ws_connection_worker_subscribe(
                         "id": 1
                     }
                     await ws.send_json(subscribe_msg)
+                    logger.info(f"Binance {market}: отправлена подписка на {len(streams)} стримов")
+                    logger.debug(f"Binance {market}: примеры стримов: {streams[:3] if len(streams) > 0 else 'нет'}")
                     
-                    # Ждём подтверждения подписки (максимум 5 секунд)
+                    # Ждём подтверждения подписки (максимум 30 секунд)
                     subscription_confirmed = False
-                    receive_tasks = []  # Отслеживаем все задачи ws.receive() для отмены
-                    try:
-                        # Читаем первые сообщения для проверки подписки
-                        subscription_timeout = asyncio.create_task(asyncio.sleep(5))
-                        while not subscription_confirmed:
-                            receive_task = asyncio.create_task(ws.receive())
-                            receive_tasks.append(receive_task)
-                            
-                            done, pending = await asyncio.wait(
-                                [receive_task, subscription_timeout],
-                                return_when=asyncio.FIRST_COMPLETED
-                            )
-                            
-                            if subscription_timeout in done:
-                                logger.warning(f"Binance {market}: таймаут подтверждения подписки")
-                                # Отменяем все pending задачи перед выходом
-                                for task in pending:
-                                    task.cancel()
-                                # Отменяем все оставшиеся receive_tasks
-                                for task in receive_tasks:
-                                    if not task.done():
-                                        task.cancel()
-                                break
-                            
-                            for task in done:
-                                if task != subscription_timeout:
-                                    msg = await task
-                                    if msg.type == aiohttp.WSMsgType.TEXT:
-                                        payload = json.loads(msg.data)
-                                        # Проверяем ответ на подписку
-                                        if payload.get("id") == 1:
-                                            if payload.get("result") is None:
-                                                # Ошибка подписки
-                                                error_msg = payload.get("error", {}).get("msg", "Unknown error")
-                                                logger.error(f"Binance {market}: ошибка подписки: {error_msg}")
-                                                await on_error({
-                                                    "exchange": "binance",
-                                                    "market": market,
-                                                    "connection_id": f"ws-subscribe-{len(streams)}",
-                                                    "type": "subscribe_error",
-                                                    "error": error_msg,
-                                                })
-                                                # Отменяем все pending задачи перед выходом
-                                                for task in pending:
-                                                    task.cancel()
-                                                # Отменяем все оставшиеся receive_tasks
-                                                for task in receive_tasks:
-                                                    if not task.done():
-                                                        task.cancel()
-                                                break
-                                            else:
-                                                subscription_confirmed = True
-                                                logger.debug(f"Binance {market}: подписка подтверждена")
-                                                # Отменяем все pending задачи перед выходом из цикла
-                                                for task in pending:
-                                                    task.cancel()
-                                                break
-                                    elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
-                                        # Отменяем все pending задачи перед выходом
-                                        for task in pending:
-                                            task.cancel()
-                                        # Отменяем все оставшиеся receive_tasks
-                                        for task in receive_tasks:
-                                            if not task.done():
-                                                task.cancel()
-                                        break
-                            
-                            if subscription_timeout not in pending:
-                                # Отменяем все pending задачи перед выходом
-                                for task in pending:
-                                    task.cancel()
-                                # Отменяем все оставшиеся receive_tasks
-                                for task in receive_tasks:
-                                    if not task.done():
-                                        task.cancel()
-                                break
-                        
-                        # Отменяем таймаут и все оставшиеся receive_tasks
-                        subscription_timeout.cancel()
-                        for task in receive_tasks:
-                            if not task.done():
-                                task.cancel()
-                        
-                        # Ждём завершения отменённых задач
-                        try:
-                            await subscription_timeout
-                        except asyncio.CancelledError:
-                            pass
-                        
-                        # Ждём завершения всех отменённых receive_tasks
-                        for task in receive_tasks:
-                            try:
-                                await task
-                            except asyncio.CancelledError:
-                                pass
-                            except Exception:
-                                # Игнорируем ошибки от отменённых задач
-                                pass
-                    except Exception as e:
-                        logger.error(f"Binance {market}: ошибка при подтверждении подписки: {e}")
-                    
-                    if not subscription_confirmed:
-                        # Если подписка не подтверждена, переподключаемся
-                        continue
+                    subscription_timeout = 30.0
+                    first_data_received = False
+                    timeout_triggered = False
                     
                     # Создаём задачу для планового переподключения через 23 часа
                     scheduled_reconnect_task = asyncio.create_task(
                         _schedule_reconnect(ws, SCHEDULED_RECONNECT_INTERVAL, market, streams, on_error, connection_state)
                     )
                     
+                    # Создаём задачу для проверки таймаута подписки
+                    async def check_subscription_timeout():
+                        nonlocal timeout_triggered
+                        await asyncio.sleep(subscription_timeout)
+                        if not subscription_confirmed and not first_data_received:
+                            timeout_triggered = True
+                            logger.warning(f"Binance {market}: таймаут подтверждения подписки без данных ({subscription_timeout}с), переподключение...")
+                            if not ws.closed:
+                                await ws.close()
+                    
+                    timeout_task = asyncio.create_task(check_subscription_timeout())
+                    
                     try:
+                        # Единый цикл для проверки подписки и обработки сообщений
                         async for msg in ws:
+                            # Отменяем задачу таймаута, если получили данные или подтверждение
+                            if subscription_confirmed or first_data_received:
+                                if not timeout_task.done():
+                                    timeout_task.cancel()
+                            
                             if msg.type == aiohttp.WSMsgType.TEXT:
                                 try:
                                     payload = json.loads(msg.data)
                                     
-                                    # Пропускаем служебные сообщения (уже обработанные при подписке)
+                                    # Логируем первое сообщение для отладки
+                                    if not subscription_confirmed and not first_data_received:
+                                        logger.debug(f"Binance {market}: первое сообщение после подписки: {json.dumps(payload)[:200]}")
+                                    
+                                    # Проверяем ответ на подписку (только если ещё не подтверждена)
+                                    if not subscription_confirmed and payload.get("id") == 1:
+                                        # Проверяем наличие ошибки (если есть ключ "error" - это ошибка)
+                                        if "error" in payload:
+                                            # Ошибка подписки
+                                            error_msg = payload.get("error", {}).get("msg", "Unknown error")
+                                            error_code = payload.get("error", {}).get("code", "Unknown")
+                                            logger.error(f"Binance {market}: ошибка подписки (code: {error_code}): {error_msg}")
+                                            logger.error(f"Binance {market}: полный ответ: {json.dumps(payload)}")
+                                            await on_error({
+                                                "exchange": "binance",
+                                                "market": market,
+                                                "connection_id": f"ws-subscribe-{len(streams)}",
+                                                "type": "subscribe_error",
+                                                "error": error_msg,
+                                                "code": error_code,
+                                            })
+                                            # Отменяем задачу таймаута перед выходом
+                                            if not timeout_task.done():
+                                                timeout_task.cancel()
+                                            break
+                                        else:
+                                            # Успешное подтверждение подписки (result может быть null - это нормально)
+                                            subscription_confirmed = True
+                                            logger.info(f"Binance {market}: подписка подтверждена для {len(streams)} стримов")
+                                            # Отменяем задачу таймаута
+                                            if not timeout_task.done():
+                                                timeout_task.cancel()
+                                            # Пропускаем это сообщение, так как это только подтверждение
+                                            continue
+                                    
+                                    # Если это не ответ на подписку, но есть continuous_kline - подписка работает
+                                    if not subscription_confirmed and payload.get("e") == "continuous_kline":
+                                        subscription_confirmed = True
+                                        first_data_received = True
+                                        logger.info(f"Binance {market}: подписка работает (получено continuous_kline сообщение)")
+                                        # Отменяем задачу таймаута
+                                        if not timeout_task.done():
+                                            timeout_task.cancel()
+                                    elif payload.get("e") == "continuous_kline":
+                                        first_data_received = True
+                                        # Отменяем задачу таймаута при получении данных
+                                        if not timeout_task.done():
+                                            timeout_task.cancel()
+                                    
+                                    # Пропускаем служебные сообщения с id=1 (уже обработанные при подписке)
                                     if payload.get("id") == 1:
                                         continue
                                     
                                     # Обрабатываем continuous_kline сообщения (для futures через /ws)
                                     if market == "linear" and payload.get("e") == "continuous_kline":
                                         await _handle_continuous_kline_message(payload, on_candle)
-                                    else:
-                                        # Обрабатываем обычные kline сообщения (для spot)
+                                    elif market != "linear":
+                                        # Обрабатываем обычные kline сообщения (для spot, но не должно быть в этом worker)
                                         await _handle_kline_message(payload, market, on_candle)
+                                        
                                 except Exception as e:
                                     logger.error(f"Ошибка обработки сообщения Binance {market}: {e}")
                                     logger.error(f"Payload (первые 200 символов): {msg.data[:200] if len(msg.data) > 200 else msg.data}")
@@ -351,6 +320,19 @@ async def _ws_connection_worker_subscribe(
                             elif msg.type == aiohttp.WSMsgType.ERROR:
                                 logger.warning(f"Binance {market}: WebSocket ошибка (ERROR)")
                                 break
+                        
+                        # Отменяем задачу таймаута, если она ещё активна
+                        if not timeout_task.done():
+                            timeout_task.cancel()
+                            try:
+                                await timeout_task
+                            except asyncio.CancelledError:
+                                pass
+                        
+                        # Если вышли из цикла без подтверждения и без данных - переподключаемся
+                        if not subscription_confirmed and not first_data_received and not timeout_triggered:
+                            logger.warning(f"Binance {market}: подписка не подтверждена и данных не получено, переподключение...")
+                            continue
                     finally:
                         # Отменяем задачу планового переподключения, если соединение закрылось раньше
                         scheduled_reconnect_task.cancel()
@@ -358,6 +340,13 @@ async def _ws_connection_worker_subscribe(
                             await scheduled_reconnect_task
                         except asyncio.CancelledError:
                             pass
+                        # Отменяем задачу таймаута в finally, если она ещё активна
+                        if not timeout_task.done():
+                            timeout_task.cancel()
+                            try:
+                                await timeout_task
+                            except asyncio.CancelledError:
+                                pass
                 finally:
                     # Уменьшаем счётчик при выходе из соединения (включая случай неудачной подписки)
                     _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
