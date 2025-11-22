@@ -182,6 +182,7 @@ async def _send_chart_async(
                     f"({candle.exchange} {candle.symbol})"
                 )
             else:
+                # Fallback: отправляем текстовое сообщение с информацией об ошибке
                 logger.warning(
                     f"Не удалось отправить график пользователю {user_name}: {error_msg}",
                     extra={
@@ -192,10 +193,47 @@ async def _send_chart_async(
                         "symbol": candle.symbol,
                     },
                 )
+                # Добавляем информацию об ошибке к тексту сообщения
+                error_notification = f"\n\n⚠️ <b>Не удалось отправить график:</b> {error_msg}"
+                fallback_message = message_text + error_notification
+                # Обрезаем текст, если он превышает лимит Telegram (4096 символов)
+                # Telegram API ограничивает длину текстового сообщения до 4096 символов
+                if len(fallback_message) > 4096:
+                    # Оставляем место для error_notification, обрезаем message_text
+                    max_message_length = 4096 - len(error_notification)
+                    if max_message_length > 0:
+                        fallback_message = message_text[:max_message_length] + error_notification
+                    else:
+                        # Если error_notification слишком длинный, обрезаем его тоже
+                        fallback_message = fallback_message[:4093] + "..."
+                    logger.debug(f"Текст fallback сообщения обрезан до 4096 символов для {user_name}")
+                # Отправляем текстовое сообщение как fallback
+                await _send_text_message_async(
+                    candle=candle,
+                    tg_token=token,
+                    target_chat_id=chat_id,
+                    user_name=user_name,
+                    message_text=fallback_message,
+                )
         else:
+            # Fallback: отправляем текстовое сообщение при ошибке генерации графика
             logger.warning(
                 f"Не удалось сгенерировать график для пользователя {user_name} "
                 f"({candle.exchange} {candle.market} {candle.symbol})"
+            )
+            # Обрезаем текст, если он превышает лимит Telegram (4096 символов)
+            # Telegram API ограничивает длину текстового сообщения до 4096 символов
+            fallback_message_text = message_text
+            if len(fallback_message_text) > 4096:
+                fallback_message_text = fallback_message_text[:4093] + "..."
+                logger.debug(f"Текст fallback сообщения обрезан до 4096 символов для {user_name}")
+            # Отправляем текстовое сообщение как fallback
+            await _send_text_message_async(
+                candle=candle,
+                tg_token=token,
+                target_chat_id=chat_id,
+                user_name=user_name,
+                message_text=fallback_message_text,
             )
     except Exception as e:
         logger.warning(
@@ -504,9 +542,26 @@ async def on_error(error: dict) -> None:
         error: Информация об ошибке
     """
     exchange = error.get("exchange", "unknown")
+    error_type = error.get("type")
+    
+    # Если это плановое переподключение, логируем отдельно без увеличения счётчика
+    if error_type == "scheduled_reconnect":
+        market = error.get("market", "")
+        connection_id = error.get("connection_id", "")
+        logger.info(
+            f"ПЛАНОВОЕ ПЕРЕПОДКЛЮЧЕНИЕ: {exchange.upper()} {market} {connection_id}",
+            extra={
+                "log_to_db": True,
+                "error_type": "плановое переподключение",
+                "exchange": exchange,
+                "market": market,
+                "connection_id": connection_id,
+            },
+        )
+        return
     
     # Если это реконнект, логируем уведомление (без дубликатов)
-    if error.get("type") == "reconnect":
+    if error_type == "reconnect":
         market = error.get("market", "")
         connection_id = error.get("connection_id", "")
         reconnect_key = f"{exchange}:{market}:{connection_id}"

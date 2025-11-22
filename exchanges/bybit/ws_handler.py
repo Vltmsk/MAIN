@@ -84,6 +84,9 @@ async def _ws_consumer_with_batches(
             connected = True
             _stats[market]["active_connections"] += 1
             
+            # Сбрасываем счётчик переподключений после успешного подключения
+            reconnect_attempt = 0
+            
             # Подписываемся на каждый батч отдельно (лимит Bybit: max 10 topics per subscribe)
             for batch_id, batch_symbols in batches:
                 batch_args = [f"publicTrade.{sym}" for sym in batch_symbols]
@@ -96,6 +99,9 @@ async def _ws_consumer_with_batches(
                 while True:
                     await asyncio.sleep(WS_PING_INTERVAL_SEC)
                     try:
+                        # Проверяем, что соединение не закрыто перед отправкой ping
+                        if ws.closed:
+                            break
                         await ws.send_json({"op": "ping"})
                     except Exception:
                         break
@@ -138,12 +144,28 @@ async def _ws_consumer_with_batches(
                         if op == "subscribe":
                             success = data.get("success")
                             if not success:
-                                logger.error(f"Ошибка подписки: {data}")
+                                error_msg = data.get("retMsg") or data.get("message") or "Unknown error"
+                                logger.error(
+                                    f"Ошибка подписки Bybit {connection_id}: {error_msg}",
+                                    extra={
+                                        "log_to_db": True,
+                                        "error_type": "subscribe_error",
+                                        "exchange": "bybit",
+                                        "market": market,
+                                        "connection_id": connection_id,
+                                        "error": error_msg,
+                                    }
+                                )
+                        elif op == "pong":
+                            # Подтверждение ping - ничего не делаем
+                            pass
                 
                 elif msg.type == aiohttp.WSMsgType.CLOSE:
+                    logger.debug(f"WebSocket {connection_id} закрыт (CLOSE)")
                     break
                 
                 elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.warning(f"WebSocket {connection_id} ошибка (ERROR)")
                     break
             
         except asyncio.CancelledError:
@@ -164,6 +186,12 @@ async def _ws_consumer_with_batches(
                 try:
                     await ping_task
                 except asyncio.CancelledError:
+                    pass
+            # Явно закрываем WebSocket, если он ещё открыт
+            if 'ws' in locals() and not ws.closed:
+                try:
+                    await ws.close()
+                except Exception:
                     pass
 
 

@@ -6,7 +6,9 @@ import certifi
 import asyncio
 import math
 import re
+import time
 from typing import Awaitable, Callable, List
+from collections import deque
 import aiohttp
 import json
 from config import AppConfig
@@ -19,14 +21,22 @@ logger = get_logger(__name__)
 # Hyperliquid WebSocket endpoint
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 
+# Лимиты Hyperliquid API
+MAX_WEBSOCKET_CONNECTIONS = 100  # Максимум 100 websocket соединений
+MAX_WEBSOCKET_SUBSCRIPTIONS = 1000  # Максимум 1000 websocket подписок
+MAX_MESSAGES_PER_MINUTE = 2000  # Максимум 2000 сообщений в минуту
+MAX_INFLIGHT_POST_MESSAGES = 100  # Максимум 100 одновременных inflight post сообщений
+
 # Конфигурация подключения
 # Количество символов на одно WS-соединение для спота и перпов.
-# Уменьшено до 39 для снижения нагрузки и вероятности ошибок подписки.
-SPOT_SYMBOLS_PER_CONNECTION = 39
-LINEAR_SYMBOLS_PER_CONNECTION = 39
-PING_INTERVAL_SEC = 30
+SPOT_SYMBOLS_PER_CONNECTION = 50
+LINEAR_SYMBOLS_PER_CONNECTION = 50
+PING_INTERVAL_SEC = 55
 RECONNECT_DELAY = 5
 MAX_RECONNECT_DELAY = 60
+
+# Пороги предупреждений (в процентах от лимита)
+WARNING_THRESHOLD = 0.8  # 80% от лимита
 
 # Глобальные переменные
 _builder: CandleBuilder | None = None
@@ -39,13 +49,19 @@ _stats = {
         "active_connections": 0,
         "active_symbols": 0,
         "reconnects": 0,
+        "total_subscriptions": 0,
     },
     "linear": {
         "active_connections": 0,
         "active_symbols": 0,
         "reconnects": 0,
+        "total_subscriptions": 0,
     },
 }
+
+# Rate limiting для сообщений
+_message_timestamps: deque = deque()  # Хранит timestamps отправленных сообщений
+_rate_limit_lock = asyncio.Lock()  # Блокировка для thread-safe доступа
 
 
 def _parse_float(x) -> float:
@@ -54,6 +70,110 @@ def _parse_float(x) -> float:
         return float(x)
     except Exception:
         return 0.0
+
+
+async def _check_rate_limit(is_ping: bool = False) -> None:
+    """
+    Проверяет и применяет rate limiting для сообщений.
+    Удаляет старые timestamps (старше 1 минуты) и ждёт, если лимит превышен.
+    
+    Использует цикл для повторной проверки лимита после ожидания, чтобы предотвратить
+    превышение лимита, когда несколько корутин одновременно ждут и просыпаются.
+    
+    Args:
+        is_ping: Если True, ping сообщения обходят rate limiting (критично для соединения)
+    """
+    global _message_timestamps
+    
+    # Ping сообщения обходят rate limiting, так как они критичны для поддержания соединения
+    if is_ping:
+        # Ping сообщения НЕ учитываются в rate limit, но очищаем старые timestamps
+        # для предотвращения утечки памяти
+        async with _rate_limit_lock:
+            current_time = time.time()
+            minute_ago = current_time - 60
+            
+            # Удаляем timestamps старше 1 минуты (для предотвращения утечки памяти)
+            while _message_timestamps and _message_timestamps[0] < minute_ago:
+                _message_timestamps.popleft()
+            
+            # НЕ добавляем timestamp для ping - они обходят rate limiting полностью
+        return
+    
+    # Используем цикл для повторной проверки лимита после ожидания
+    while True:
+        wait_time = 0.0
+        message_count = 0  # Сохраняем количество для логирования
+        async with _rate_limit_lock:
+            current_time = time.time()
+            minute_ago = current_time - 60
+            
+            # Удаляем timestamps старше 1 минуты
+            while _message_timestamps and _message_timestamps[0] < minute_ago:
+                _message_timestamps.popleft()
+            
+            # Сохраняем текущее количество для логирования (внутри блокировки)
+            message_count = len(_message_timestamps)
+            
+            # Проверяем лимит после очистки старых timestamps
+            if message_count < MAX_MESSAGES_PER_MINUTE:
+                # Есть место - добавляем timestamp и выходим
+                _message_timestamps.append(current_time)
+                return
+            
+            # Лимит всё ещё достигнут - вычисляем время ожидания
+            if _message_timestamps:
+                oldest_timestamp = _message_timestamps[0]
+                wait_time = 60 - (current_time - oldest_timestamp) + 0.1  # +0.1 для безопасности
+            else:
+                # Если список пуст после очистки (не должно быть), просто добавляем
+                _message_timestamps.append(current_time)
+                return
+        
+        # Ожидание выполняется ВНЕ блокировки, чтобы не блокировать другие корутины
+        if wait_time > 0:
+            logger.warning(
+                f"Rate limit достигнут ({message_count}/{MAX_MESSAGES_PER_MINUTE} сообщений/мин). "
+                f"Ожидание {wait_time:.2f} секунд..."
+            )
+            await asyncio.sleep(wait_time)
+            # После ожидания цикл продолжится и повторит проверку лимита
+        else:
+            # Если wait_time = 0, выходим (не должно происходить в нормальных условиях)
+            break
+
+
+def _check_limits_warning(connections: int, subscriptions: int) -> None:
+    """
+    Проверяет приближение к лимитам и выводит предупреждения.
+    
+    Args:
+        connections: Текущее количество соединений
+        subscriptions: Текущее количество подписок
+    """
+    # Проверка лимита соединений
+    if connections >= MAX_WEBSOCKET_CONNECTIONS * WARNING_THRESHOLD:
+        logger.warning(
+            f"⚠️ Приближение к лимиту соединений Hyperliquid: {connections}/{MAX_WEBSOCKET_CONNECTIONS} "
+            f"({connections/MAX_WEBSOCKET_CONNECTIONS*100:.1f}%)"
+        )
+    
+    if connections >= MAX_WEBSOCKET_CONNECTIONS:
+        logger.error(
+            f"❌ Превышен лимит соединений Hyperliquid: {connections}/{MAX_WEBSOCKET_CONNECTIONS}"
+        )
+    
+    # Проверка лимита подписок
+    if subscriptions >= MAX_WEBSOCKET_SUBSCRIPTIONS * WARNING_THRESHOLD:
+        logger.warning(
+            f"⚠️ Приближение к лимиту подписок Hyperliquid: {subscriptions}/{MAX_WEBSOCKET_SUBSCRIPTIONS} "
+            f"({subscriptions/MAX_WEBSOCKET_SUBSCRIPTIONS*100:.1f}%)"
+        )
+    
+    if subscriptions >= MAX_WEBSOCKET_SUBSCRIPTIONS:
+        logger.error(
+            f"❌ Превышен лимит подписок Hyperliquid: {subscriptions}/{MAX_WEBSOCKET_SUBSCRIPTIONS}"
+        )
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -74,11 +194,13 @@ def _normalize_symbol(symbol: str) -> str:
     symbol = symbol.upper().strip()
     
     # Если символ начинается с "@", это специальный формат "@index" для спота
-    # Оставляем как есть, но убираем "@" для нормализации
+    # Убираем "@" для нормализации (например, "@index" -> "index")
     if symbol.startswith("@"):
-        # Для "@index" используем как есть, но можно преобразовать
-        # В трейдах coin будет приходить уже нормализованным
-        return symbol.replace("@", "")
+        symbol = symbol.replace("@", "")
+        # После удаления "@" проверяем, не является ли это специальным символом "index"
+        # Если это "index", оставляем как есть (не добавляем USDC)
+        if symbol == "INDEX":
+            return symbol
     
     # Если символ содержит "/", извлекаем базовую валюту
     if "/" in symbol:
@@ -89,7 +211,8 @@ def _normalize_symbol(symbol: str) -> str:
             return f"{base}{quote}"
     
     # Если это просто базовая валюта, добавляем USDC
-    if not symbol.endswith("USDC") and not symbol.endswith("USDT"):
+    # Исключение: если это "INDEX" (уже обработан выше), не добавляем USDC
+    if not symbol.endswith("USDC") and not symbol.endswith("USDT") and symbol != "INDEX":
         return f"{symbol}USDC"
     
     return symbol
@@ -127,6 +250,9 @@ async def _ws_connection_worker(
                 heartbeat=PING_INTERVAL_SEC,
                 timeout=aiohttp.ClientTimeout(total=180)
             ) as ws:
+                # Сбрасываем счётчик после успешного подключения
+                reconnect_attempt = 0
+                
                 _stats[market]["active_connections"] += 1
                 
                 # Небольшая задержка после подключения для стабилизации соединения
@@ -156,6 +282,9 @@ async def _ws_connection_worker(
                             logger.warning(f"Соединение закрыто при подписке на {symbol}")
                             break
                         
+                        # Проверяем rate limit перед отправкой сообщения
+                        await _check_rate_limit()
+                        
                         await ws.send_json(subscribe_msg)
                         await asyncio.sleep(0.05)  # Небольшая задержка между подписками
                     except Exception as e:
@@ -182,11 +311,35 @@ async def _ws_connection_worker(
                     while True:
                         try:
                             await asyncio.sleep(PING_INTERVAL_SEC)
+                            
+                            # Проверяем, что соединение еще открыто
+                            if ws.closed:
+                                break
+                            
+                            # Проверяем rate limit перед отправкой ping
+                            # is_ping=True позволяет ping обходить rate limiting (критично для соединения)
+                            await _check_rate_limit(is_ping=True)
+                            
                             # Hyperliquid использует JSON формат: {"method": "ping"}
                             ping_msg = {"method": "ping"}
                             await ws.send_json(ping_msg)
-                        except Exception:
+                            
+                        except asyncio.CancelledError:
+                            # Нормальная отмена задачи - выходим из цикла
                             break
+                        except Exception as e:
+                            # Логируем ошибку, но продолжаем попытки отправки ping
+                            error_msg = str(e)
+                            # Не логируем "Cannot write to closing transport" как WARNING, это нормально при закрытии
+                            if "closing transport" not in error_msg.lower():
+                                logger.warning(f"Ошибка отправки ping Hyperliquid {market}: {e}")
+                            
+                            # Если соединение закрыто, выходим из цикла
+                            if ws.closed or "closing" in error_msg.lower():
+                                break
+                            
+                            # Для других ошибок продолжаем попытки (с небольшой задержкой)
+                            await asyncio.sleep(1)
                 
                 ping_task = asyncio.create_task(ping_loop())
                 
@@ -265,13 +418,26 @@ async def _ws_connection_worker(
                                             )
                                             
                                             # Если timestamp в секундах, преобразуем в миллисекунды
-                                            if timestamp > 0 and timestamp < 10000000000:
-                                                timestamp = timestamp * 1000
+                                            # Unix timestamp в секундах для текущей даты (2024+) находится в диапазоне ~1700000000-1800000000
+                                            # Если timestamp меньше 10000000000 (10 миллиардов), это скорее всего секунды
+                                            # Максимальный Unix timestamp в секундах до 2038 года: 2147483647
+                                            if timestamp > 0:
+                                                # Проверяем, что timestamp в разумном диапазоне для секунд
+                                                # Если меньше 10000000000, это скорее всего секунды (не миллисекунды)
+                                                if timestamp < 10000000000:
+                                                    timestamp = timestamp * 1000
+                                                # Если timestamp уже в миллисекундах, оставляем как есть
                                             
                                             # Нормализуем символ
                                             normalized_symbol = _normalize_symbol(symbol)
                                             
-                                            if price > 0 and size > 0 and normalized_symbol:
+                                            # Логируем проблемные сделки для отладки (только первые несколько раз)
+                                            if not normalized_symbol and symbol:
+                                                # Символ был, но после нормализации стал пустым - это не должно происходить
+                                                logger.debug(f"Hyperliquid: символ '{symbol}' стал пустым после нормализации")
+                                            
+                                            # Проверяем валидность всех данных перед обработкой
+                                            if price > 0 and size > 0 and normalized_symbol and timestamp > 0:
                                                 if _builder:
                                                     finished = await _builder.add_trade(
                                                         exchange="hyperliquid",
@@ -480,9 +646,117 @@ async def start(
     _spot_tasks = []
     _linear_tasks = []
     
+    # Подсчитываем общее количество соединений и подписок
+    total_connections = 0
+    total_subscriptions = 0
+    
+    # Планируем соединения для SPOT
+    spot_connections_planned = 0
+    spot_subscriptions_planned = 0
+    if fetch_spot and spot_symbols:
+        spot_connections_planned = math.ceil(len(spot_symbols) / SPOT_SYMBOLS_PER_CONNECTION)
+        spot_subscriptions_planned = len(spot_symbols)
+    
+    # Планируем соединения для LINEAR
+    linear_connections_planned = 0
+    linear_subscriptions_planned = 0
+    if fetch_linear and linear_symbols:
+        linear_connections_planned = math.ceil(len(linear_symbols) / LINEAR_SYMBOLS_PER_CONNECTION)
+        linear_subscriptions_planned = len(linear_symbols)
+    
+    total_connections = spot_connections_planned + linear_connections_planned
+    total_subscriptions = spot_subscriptions_planned + linear_subscriptions_planned
+    
+    # Проверяем лимиты перед созданием соединений
+    _check_limits_warning(total_connections, total_subscriptions)
+    
+    # Ограничиваем количество соединений до лимита
+    if total_connections > MAX_WEBSOCKET_CONNECTIONS:
+        logger.error(
+            f"❌ Превышен лимит соединений Hyperliquid: планируется {total_connections}, "
+            f"максимум {MAX_WEBSOCKET_CONNECTIONS}. Соединения будут ограничены."
+        )
+        
+        # Распределяем лимит соединений пропорционально между spot и linear
+        if total_connections > 0:
+            spot_ratio = spot_connections_planned / total_connections
+            linear_ratio = linear_connections_planned / total_connections
+            
+            max_connections_spot = int(MAX_WEBSOCKET_CONNECTIONS * spot_ratio)
+            max_connections_linear = MAX_WEBSOCKET_CONNECTIONS - max_connections_spot
+            
+            if fetch_spot and spot_symbols:
+                max_spot_symbols = max_connections_spot * SPOT_SYMBOLS_PER_CONNECTION
+                if len(spot_symbols) > max_spot_symbols:
+                    logger.warning(
+                        f"Ограничение символов SPOT: {len(spot_symbols)} -> {max_spot_symbols} "
+                        f"из-за лимита соединений"
+                    )
+                    spot_symbols = spot_symbols[:max_spot_symbols]
+                    spot_connections_planned = max_connections_spot
+                    spot_subscriptions_planned = len(spot_symbols)
+            
+            if fetch_linear and linear_symbols:
+                max_linear_symbols = max_connections_linear * LINEAR_SYMBOLS_PER_CONNECTION
+                if len(linear_symbols) > max_linear_symbols:
+                    logger.warning(
+                        f"Ограничение символов LINEAR: {len(linear_symbols)} -> {max_linear_symbols} "
+                        f"из-за лимита соединений"
+                    )
+                    linear_symbols = linear_symbols[:max_linear_symbols]
+                    linear_connections_planned = max_connections_linear
+                    linear_subscriptions_planned = len(linear_symbols)
+        
+        total_connections = spot_connections_planned + linear_connections_planned
+        total_subscriptions = spot_subscriptions_planned + linear_subscriptions_planned
+    
+    # Ограничиваем количество подписок до лимита
+    if total_subscriptions > MAX_WEBSOCKET_SUBSCRIPTIONS:
+        logger.error(
+            f"❌ Превышен лимит подписок Hyperliquid: планируется {total_subscriptions}, "
+            f"максимум {MAX_WEBSOCKET_SUBSCRIPTIONS}. Подписки будут ограничены."
+        )
+        
+        # Распределяем лимит подписок пропорционально между spot и linear
+        if total_subscriptions > 0:
+            spot_ratio = spot_subscriptions_planned / total_subscriptions
+            linear_ratio = linear_subscriptions_planned / total_subscriptions
+            
+            max_spot_subscriptions = int(MAX_WEBSOCKET_SUBSCRIPTIONS * spot_ratio)
+            max_linear_subscriptions = MAX_WEBSOCKET_SUBSCRIPTIONS - max_spot_subscriptions
+            
+            if fetch_spot and spot_symbols and len(spot_symbols) > max_spot_subscriptions:
+                logger.warning(
+                    f"Ограничение подписок SPOT: {len(spot_symbols)} -> {max_spot_subscriptions} "
+                    f"из-за лимита подписок"
+                )
+                spot_symbols = spot_symbols[:max_spot_subscriptions]
+                spot_subscriptions_planned = len(spot_symbols)
+                spot_connections_planned = math.ceil(len(spot_symbols) / SPOT_SYMBOLS_PER_CONNECTION)
+            
+            if fetch_linear and linear_symbols and len(linear_symbols) > max_linear_subscriptions:
+                logger.warning(
+                    f"Ограничение подписок LINEAR: {len(linear_symbols)} -> {max_linear_subscriptions} "
+                    f"из-за лимита подписок"
+                )
+                linear_symbols = linear_symbols[:max_linear_subscriptions]
+                linear_subscriptions_planned = len(linear_symbols)
+                linear_connections_planned = math.ceil(len(linear_symbols) / LINEAR_SYMBOLS_PER_CONNECTION)
+        
+        total_connections = spot_connections_planned + linear_connections_planned
+        total_subscriptions = spot_subscriptions_planned + linear_subscriptions_planned
+    
+    # Логируем финальную конфигурацию
+    logger.info(
+        f"Hyperliquid: планируется {total_connections} соединений, {total_subscriptions} подписок "
+        f"(SPOT: {spot_connections_planned} соединений, {spot_subscriptions_planned} подписок; "
+        f"LINEAR: {linear_connections_planned} соединений, {linear_subscriptions_planned} подписок)"
+    )
+    
     # Запускаем SPOT
     if fetch_spot and spot_symbols:
         _stats["spot"]["active_symbols"] = len(spot_symbols)
+        _stats["spot"]["total_subscriptions"] = len(spot_symbols)
         
         # Создаём соединения для SPOT
         for i in range(0, len(spot_symbols), SPOT_SYMBOLS_PER_CONNECTION):
@@ -503,6 +777,7 @@ async def start(
     # Запускаем LINEAR
     if fetch_linear and linear_symbols:
         _stats["linear"]["active_symbols"] = len(linear_symbols)
+        _stats["linear"]["total_subscriptions"] = len(linear_symbols)
         
         # Создаём соединения для LINEAR
         for i in range(0, len(linear_symbols), LINEAR_SYMBOLS_PER_CONNECTION):
@@ -558,11 +833,27 @@ def get_statistics() -> dict:
         - active_connections: int
         - active_symbols: int  
         - reconnects: int
+        - total_subscriptions: int
     """
     # Обновляем статистику активных соединений на основе отдельных списков задач
     _stats["spot"]["active_connections"] = len([t for t in _spot_tasks if not t.done()])
     _stats["linear"]["active_connections"] = len([t for t in _linear_tasks if not t.done()])
     
-    return _stats
+    # Добавляем информацию о лимитах
+    total_connections = _stats["spot"]["active_connections"] + _stats["linear"]["active_connections"]
+    total_subscriptions = _stats["spot"]["total_subscriptions"] + _stats["linear"]["total_subscriptions"]
+    
+    stats_with_limits = _stats.copy()
+    stats_with_limits["limits"] = {
+        "max_connections": MAX_WEBSOCKET_CONNECTIONS,
+        "max_subscriptions": MAX_WEBSOCKET_SUBSCRIPTIONS,
+        "max_messages_per_minute": MAX_MESSAGES_PER_MINUTE,
+        "current_connections": total_connections,
+        "current_subscriptions": total_subscriptions,
+        "connections_usage_percent": (total_connections / MAX_WEBSOCKET_CONNECTIONS * 100) if MAX_WEBSOCKET_CONNECTIONS > 0 else 0,
+        "subscriptions_usage_percent": (total_subscriptions / MAX_WEBSOCKET_SUBSCRIPTIONS * 100) if MAX_WEBSOCKET_SUBSCRIPTIONS > 0 else 0,
+    }
+    
+    return stats_with_limits
 
 

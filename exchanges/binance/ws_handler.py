@@ -23,6 +23,9 @@ FAPI_WS_ENDPOINT_WS = "wss://fstream.binance.com/ws"  # Для подписки 
 # Лимит потоков на одно WS-подключение
 STREAMS_PER_CONNECTION = 150
 
+# Время планового переподключения (23 часа в секундах)
+SCHEDULED_RECONNECT_INTERVAL = 23 * 60 * 60  # 82800 секунд
+
 # Глобальные переменные
 _builder: CandleBuilder | None = None
 _tasks: List[asyncio.Task] = []
@@ -67,37 +70,75 @@ async def _ws_connection_worker(
     WebSocket worker для одного соединения с множественными стримами.
     """
     reconnect_attempt = 0
+    connection_state = {"is_scheduled_reconnect": False}
     
     while True:
         reconnect_attempt += 1
         
+        # Сохраняем значение флага перед проверкой reconnect_attempt
+        is_scheduled = connection_state["is_scheduled_reconnect"]
+        # Сбрасываем флаг сразу, чтобы он не влиял на последующие итерации
+        if is_scheduled:
+            connection_state["is_scheduled_reconnect"] = False
+        
         try:
-            if reconnect_attempt > 1:
-                delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
-                _stats[market]["reconnects"] += 1
-                await on_error({
-                    "exchange": "binance",
-                    "market": market,
-                    "connection_id": f"streams-{len(streams)}",
-                    "type": "reconnect",
-                })
-                await asyncio.sleep(delay)
+            # Обрабатываем переподключение (обычное или плановое)
+            if reconnect_attempt > 1 or (reconnect_attempt == 1 and is_scheduled):
+                # Если это не плановое переподключение, увеличиваем счётчик и логируем
+                if not is_scheduled:
+                    delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
+                    _stats[market]["reconnects"] += 1
+                    await on_error({
+                        "exchange": "binance",
+                        "market": market,
+                        "connection_id": f"streams-{len(streams)}",
+                        "type": "reconnect",
+                    })
+                    await asyncio.sleep(delay)
+                else:
+                    # Для планового переподключения не увеличиваем счётчик
+                    await asyncio.sleep(1)  # Небольшая задержка перед новым подключением
+            
+            if _session is None or _session.closed:
+                logger.error(f"Binance {market}: сессия не инициализирована или закрыта")
+                await asyncio.sleep(5)
+                continue
             
             async with _session.ws_connect(url, heartbeat=25) as ws:
+                # Сбрасываем счётчик после успешного подключения
+                reconnect_attempt = 0
+                
                 _stats[market]["active_connections"] += 1
                 
-                async for msg in ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        try:
-                            payload = json.loads(msg.data)
-                            await _handle_kline_message(payload, market, on_candle)
-                        except Exception as e:
-                            logger.error(f"Ошибка обработки сообщения Binance {market}: {e}")
-                            logger.error(f"Payload (первые 200 символов): {msg.data[:200] if len(msg.data) > 200 else msg.data}")
-                    
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        break
-                    
+                # Создаём задачу для планового переподключения через 23 часа
+                scheduled_reconnect_task = asyncio.create_task(
+                    _schedule_reconnect(ws, SCHEDULED_RECONNECT_INTERVAL, market, streams, on_error, connection_state)
+                )
+                
+                try:
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            try:
+                                payload = json.loads(msg.data)
+                                await _handle_kline_message(payload, market, on_candle)
+                            except Exception as e:
+                                logger.error(f"Ошибка обработки сообщения Binance {market}: {e}")
+                                logger.error(f"Payload (первые 200 символов): {msg.data[:200] if len(msg.data) > 200 else msg.data}")
+                        
+                        elif msg.type == aiohttp.WSMsgType.CLOSE:
+                            logger.debug(f"Binance {market}: WebSocket закрыт (CLOSE)")
+                            break
+                        elif msg.type == aiohttp.WSMsgType.ERROR:
+                            logger.warning(f"Binance {market}: WebSocket ошибка (ERROR)")
+                            break
+                finally:
+                    # Отменяем задачу планового переподключения, если соединение закрылось раньше
+                    scheduled_reconnect_task.cancel()
+                    try:
+                        await scheduled_reconnect_task
+                    except asyncio.CancelledError:
+                        pass
+                
                 _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
                 
         except asyncio.CancelledError:
@@ -122,57 +163,204 @@ async def _ws_connection_worker_subscribe(
     Отличается от /stream тем, что требует явной подписки через JSON.
     """
     reconnect_attempt = 0
+    connection_state = {"is_scheduled_reconnect": False}
     
     while True:
         reconnect_attempt += 1
         
+        # Сохраняем значение флага перед проверкой reconnect_attempt
+        is_scheduled = connection_state["is_scheduled_reconnect"]
+        # Сбрасываем флаг сразу, чтобы он не влиял на последующие итерации
+        if is_scheduled:
+            connection_state["is_scheduled_reconnect"] = False
+        
         try:
-            if reconnect_attempt > 1:
-                delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
-                _stats[market]["reconnects"] += 1
-                await on_error({
-                    "exchange": "binance",
-                    "market": market,
-                    "connection_id": f"ws-subscribe-{len(streams)}",
-                    "type": "reconnect",
-                })
-                await asyncio.sleep(delay)
+            # Обрабатываем переподключение (обычное или плановое)
+            if reconnect_attempt > 1 or (reconnect_attempt == 1 and is_scheduled):
+                # Если это не плановое переподключение, увеличиваем счётчик и логируем
+                if not is_scheduled:
+                    delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
+                    _stats[market]["reconnects"] += 1
+                    await on_error({
+                        "exchange": "binance",
+                        "market": market,
+                        "connection_id": f"ws-subscribe-{len(streams)}",
+                        "type": "reconnect",
+                    })
+                    await asyncio.sleep(delay)
+                else:
+                    # Для планового переподключения не увеличиваем счётчик
+                    await asyncio.sleep(1)  # Небольшая задержка перед новым подключением
+            
+            if _session is None or _session.closed:
+                logger.error(f"Binance {market}: сессия не инициализирована или закрыта")
+                await asyncio.sleep(5)
+                continue
             
             url = FAPI_WS_ENDPOINT_WS
             async with _session.ws_connect(url, heartbeat=25) as ws:
+                # Сбрасываем счётчик после успешного подключения
+                reconnect_attempt = 0
+                
                 _stats[market]["active_connections"] += 1
                 
-                # Отправляем подписку через JSON
-                subscribe_msg = {
-                    "method": "SUBSCRIBE",
-                    "params": streams,
-                    "id": 1
-                }
-                await ws.send_json(subscribe_msg)
-                
-                async for msg in ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        try:
-                            payload = json.loads(msg.data)
-                            
-                            # Проверяем, это сообщение подписки или данные
-                            if "result" in payload or "id" in payload:
-                                continue
-                            
-                            # Обрабатываем continuous_kline сообщения (для futures через /ws)
-                            if market == "linear" and payload.get("e") == "continuous_kline":
-                                await _handle_continuous_kline_message(payload, on_candle)
-                            else:
-                                # Обрабатываем обычные kline сообщения (для spot)
-                                await _handle_kline_message(payload, market, on_candle)
-                        except Exception as e:
-                            logger.error(f"Ошибка обработки сообщения Binance {market}: {e}")
-                            logger.error(f"Payload (первые 200 символов): {msg.data[:200] if len(msg.data) > 200 else msg.data}")
+                try:
+                    # Отправляем подписку через JSON
+                    subscribe_msg = {
+                        "method": "SUBSCRIBE",
+                        "params": streams,
+                        "id": 1
+                    }
+                    await ws.send_json(subscribe_msg)
                     
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        break
-                
-                _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+                    # Ждём подтверждения подписки (максимум 5 секунд)
+                    subscription_confirmed = False
+                    receive_tasks = []  # Отслеживаем все задачи ws.receive() для отмены
+                    try:
+                        # Читаем первые сообщения для проверки подписки
+                        subscription_timeout = asyncio.create_task(asyncio.sleep(5))
+                        while not subscription_confirmed:
+                            receive_task = asyncio.create_task(ws.receive())
+                            receive_tasks.append(receive_task)
+                            
+                            done, pending = await asyncio.wait(
+                                [receive_task, subscription_timeout],
+                                return_when=asyncio.FIRST_COMPLETED
+                            )
+                            
+                            if subscription_timeout in done:
+                                logger.warning(f"Binance {market}: таймаут подтверждения подписки")
+                                # Отменяем все pending задачи перед выходом
+                                for task in pending:
+                                    task.cancel()
+                                # Отменяем все оставшиеся receive_tasks
+                                for task in receive_tasks:
+                                    if not task.done():
+                                        task.cancel()
+                                break
+                            
+                            for task in done:
+                                if task != subscription_timeout:
+                                    msg = await task
+                                    if msg.type == aiohttp.WSMsgType.TEXT:
+                                        payload = json.loads(msg.data)
+                                        # Проверяем ответ на подписку
+                                        if payload.get("id") == 1:
+                                            if payload.get("result") is None:
+                                                # Ошибка подписки
+                                                error_msg = payload.get("error", {}).get("msg", "Unknown error")
+                                                logger.error(f"Binance {market}: ошибка подписки: {error_msg}")
+                                                await on_error({
+                                                    "exchange": "binance",
+                                                    "market": market,
+                                                    "connection_id": f"ws-subscribe-{len(streams)}",
+                                                    "type": "subscribe_error",
+                                                    "error": error_msg,
+                                                })
+                                                # Отменяем все pending задачи перед выходом
+                                                for task in pending:
+                                                    task.cancel()
+                                                # Отменяем все оставшиеся receive_tasks
+                                                for task in receive_tasks:
+                                                    if not task.done():
+                                                        task.cancel()
+                                                break
+                                            else:
+                                                subscription_confirmed = True
+                                                logger.debug(f"Binance {market}: подписка подтверждена")
+                                                # Отменяем все pending задачи перед выходом из цикла
+                                                for task in pending:
+                                                    task.cancel()
+                                                break
+                                    elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
+                                        # Отменяем все pending задачи перед выходом
+                                        for task in pending:
+                                            task.cancel()
+                                        # Отменяем все оставшиеся receive_tasks
+                                        for task in receive_tasks:
+                                            if not task.done():
+                                                task.cancel()
+                                        break
+                            
+                            if subscription_timeout not in pending:
+                                # Отменяем все pending задачи перед выходом
+                                for task in pending:
+                                    task.cancel()
+                                # Отменяем все оставшиеся receive_tasks
+                                for task in receive_tasks:
+                                    if not task.done():
+                                        task.cancel()
+                                break
+                        
+                        # Отменяем таймаут и все оставшиеся receive_tasks
+                        subscription_timeout.cancel()
+                        for task in receive_tasks:
+                            if not task.done():
+                                task.cancel()
+                        
+                        # Ждём завершения отменённых задач
+                        try:
+                            await subscription_timeout
+                        except asyncio.CancelledError:
+                            pass
+                        
+                        # Ждём завершения всех отменённых receive_tasks
+                        for task in receive_tasks:
+                            try:
+                                await task
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception:
+                                # Игнорируем ошибки от отменённых задач
+                                pass
+                    except Exception as e:
+                        logger.error(f"Binance {market}: ошибка при подтверждении подписки: {e}")
+                    
+                    if not subscription_confirmed:
+                        # Если подписка не подтверждена, переподключаемся
+                        continue
+                    
+                    # Создаём задачу для планового переподключения через 23 часа
+                    scheduled_reconnect_task = asyncio.create_task(
+                        _schedule_reconnect(ws, SCHEDULED_RECONNECT_INTERVAL, market, streams, on_error, connection_state)
+                    )
+                    
+                    try:
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                try:
+                                    payload = json.loads(msg.data)
+                                    
+                                    # Пропускаем служебные сообщения (уже обработанные при подписке)
+                                    if payload.get("id") == 1:
+                                        continue
+                                    
+                                    # Обрабатываем continuous_kline сообщения (для futures через /ws)
+                                    if market == "linear" and payload.get("e") == "continuous_kline":
+                                        await _handle_continuous_kline_message(payload, on_candle)
+                                    else:
+                                        # Обрабатываем обычные kline сообщения (для spot)
+                                        await _handle_kline_message(payload, market, on_candle)
+                                except Exception as e:
+                                    logger.error(f"Ошибка обработки сообщения Binance {market}: {e}")
+                                    logger.error(f"Payload (первые 200 символов): {msg.data[:200] if len(msg.data) > 200 else msg.data}")
+                            
+                            elif msg.type == aiohttp.WSMsgType.CLOSE:
+                                logger.debug(f"Binance {market}: WebSocket закрыт (CLOSE)")
+                                break
+                            elif msg.type == aiohttp.WSMsgType.ERROR:
+                                logger.warning(f"Binance {market}: WebSocket ошибка (ERROR)")
+                                break
+                    finally:
+                        # Отменяем задачу планового переподключения, если соединение закрылось раньше
+                        scheduled_reconnect_task.cancel()
+                        try:
+                            await scheduled_reconnect_task
+                        except asyncio.CancelledError:
+                            pass
+                finally:
+                    # Уменьшаем счётчик при выходе из соединения (включая случай неудачной подписки)
+                    _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
         
         except asyncio.CancelledError:
             break
@@ -183,6 +371,54 @@ async def _ws_connection_worker_subscribe(
                 "market": market,
                 "error": str(e),
             })
+
+
+async def _schedule_reconnect(
+    ws: aiohttp.ClientWebSocketResponse,
+    reconnect_interval: float,
+    market: str,
+    streams: List[str],
+    on_error: Callable[[dict], Awaitable[None]],
+    connection_state: dict,
+):
+    """
+    Задача для планового переподключения через указанный интервал.
+    Закрывает соединение по истечении времени, что вызывает переподключение.
+    Плановые переподключения не учитываются в счётчике reconnects.
+    
+    Args:
+        ws: WebSocket соединение
+        reconnect_interval: Интервал в секундах до переподключения (23 часа)
+        market: Рынок (spot/linear)
+        streams: Список стримов
+        on_error: Callback для обработки ошибок
+        connection_state: Словарь для хранения состояния соединения
+    """
+    try:
+        await asyncio.sleep(reconnect_interval)
+        
+        # Устанавливаем флаг планового переподключения
+        connection_state["is_scheduled_reconnect"] = True
+        
+        # Логируем плановое переподключение
+        connection_id = f"streams-{len(streams)}" if market == "spot" else f"ws-subscribe-{len(streams)}"
+        await on_error({
+            "exchange": "binance",
+            "market": market,
+            "connection_id": connection_id,
+            "type": "scheduled_reconnect",
+        })
+        
+        # Закрываем соединение для планового переподключения
+        # Это вызовет выход из async for msg in ws: и переподключение
+        if not ws.closed:
+            await ws.close()
+            
+    except asyncio.CancelledError:
+        # Задача была отменена (соединение закрылось по другой причине)
+        pass
+    except Exception as e:
+        logger.error(f"Ошибка в задаче планового переподключения Binance {market}: {e}")
 
 
 async def _handle_continuous_kline_message(payload: dict, on_candle: Callable[[Candle], Awaitable[None]]):
@@ -478,9 +714,9 @@ def get_statistics() -> dict:
         - active_symbols: int  
         - reconnects: int
     """
-    # Обновляем статистику активных соединений на основе отдельных списков задач
-    _stats["spot"]["active_connections"] = len([t for t in _spot_tasks if not t.done()])
-    _stats["linear"]["active_connections"] = len([t for t in _linear_tasks if not t.done()])
-    
-    return _stats
+    # Возвращаем статистику без перезаписи active_connections,
+    # так как она обновляется в worker'ах при реальных подключениях/отключениях
+    # Количество незавершенных задач может не соответствовать реальным соединениям
+    # (задача может быть активна, но соединение в процессе переподключения)
+    return _stats.copy()
 

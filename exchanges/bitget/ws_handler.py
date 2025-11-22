@@ -43,6 +43,8 @@ FUT_BATCH_SIZE = 100  # Количество пар на одно соедине
 # Глобальные переменные
 _builder: CandleBuilder | None = None
 _tasks: List[asyncio.Task] = []
+_spot_tasks: List[asyncio.Task] = []  # Отдельное отслеживание spot задач
+_linear_tasks: List[asyncio.Task] = []  # Отдельное отслеживание linear задач
 _session: aiohttp.ClientSession | None = None
 _stats = {
     "spot": {
@@ -86,6 +88,9 @@ async def _ws_batch_worker(
         try:
             if reconnect_attempt > 1:
                 was_reconnecting = True
+                # Очищаем словарь при реконнекте, чтобы получить первое сообщение для каждого символа
+                # Это необходимо, так как биржа отправляет исторические данные при реконнекте
+                first_message_for_symbol.clear()
                 delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
                 _stats[market]["reconnects"] += 1
                 await on_error({
@@ -162,7 +167,7 @@ async def _ws_batch_worker(
                             # Обрабатываем trades
                             arg = data.get("arg")
                             rows = data.get("data")
-                            if arg and rows and arg.get("channel") == "trade":
+                            if arg and rows and isinstance(rows, list) and arg.get("channel") == "trade":
                                 sym = arg.get("instId")
                                 
                                 # Проверяем, это первое сообщение для символа
@@ -172,18 +177,25 @@ async def _ws_batch_worker(
                                     continue
                                 
                                 for tr in rows:
+                                    if not isinstance(tr, dict):
+                                        continue
+                                    
                                     px = _safe_float(tr.get("px") or tr.get("price"))
                                     sz = _safe_float(tr.get("sz") or tr.get("size"))
-                                    ts_ms = int(tr.get("ts") or tr.get("timestamp") or 0)
+                                    ts_raw = tr.get("ts") or tr.get("timestamp")
+                                    # Используем truthiness проверку вместо is not None, чтобы обработать пустые строки
+                                    ts_ms = int(ts_raw) if ts_raw else 0
                                     
-                                    if not math.isnan(px) and not math.isnan(sz) and sz > 0.0:
+                                    # Проверяем валидность данных: цена не NaN, размер > 0, timestamp > 0
+                                    if (not math.isnan(px) and not math.isnan(sz) and 
+                                        sz > 0.0 and ts_ms > 0):
                                         if _builder:
                                             finished = await _builder.add_trade(
                                                 exchange="bitget",
                                                 market=market,
                                                 symbol=sym,
                                                 price=px,
-                                                qty=abs(sz),
+                                                qty=sz,  # Убрали abs(), т.к. уже проверяем sz > 0.0
                                                 ts_ms=ts_ms,
                                             )
                                             if finished is not None:
@@ -224,7 +236,7 @@ async def start(
     """
     Запускает WebSocket клиенты для spot и linear рынков.
     """
-    global _builder, _tasks, _session
+    global _builder, _tasks, _spot_tasks, _linear_tasks, _session
     
     # Получаем callback для подсчёта трейдов, если передан
     on_trade = kwargs.get('on_trade', None)
@@ -254,6 +266,8 @@ async def start(
         linear_symbols = []
     
     _tasks = []
+    _spot_tasks = []
+    _linear_tasks = []
     batch_id = 1
     
     # Семафор для ограничения параллельных подключений
@@ -275,6 +289,11 @@ async def start(
                 on_error=on_error,
             ))
             _tasks.append(task)
+            # Отдельно отслеживаем задачи по рынкам для статистики
+            if market == "spot":
+                _spot_tasks.append(task)
+            else:
+                _linear_tasks.append(task)
     
     # Запускаем SPOT с ограничением параллельности и задержками
     if fetch_spot and spot_symbols:
@@ -313,7 +332,7 @@ async def start(
 
 async def stop(tasks: List[asyncio.Task]) -> None:
     """Останавливает все WebSocket соединения."""
-    global _tasks, _builder, _session
+    global _tasks, _spot_tasks, _linear_tasks, _builder, _session
     
     for t in tasks:
         t.cancel()
@@ -331,13 +350,16 @@ async def stop(tasks: List[asyncio.Task]) -> None:
     _stats["linear"]["active_connections"] = 0
     _builder = None
     _session = None
+    _spot_tasks = []
+    _linear_tasks = []
     
     logger.info("Все соединения Bitget остановлены")
 
 
 def get_statistics() -> dict:
     """Возвращает статистику."""
-    _stats["spot"]["active_connections"] = len([t for t in _tasks if not t.done()])
-    _stats["linear"]["active_connections"] = len([t for t in _tasks if not t.done()])
+    # Обновляем статистику активных соединений на основе отдельных списков задач
+    _stats["spot"]["active_connections"] = len([t for t in _spot_tasks if not t.done()])
+    _stats["linear"]["active_connections"] = len([t for t in _linear_tasks if not t.done()])
     return _stats
 
