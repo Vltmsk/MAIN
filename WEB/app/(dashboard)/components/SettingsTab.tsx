@@ -716,7 +716,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
           const [exchange, market, pair] = parts;
           if (market === "spot" || market === "futures") {
             // Создаем новую запись в pairSettings, если её нет
-            const existingSettings = key in pairSettings ? pairSettings[key] : undefined;
+            const existingSettings = (key in pairSettings ? pairSettings[key] : undefined) as { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean } | undefined;
             const newSettings: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean } = {
               enabled: existingSettings?.enabled || false,
               delta: existingSettings?.delta || "",
