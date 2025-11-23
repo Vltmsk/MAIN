@@ -515,9 +515,11 @@ class ChartGenerator:
                 return cached_chart
             
             # Вычисляем период для запроса (60 минут до детекта включительно)
+            # candle.ts_ms - это начало секунды детекта, свеча содержит сделки от ts_ms до ts_ms + 999ms
+            # Поэтому запрашиваем сделки до конца секунды детекта (ts_ms + 1000ms), чтобы включить все сделки свечи
             detection_time_ms = candle.ts_ms
             start_time_ms = detection_time_ms - (60 * 60 * 1000)  # 60 минут назад
-            end_time_ms = detection_time_ms  # До момента детекта включительно
+            end_time_ms = detection_time_ms + 1000  # До конца секунды детекта включительно (ts_ms + 1000ms)
             
             # Получаем историю сделок
             trades = await ChartGenerator._fetch_trades(
