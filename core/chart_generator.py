@@ -75,7 +75,7 @@ class ChartGenerator:
             Ключ кэша
         """
         # Используем точное время детекта для кэш-ключа
-        # График показывает 30 минут до детекта включительно, поэтому для каждого уникального момента детекта
+        # График показывает 60 минут до детекта включительно, поэтому для каждого уникального момента детекта
         # нужен свой график, чтобы показывать актуальные данные включая саму стрелу
         # Кэш все равно эффективен, так как один и тот же детект (одна свеча) обычно отправляется
         # нескольким пользователям одновременно, и они получат один и тот же график
@@ -514,12 +514,10 @@ class ChartGenerator:
             if cached_chart:
                 return cached_chart
             
-            # Вычисляем период для запроса (30 минут до детекта + небольшой буфер)
-            # Буфер нужен, чтобы гарантировать получение всех сделок до момента детекта
-            # (некоторые API могут не включать сделки точно на момент end_time)
+            # Вычисляем период для запроса (60 минут до детекта включительно)
             detection_time_ms = candle.ts_ms
-            start_time_ms = detection_time_ms - (30 * 60 * 1000)  # 30 минут назад
-            end_time_ms = detection_time_ms + (60 * 1000)  # 1 минута после детекта (буфер для API)
+            start_time_ms = detection_time_ms - (60 * 60 * 1000)  # 60 минут назад
+            end_time_ms = detection_time_ms  # До момента детекта включительно
             
             # Получаем историю сделок
             trades = await ChartGenerator._fetch_trades(
@@ -537,7 +535,7 @@ class ChartGenerator:
             # Фильтруем сделки: показываем все сделки до конца секунды детекта включительно
             # candle.ts_ms - это начало секунды, свеча содержит сделки от ts_ms до ts_ms + 999ms
             # Поэтому включаем все сделки до начала следующей секунды (ts_ms + 1000ms)
-            # (буфер в end_time_ms нужен только для гарантии получения всех сделок от API)
+            # Последние сделки на графике - это сама свеча детекта
             end_of_detection_second_ms = detection_time_ms + 1000  # Конец секунды детекта
             trades = [t for t in trades if t["timestamp"] < end_of_detection_second_ms]
             
@@ -553,11 +551,38 @@ class ChartGenerator:
             prices = [t["price"] for t in trades]
             colors = ["green" if t["is_buyer"] else "red" for t in trades]
             
+            # Вычисляем базовую цену (цена первой сделки) для конвертации в проценты
+            # Ищем первую ненулевую цену из сделок
+            base_price = None
+            for price in prices:
+                if price > 0:
+                    base_price = price
+                    break
+            
+            # Если все цены нулевые, используем значения из свечи
+            if base_price is None or base_price == 0:
+                # Пробуем использовать close, open, high или low свечи
+                if candle.close > 0:
+                    base_price = candle.close
+                elif candle.open > 0:
+                    base_price = candle.open
+                elif candle.high > 0:
+                    base_price = candle.high
+                elif candle.low > 0:
+                    base_price = candle.low
+                else:
+                    # Если все значения нулевые, это ошибка данных
+                    logger.error(f"Все цены нулевые для графика: {candle.exchange} {candle.market} {candle.symbol}")
+                    return None
+            
+            # Преобразуем цены в проценты изменения относительно базовой цены
+            price_percentages = [((price - base_price) / base_price) * 100 for price in prices]
+            
             # Создаем график
             fig, ax = plt.subplots(figsize=(19.2, 10.8), dpi=100)  # 1920x1080 пикселей
             
-            # Рисуем scatter plot с увеличенным размером точек (в 3 раза больше)
-            ax.scatter(timestamps, prices, c=colors, s=3, alpha=0.6)
+            # Рисуем scatter plot с точками сделок (в процентах)
+            ax.scatter(timestamps, price_percentages, c=colors, s=6, alpha=0.6)
             
             # Рисуем жёлтую линейку справа от прострела (от high до low свечи)
             # Используем точное время свечи для определения позиции
@@ -585,10 +610,14 @@ class ChartGenerator:
                     # Если только одна сделка, добавляем 10 секунд
                     marker_time = last_trade_time + timedelta(seconds=10)
                 
+                # Преобразуем high и low свечи в проценты для жёлтой линии
+                candle_low_pct = ((candle.low - base_price) / base_price) * 100
+                candle_high_pct = ((candle.high - base_price) / base_price) * 100
+                
                 # Рисуем вертикальную линию от high до low свечи жёлтым цветом
                 ax.plot(
                     [marker_time, marker_time],
-                    [candle.low, candle.high],
+                    [candle_low_pct, candle_high_pct],
                     color='yellow',
                     linewidth=3,
                     alpha=0.9,
@@ -597,7 +626,7 @@ class ChartGenerator:
             
             # Форматируем оси
             ax.set_xlabel('Время', fontsize=12)
-            ax.set_ylabel('Цена', fontsize=12)
+            ax.set_ylabel('Процент изменения (%)', fontsize=12)
             ax.grid(True, alpha=0.3)
             
             # Форматируем время на оси X
