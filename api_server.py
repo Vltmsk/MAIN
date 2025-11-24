@@ -243,6 +243,179 @@ class ErrorCreate(BaseModel):
     stack_trace: Optional[str] = None
 
 
+# ==================== ВАЛИДАЦИЯ СТРАТЕГИЙ ====================
+
+def validate_strategy(strategy: dict, strategy_index: int) -> List[str]:
+    """
+    Валидирует стратегию и возвращает список ошибок.
+    
+    Args:
+        strategy: Словарь со стратегией
+        strategy_index: Индекс стратегии (для сообщений об ошибках)
+        
+    Returns:
+        List[str]: Список сообщений об ошибках (пустой, если ошибок нет)
+    """
+    errors = []
+    strategy_name = strategy.get("name", f"Стратегия #{strategy_index + 1}")
+    
+    # Проверяем только если стратегия включена и useGlobalFilters = false
+    enabled = strategy.get("enabled", True)
+    use_global_filters = strategy.get("useGlobalFilters", True)  # По умолчанию True для обратной совместимости
+    
+    if enabled is False:
+        # Если стратегия отключена, не валидируем её
+        return errors
+    
+    if use_global_filters is False:
+        # Проверяем наличие базовых фильтров
+        conditions = strategy.get("conditions", [])
+        
+        has_delta = False
+        has_volume = False
+        has_wick_pct = False
+        
+        for condition in conditions:
+            condition_type = condition.get("type")
+            
+            if condition_type == "delta":
+                value_min = condition.get("valueMin")
+                if value_min is not None:
+                    has_delta = True
+                    # Валидация диапазона delta (0.01% - 100%)
+                    if value_min < 0.01 or value_min > 100:
+                        errors.append(
+                            f'Стратегия "{strategy_name}": Дельта должна быть в диапазоне от 0.01% до 100%'
+                        )
+                    value_max = condition.get("valueMax")
+                    if value_max is not None and (value_max < 0.01 or value_max > 100):
+                        errors.append(
+                            f'Стратегия "{strategy_name}": Максимальная дельта должна быть в диапазоне от 0.01% до 100%'
+                        )
+                    if value_max is not None and value_min > value_max:
+                        errors.append(
+                            f'Стратегия "{strategy_name}": Минимальная дельта не может быть больше максимальной'
+                        )
+            
+            elif condition_type == "volume":
+                value = condition.get("value")
+                if value is not None:
+                    has_volume = True
+                    # Валидация диапазона volume (1 - 1,000,000,000 USDT)
+                    if value < 1 or value > 1_000_000_000:
+                        errors.append(
+                            f'Стратегия "{strategy_name}": Объём должен быть в диапазоне от 1 до 1,000,000,000 USDT'
+                        )
+            
+            elif condition_type == "wick_pct":
+                value_min = condition.get("valueMin")
+                if value_min is not None:
+                    has_wick_pct = True
+                    # Валидация диапазона wick_pct (0% - 100%)
+                    if value_min < 0 or value_min > 100:
+                        errors.append(
+                            f'Стратегия "{strategy_name}": Тень должна быть в диапазоне от 0% до 100%'
+                        )
+                    value_max = condition.get("valueMax")
+                    if value_max is not None and (value_max < 0 or value_max > 100):
+                        errors.append(
+                            f'Стратегия "{strategy_name}": Максимальная тень должна быть в диапазоне от 0% до 100%'
+                        )
+                    if value_max is not None and value_min > value_max:
+                        errors.append(
+                            f'Стратегия "{strategy_name}": Минимальная тень не может быть больше максимальной'
+                        )
+            
+        
+        # Проверяем наличие базовых фильтров
+        missing_fields = []
+        if not has_delta:
+            missing_fields.append("Дельта")
+        if not has_volume:
+            missing_fields.append("Объём")
+        if not has_wick_pct:
+            missing_fields.append("Тень")
+        
+        if missing_fields:
+            errors.append(
+                f'Стратегия "{strategy_name}" не может работать без базовых фильтров. '
+                f'Пожалуйста, либо включите "Использовать мои фильтры из глобальных настроек", '
+                f'либо укажите значения для {", ".join(missing_fields)} в условиях стратегии.'
+            )
+    
+    # Валидация для всех стратегий (независимо от useGlobalFilters)
+    conditions = strategy.get("conditions", [])
+    for condition in conditions:
+        condition_type = condition.get("type")
+        
+        if condition_type == "series":
+            count = condition.get("count")
+            if count is not None and (count < 1 or count > 100):
+                errors.append(
+                    f'Стратегия "{strategy_name}": Количество стрел в серии должно быть от 1 до 100'
+                )
+            
+            time_window = condition.get("timeWindowSeconds")
+            if time_window is not None and (time_window < 1 or time_window > 3600):
+                errors.append(
+                    f'Стратегия "{strategy_name}": Временное окно должно быть от 1 до 3600 секунд (1 час)'
+                )
+        
+        elif condition_type == "direction":
+            direction = condition.get("direction")
+            if direction is not None and direction not in ["up", "down"]:
+                errors.append(
+                    f'Стратегия "{strategy_name}": Направление может быть только "up" или "down"'
+                )
+    
+    return errors
+
+
+def validate_strategies(options_json: str) -> List[str]:
+    """
+    Валидирует все стратегии в options_json.
+    
+    Args:
+        options_json: JSON строка с настройками пользователя
+        
+    Returns:
+        List[str]: Список всех ошибок валидации (пустой, если ошибок нет)
+    """
+    errors = []
+    
+    try:
+        import json
+        options = json.loads(options_json) if options_json else {}
+        conditional_templates = options.get("conditionalTemplates", [])
+        
+        if not isinstance(conditional_templates, list):
+            return [f"Поле 'conditionalTemplates' должно быть массивом"]
+        
+        # Ограничение количества стратегий (рекомендуется до 50)
+        if len(conditional_templates) > 50:
+            errors.append(
+                f"Превышено рекомендуемое количество стратегий (50). "
+                f"Текущее количество: {len(conditional_templates)}. "
+                f"Большое количество стратегий может повлиять на производительность."
+            )
+        
+        # Валидируем каждую стратегию
+        for index, strategy in enumerate(conditional_templates):
+            if not isinstance(strategy, dict):
+                errors.append(f"Стратегия #{index + 1} должна быть объектом")
+                continue
+            
+            strategy_errors = validate_strategy(strategy, index)
+            errors.extend(strategy_errors)
+    
+    except json.JSONDecodeError as e:
+        errors.append(f"Ошибка парсинга JSON: {str(e)}")
+    except Exception as e:
+        errors.append(f"Ошибка валидации стратегий: {str(e)}")
+    
+    return errors
+
+
 # ==================== ПОЛЬЗОВАТЕЛИ ====================
 
 @app.post("/api/auth/register/{user}", response_model=dict)
@@ -411,11 +584,36 @@ async def create_or_update_user(user: str, user_data: UserCreate):
         
         logger.info(f"Создание/обновление пользователя: исходный параметр='{user}', декодированный='{decoded_user}'")
         
+        # Проверяем права доступа: получаем пользователя из БД для проверки
+        existing_user = await db.get_user(decoded_user)
+        if existing_user:
+            # Пользователь существует - проверяем, что это тот же пользователь
+            # (в будущем можно добавить проверку токена/сессии)
+            pass
+        # Если пользователь не существует, он будет создан
+        
+        # Валидация стратегий перед сохранением
+        options_json = user_data.options_json or "{}"
+        validation_errors = validate_strategies(options_json)
+        
+        if validation_errors:
+            error_message = "Ошибки валидации стратегий:\n" + "\n".join(f"• {error}" for error in validation_errors)
+            logger.warning(
+                f"Ошибки валидации стратегий для пользователя '{decoded_user}': {validation_errors}",
+                extra={
+                    "log_to_db": False,  # Ошибки валидации не критичны
+                    "error_type": "strategy_validation_error",
+                    "market": "api",
+                    "symbol": f"settings/{decoded_user}",
+                },
+            )
+            raise HTTPException(status_code=400, detail=error_message)
+        
         user_id = await db.create_user(
             user=decoded_user,
             tg_token=user_data.tg_token or "",
             chat_id=user_data.chat_id or "",
-            options_json=user_data.options_json or "{}"
+            options_json=options_json
         )
         # Получаем точное имя пользователя из базы
         user_info = await db.get_user(decoded_user)

@@ -21,15 +21,16 @@ class SpikeDetector:
         self._cache_timestamp = 0.0
         self._cache_ttl = 5.0  # Кэш пользователей на 5 секунд (было 30) для более быстрого обновления настроек
         
-        # Трекер серий стрел: {user_id: {exchange_market_symbol: [{"timestamp": float, "delta": float, "volume_usdt": float}]}}
+        # Трекер серий стрел: {user_id: {exchange_market_symbol: [{"ts_ms": int, "timestamp": float, "delta": float, "volume_usdt": float, "wick_pct": float, "direction": str, "detected_by_spike_settings": bool, "detected_by_strategy": bool}]}}
         # Хранит временные метки и параметры последних стрел для каждой пары exchange+market+symbol для каждого пользователя
+        # Уникальность: {user_id}_{exchange}_{market}_{symbol}_{ts_ms}
         self._series_tracker: Dict[int, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
         
         # Настройки для управления памятью
         self._max_spikes_per_symbol = 1000  # Максимальное количество записей на символ
-        self._ttl_seconds = 3600  # TTL: 1 час
+        self._default_ttl_seconds = 900  # TTL по умолчанию: 15 минут (900 секунд)
         self._last_cleanup_time = time.time()  # Время последней очистки
-        self._cleanup_interval = 3600  # Интервал периодической очистки: 1 час
+        self._cleanup_interval = 300  # Интервал периодической очистки: 5 минут (для более частой очистки)
     
     def _get_users(self) -> List[Dict]:
         """
@@ -100,6 +101,9 @@ class SpikeDetector:
             # Сохраняем pairSettings для индивидуальных настроек пар
             pair_settings = options.get("pairSettings", {})
             
+            # Сохраняем conditionalTemplates (стратегии) для проверки условий
+            conditional_templates = options.get("conditionalTemplates", [])
+            
             return {
                 "thresholds": thresholds,  # Используем только пользовательские настройки, без дефолтов
                 "exchanges": {
@@ -110,7 +114,8 @@ class SpikeDetector:
                     "hyperliquid": bool(exchanges.get("hyperliquid", default["exchanges"]["hyperliquid"])),
                 },
                 "exchangeSettings": exchange_settings,
-                "pairSettings": pair_settings
+                "pairSettings": pair_settings,
+                "conditionalTemplates": conditional_templates
             }
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             logger.warning(f"Ошибка парсинга options_json: {e}, настройки не применятся", extra={
@@ -265,6 +270,76 @@ class SpikeDetector:
         # Если биржа не указана в настройках, считаем её отключенной (False)
         # Это гарантирует, что пользователи с нулевыми настройками не будут получать детекты
         return exchanges.get(exchange_key, False)
+    
+    def _check_strategy_exchange_condition(self, strategy: Dict, candle: Candle) -> Tuple[bool, bool]:
+        """
+        Проверяет, соответствует ли свеча условию биржи в стратегии
+        
+        Args:
+            strategy: Словарь стратегии с полями:
+                - conditions: List[Dict] - список условий
+            candle: Свеча для проверки
+            
+        Returns:
+            Tuple[bool, bool]: (соответствует_ли_условию, есть_ли_условие_биржа)
+                - Первое значение: True если свеча соответствует условию биржи (или условие не указано)
+                - Второе значение: True если в стратегии есть условие биржи (exchange или exchange_market)
+        """
+        conditions = strategy.get("conditions", [])
+        
+        # Ищем условия биржи
+        exchange_condition = None
+        exchange_market_condition = None
+        
+        for condition in conditions:
+            cond_type = condition.get("type")
+            if cond_type == "exchange":
+                exchange_condition = condition
+            elif cond_type == "exchange_market":
+                exchange_market_condition = condition
+        
+        # Если нет условий биржи - возвращаем True (условие не указано, значит работает для всех бирж)
+        if not exchange_condition and not exchange_market_condition:
+            return True, False
+        
+        # Проверяем условие exchange_market (приоритет, так как более специфичное)
+        if exchange_market_condition:
+            condition_exchange_market = exchange_market_condition.get("exchange_market")
+            if condition_exchange_market:
+                # Формат: "exchange_market" (например, "binance_spot", "bybit_futures")
+                parts = condition_exchange_market.lower().split("_", 1)
+                if len(parts) == 2:
+                    condition_exchange, condition_market = parts
+                    
+                    # Нормализуем рынок: "futures" и "linear" - одно и то же
+                    if condition_market == "linear":
+                        condition_market = "futures"
+                    
+                    # Сравниваем биржу
+                    if candle.exchange.lower() != condition_exchange.lower():
+                        return False, True
+                    
+                    # Нормализуем и сравниваем тип рынка
+                    market_mapping = {
+                        "futures": "linear",
+                        "linear": "linear",
+                        "spot": "spot"
+                    }
+                    
+                    candle_market = market_mapping.get(candle.market.lower(), candle.market.lower())
+                    condition_market_normalized = market_mapping.get(condition_market.lower(), condition_market.lower())
+                    
+                    return candle_market == condition_market_normalized, True
+        
+        # Проверяем условие exchange (если не было exchange_market)
+        if exchange_condition:
+            condition_exchange = exchange_condition.get("exchange") or exchange_condition.get("value")
+            if condition_exchange:
+                # Проверяем биржу
+                return candle.exchange.lower() == condition_exchange.lower(), True
+        
+        # Если условие указано, но не распознано - возвращаем False
+        return False, True
     
     def _check_thresholds(self, candle: Candle, user_options: Dict) -> Tuple[bool, Dict]:
         """
@@ -495,94 +570,192 @@ class SpikeDetector:
                           conditions: Optional[List[Dict]] = None) -> int:
         """
         Получает количество стрел за указанное время для данной пары exchange+market+symbol
-        с учетом условий volume и delta (если указаны)
+        с учетом всех условий стратегии (delta, volume, wick_pct, direction, symbol, exchange, market)
+        
+        **Важно:** Текущая стрела НЕ учитывается в подсчете серии, так как она еще не добавлена в трекер
+        на момент проверки. Это гарантирует правильную логику: при каждой новой стреле мы смотрим назад
+        на предыдущие стрелы, и если их достаточно (≥ count) → отправляем сигнал.
         
         Args:
             user_id: ID пользователя
-            candle: Текущая свеча
-            time_window_seconds: Временное окно в секундах
+            candle: Текущая свеча (используется для определения временного окна)
+            time_window_seconds: Временное окно в секундах (смотрим назад от момента текущей стрелы)
             conditions: Список условий для проверки (опционально). Если указан, 
-                       считаются только стрелы, соответствующие всем условиям volume и delta
+                       считаются только стрелы, соответствующие **всем** условиям стратегии
+                       (delta, volume, wick_pct, direction, symbol, exchange, market)
             
         Returns:
             int: Количество стрел за указанное время (соответствующих условиям, если они указаны)
         """
-        current_time = time.time()
+        # Используем timestamp свечи в миллисекундах для определения временного окна
+        # Смотрим назад на timeWindowSeconds от момента текущей стрелы
+        current_ts_ms = candle.ts_ms
+        window_start_ts_ms = current_ts_ms - int(time_window_seconds * 1000)
+        
         key = f"{candle.exchange}_{candle.market}_{candle.symbol}"
         
         # Получаем список стрел для этой пары
-        spikes = self._series_tracker[user_id][key]
+        spikes = self._series_tracker[user_id].get(key, [])
         
-        # Фильтруем только те, что попадают в временное окно
-        window_start = current_time - time_window_seconds
-        filtered_spikes = [spike for spike in spikes if spike.get("timestamp", 0) >= window_start]
+        # Фильтруем только те, что попадают в временное окно (используем ts_ms для точности)
+        # Важно: используем строгое неравенство (<), чтобы исключить текущую стрелу из подсчета
+        # Текущая стрела будет добавлена в трекер ПОСЛЕ проверки условий
+        filtered_spikes = [
+            spike for spike in spikes 
+            if spike.get("ts_ms", 0) >= window_start_ts_ms and spike.get("ts_ms", 0) < current_ts_ms
+        ]
         
-        # Если указаны условия, фильтруем только те стрелы, которые им соответствуют
+        # Если указаны условия, фильтруем только те стрелы, которые соответствуют **всем** условиям стратегии
+        # Это гарантирует, что при проверке серии учитываются только стрелы, которые прошли те же фильтры,
+        # что и текущая стрела (delta, volume, wick_pct, direction, symbol, exchange, market)
         if conditions:
-            # Извлекаем условия volume и delta из списка условий
-            volume_condition = None
-            delta_condition = None
-            
-            for condition in conditions:
-                cond_type = condition.get("type")
-                if cond_type == "volume":
-                    volume_condition = condition
-                elif cond_type == "delta":
-                    delta_condition = condition
-            
-            # Фильтруем стрелы по условиям
             matching_spikes = []
             for spike in filtered_spikes:
                 spike_delta = spike.get("delta", 0)
                 spike_volume = spike.get("volume_usdt", 0)
+                spike_wick_pct = spike.get("wick_pct", 0)
+                spike_direction = spike.get("direction", "")
+                spike_exchange = spike.get("exchange", "")
+                spike_market = spike.get("market", "")
+                spike_symbol = spike.get("symbol", "")
                 
-                # Проверяем условие volume (если указано)
-                if volume_condition:
-                    volume_value = volume_condition.get("value")
-                    if volume_value is not None and spike_volume < volume_value:
-                        continue  # Стрела не соответствует условию volume
+                # Проверяем все условия стратегии
+                matches_all = True
                 
-                # Проверяем условие delta (если указано)
-                if delta_condition:
-                    delta_value = delta_condition.get("value")
-                    if delta_value is not None and spike_delta < delta_value:
-                        continue  # Стрела не соответствует условию delta
+                for condition in conditions:
+                    cond_type = condition.get("type")
+                    
+                    if cond_type == "volume":
+                        volume_value = condition.get("value")
+                        if volume_value is not None and spike_volume < volume_value:
+                            matches_all = False
+                            break
+                    
+                    elif cond_type == "delta":
+                        value_min = condition.get("valueMin")
+                        value_max = condition.get("valueMax")
+                        # Поддержка старого формата для обратной совместимости
+                        if value_min is None:
+                            value_min = condition.get("value")
+                        if value_min is not None and spike_delta < value_min:
+                            matches_all = False
+                            break
+                        if value_max is not None and spike_delta > value_max:
+                            matches_all = False
+                            break
+                    
+                    elif cond_type == "wick_pct":
+                        value_min = condition.get("valueMin")
+                        value_max = condition.get("valueMax")
+                        if value_min is not None and spike_wick_pct < value_min:
+                            matches_all = False
+                            break
+                        if value_max is not None and spike_wick_pct > value_max:
+                            matches_all = False
+                            break
+                    
+                    elif cond_type == "direction":
+                        direction_value = condition.get("direction") or condition.get("value")
+                        if direction_value and spike_direction != direction_value:
+                            matches_all = False
+                            break
+                    
+                    elif cond_type == "symbol":
+                        symbol_value = condition.get("symbol") or condition.get("value")
+                        if symbol_value and spike_symbol != symbol_value:
+                            matches_all = False
+                            break
+                    
+                    elif cond_type == "exchange":
+                        exchange_value = condition.get("exchange") or condition.get("value")
+                        if exchange_value and spike_exchange.lower() != exchange_value.lower():
+                            matches_all = False
+                            break
+                    
+                    elif cond_type == "market":
+                        market_value = condition.get("market") or condition.get("value")
+                        if market_value:
+                            # Нормализация: "linear" -> "futures", "spot" -> "spot"
+                            normalized_market = "futures" if market_value == "linear" else market_value
+                            normalized_spike_market = "futures" if spike_market == "linear" else spike_market
+                            if normalized_spike_market != normalized_market:
+                                matches_all = False
+                                break
                 
-                # Стрела соответствует всем условиям
-                matching_spikes.append(spike)
+                if matches_all:
+                    matching_spikes.append(spike)
             
             filtered_spikes = matching_spikes
         
-        # Обновляем трекер (оставляем только стрелы в окне)
-        self._series_tracker[user_id][key] = filtered_spikes
-        
         return len(filtered_spikes)
     
-    def _add_spike_to_series(self, user_id: int, candle: Candle, delta: float, volume_usdt: float):
+    def _add_spike_to_series(self, user_id: int, candle: Candle, delta: float, volume_usdt: float, 
+                             wick_pct: float = 0.0, detected_by_spike_settings: bool = False, 
+                             detected_by_strategy: bool = False):
         """
         Добавляет стрелу в трекер серий с параметрами
+        
+        Уникальность: каждая стрела уникальна по {user_id}_{exchange}_{market}_{symbol}_{ts_ms}
+        Одна и та же свеча может быть детектирована для разных пользователей независимо.
         
         Args:
             user_id: ID пользователя
             candle: Свеча со стрелой
             delta: Дельта в процентах
             volume_usdt: Объём в USDT
+            wick_pct: Процент тени
+            detected_by_spike_settings: Флаг детектирования через обычные настройки прострела
+            detected_by_strategy: Флаг детектирования через стратегию
         """
+        # Используем timestamp свечи в миллисекундах для уникальности
+        ts_ms = candle.ts_ms
         current_time = time.time()
         key = f"{candle.exchange}_{candle.market}_{candle.symbol}"
         
-        # Добавляем стрелу с параметрами
+        # Определяем направление стрелы
+        direction = "up" if candle.close > candle.open else "down"
+        
+        # Проверяем уникальность: не добавляем дубликаты
+        # Уникальность по {user_id}_{exchange}_{market}_{symbol}_{ts_ms}
+        unique_key = f"{user_id}_{candle.exchange}_{candle.market}_{candle.symbol}_{ts_ms}"
+        
+        # Проверяем, нет ли уже такой стрелы в трекере
+        spikes = self._series_tracker[user_id].get(key, [])
+        for existing_spike in spikes:
+            if (existing_spike.get("ts_ms") == ts_ms and 
+                existing_spike.get("exchange") == candle.exchange and
+                existing_spike.get("market") == candle.market and
+                existing_spike.get("symbol") == candle.symbol):
+                # Стрела уже есть в трекере - не добавляем дубликат
+                logger.debug(f"Стрела уже существует в трекере: {unique_key}")
+                return
+        
+        # Добавляем стрелу с полными параметрами
         spike_data = {
-            "timestamp": current_time,
+            "ts_ms": ts_ms,  # Timestamp свечи в миллисекундах (для уникальности)
+            "timestamp": current_time,  # Timestamp добавления в трекер (для очистки)
             "delta": delta,
-            "volume_usdt": volume_usdt
+            "volume_usdt": volume_usdt,
+            "wick_pct": wick_pct,
+            "direction": direction,
+            "exchange": candle.exchange,
+            "market": candle.market,
+            "symbol": candle.symbol,
+            "detected_by_spike_settings": detected_by_spike_settings,
+            "detected_by_strategy": detected_by_strategy
         }
-        self._series_tracker[user_id][key].append(spike_data)
+        
+        spikes.append(spike_data)
+        
+        # Сортируем по ts_ms для быстрого поиска (индексирование по времени)
+        spikes.sort(key=lambda x: x.get("ts_ms", 0))
+        
+        # Получаем максимальный период времени из всех стратегий пользователя
+        max_ttl_seconds = self._get_max_time_window_for_user(user_id)
         
         # Очищаем старые записи (TTL) для экономии памяти
-        ttl_threshold = current_time - self._ttl_seconds
-        spikes = self._series_tracker[user_id][key]
-        spikes = [spike for spike in spikes if spike.get("timestamp", 0) >= ttl_threshold]
+        ttl_threshold_ts_ms = ts_ms - int(max_ttl_seconds * 1000)
+        spikes = [spike for spike in spikes if spike.get("ts_ms", 0) >= ttl_threshold_ts_ms]
         
         # Ограничиваем максимальный размер (оставляем последние N записей)
         if len(spikes) > self._max_spikes_per_symbol:
@@ -590,83 +763,534 @@ class SpikeDetector:
         
         self._series_tracker[user_id][key] = spikes
     
-    def detect_spike(self, candle: Candle) -> List[Dict]:
+    def _get_max_time_window_for_user(self, user_id: int) -> float:
         """
-        Детектирует стрелу для всех пользователей, чьи фильтры соответствуют свече
+        Получает максимальный период времени из всех стратегий пользователя
+        
+        Если у пользователя есть стратегии с условием "series", возвращает максимальное значение timeWindowSeconds.
+        Если стратегий нет или нет условия "series", возвращает значение по умолчанию (15 минут).
+        
+        Args:
+            user_id: ID пользователя
+            
+        Returns:
+            float: Максимальный период времени в секундах (по умолчанию 900 секунд = 15 минут)
+        """
+        try:
+            users = self._get_users()
+            user = next((u for u in users if u.get("id") == user_id), None)
+            if not user:
+                return self._default_ttl_seconds
+            
+            user_options = self._parse_user_options(user.get("options_json", "{}"))
+            conditional_templates = user_options.get("conditionalTemplates", [])
+            
+            max_time_window = self._default_ttl_seconds  # По умолчанию 15 минут
+            
+            for strategy in conditional_templates:
+                if not strategy.get("enabled", True):
+                    continue
+                
+                conditions = strategy.get("conditions", [])
+                for condition in conditions:
+                    if condition.get("type") == "series":
+                        time_window = condition.get("timeWindowSeconds")
+                        if time_window is not None:
+                            try:
+                                time_window_float = float(time_window)
+                                if time_window_float > max_time_window:
+                                    max_time_window = time_window_float
+                            except (ValueError, TypeError):
+                                pass
+            
+            return max_time_window
+        except Exception as e:
+            logger.warning(f"Ошибка при получении максимального периода времени для пользователя {user_id}: {e}")
+            return self._default_ttl_seconds
+    
+    def _extract_strategy_filters(self, strategy: Dict, user_options: Dict, candle: Candle) -> Optional[Dict]:
+        """
+        Извлекает базовые фильтры (delta, volume, wick_pct) из стратегии
+        
+        Логика:
+        - Если useGlobalFilters = true → использует фильтры из exchangeSettings/pairSettings/thresholds
+        - Если useGlobalFilters = false → извлекает фильтры из условий стратегии
+        
+        Args:
+            strategy: Словарь стратегии с полями:
+                - useGlobalFilters: bool (по умолчанию true)
+                - conditions: List[Dict] - список условий
+            user_options: Настройки пользователя (для получения глобальных фильтров)
+            candle: Свеча (для определения биржи и рынка)
+            
+        Returns:
+            Optional[Dict]: Словарь с фильтрами {"delta_min": float, "volume_min": float, "wick_pct_max": float}
+                          или None если фильтры не найдены
+        """
+        use_global_filters = strategy.get("useGlobalFilters", True)  # По умолчанию true
+        
+        if use_global_filters:
+            # Используем фильтры из глобальных настроек (exchangeSettings/pairSettings/thresholds)
+            # Логика аналогична _check_thresholds, но возвращаем только значения фильтров
+            exchange_key = candle.exchange.lower()
+            market_key = "futures" if candle.market == "linear" else "spot"
+            
+            # Извлекаем котируемую валюту
+            quote_currency = self._extract_quote_currency(candle.symbol, candle.exchange)
+            
+            # Проверяем pairSettings (приоритет 1)
+            pair_settings = user_options.get("pairSettings", {})
+            if quote_currency:
+                pair_key = f"{exchange_key}_{market_key}_{quote_currency}"
+                if pair_key in pair_settings:
+                    pair_config = pair_settings[pair_key]
+                    if pair_config.get("enabled", True):
+                        try:
+                            delta_str = pair_config.get("delta")
+                            volume_str = pair_config.get("volume")
+                            shadow_str = pair_config.get("shadow")
+                            
+                            if delta_str and volume_str and shadow_str:
+                                delta_min = float(delta_str)
+                                volume_min = float(volume_str)
+                                wick_pct_max = float(shadow_str)
+                                
+                                if delta_min > 0 and volume_min > 0 and wick_pct_max > 0:
+                                    return {
+                                        "delta_min": delta_min,
+                                        "volume_min": volume_min,
+                                        "wick_pct_max": wick_pct_max
+                                    }
+                        except (ValueError, TypeError):
+                            pass
+            
+            # Проверяем exchangeSettings (приоритет 2)
+            exchange_settings = user_options.get("exchangeSettings", {})
+            if exchange_key in exchange_settings:
+                exchange_config = exchange_settings[exchange_key]
+                market_config = exchange_config.get(market_key, {})
+                
+                if market_config.get("enabled", True):
+                    try:
+                        delta_str = market_config.get("delta")
+                        volume_str = market_config.get("volume")
+                        shadow_str = market_config.get("shadow")
+                        
+                        if delta_str and volume_str and shadow_str:
+                            delta_min = float(delta_str)
+                            volume_min = float(volume_str)
+                            wick_pct_max = float(shadow_str)
+                            
+                            if delta_min > 0 and volume_min > 0 and wick_pct_max > 0:
+                                return {
+                                    "delta_min": delta_min,
+                                    "volume_min": volume_min,
+                                    "wick_pct_max": wick_pct_max
+                                }
+                    except (ValueError, TypeError):
+                        pass
+            
+            # Проверяем thresholds (приоритет 3)
+            thresholds = user_options.get("thresholds", {})
+            if thresholds:
+                try:
+                    delta_min = thresholds.get("delta_pct")
+                    volume_min = thresholds.get("volume_usdt")
+                    wick_pct_max = thresholds.get("wick_pct")
+                    
+                    if delta_min is not None and volume_min is not None and wick_pct_max is not None:
+                        delta_min = float(delta_min)
+                        volume_min = float(volume_min)
+                        wick_pct_max = float(wick_pct_max)
+                        
+                        if delta_min > 0 and volume_min > 0 and wick_pct_max > 0:
+                            return {
+                                "delta_min": delta_min,
+                                "volume_min": volume_min,
+                                "wick_pct_max": wick_pct_max
+                            }
+                except (ValueError, TypeError):
+                    pass
+            
+            return None
+        else:
+            # Извлекаем фильтры из условий стратегии (используем общий метод)
+            return self._extract_strategy_filters_from_conditions(strategy)
+    
+    def _extract_strategy_filters_from_conditions(self, strategy: Dict) -> Optional[Dict]:
+        """
+        Извлекает базовые фильтры (delta, volume, wick_pct) напрямую из условий стратегии
+        
+        Args:
+            strategy: Словарь стратегии с полями:
+                - conditions: List[Dict] - список условий
+                
+        Returns:
+            Optional[Dict]: Словарь с фильтрами {"delta_min": float, "volume_min": float, "wick_pct_max": float}
+                          или None если фильтры не найдены
+        """
+        conditions = strategy.get("conditions", [])
+        
+        delta_min = None
+        volume_min = None
+        wick_pct_max = None
+        
+        for condition in conditions:
+            cond_type = condition.get("type")
+            
+            if cond_type == "delta":
+                # Для дельты используем valueMin (valueMax может быть null для бесконечности)
+                value_min = condition.get("valueMin")
+                # Поддержка старого формата для обратной совместимости
+                if value_min is None:
+                    value_min = condition.get("value")
+                if value_min is not None:
+                    try:
+                        delta_min = float(value_min)
+                    except (ValueError, TypeError):
+                        pass
+            
+            elif cond_type == "volume":
+                # Для объёма используем value
+                value = condition.get("value")
+                if value is not None:
+                    try:
+                        volume_min = float(value)
+                    except (ValueError, TypeError):
+                        pass
+            
+            elif cond_type == "wick_pct":
+                # Для тени используем valueMax (максимальное значение тени)
+                # Если valueMax не указан, используем None (бесконечность)
+                value_max = condition.get("valueMax")
+                if value_max is not None:
+                    try:
+                        wick_pct_max = float(value_max)
+                    except (ValueError, TypeError):
+                        pass
+                # Если valueMax не указан, wick_pct_max остается None (бесконечность)
+        
+        # Проверяем, что все базовые фильтры найдены (delta и volume обязательны, wick_pct_max может быть None)
+        if delta_min is not None and volume_min is not None:
+            return {
+                "delta_min": delta_min,
+                "volume_min": volume_min,
+                "wick_pct_max": wick_pct_max  # Может быть None (бесконечность)
+            }
+        
+        return None
+    
+    async def _check_strategy_conditions(self, strategy: Dict, candle: Candle, delta: float, 
+                                        volume_usdt: float, wick_pct: float, user_id: int) -> bool:
+        """
+        Проверяет все условия стратегии
+        
+        Использует единый механизм проверки условий через telegram_notifier._check_condition(),
+        чтобы новые условия автоматически поддерживались без изменения логики детектирования.
+        
+        Args:
+            strategy: Словарь стратегии с полями:
+                - enabled: bool (по умолчанию true)
+                - useGlobalFilters: bool (по умолчанию true)
+                - conditions: List[Dict] - список условий
+            candle: Свеча для проверки
+            delta: Дельта в процентах
+            volume_usdt: Объём в USDT
+            wick_pct: Процент тени
+            user_id: ID пользователя (для проверки серий)
+            
+        Returns:
+            bool: True если все условия стратегии выполнены
+        """
+        # Проверяем, включена ли стратегия
+        enabled = strategy.get("enabled")
+        if enabled is False:
+            return False
+        
+        # Получаем условия стратегии
+        conditions = strategy.get("conditions", [])
+        if not conditions:
+            return False
+        
+        # Проверяем базовые фильтры (delta, volume, wick_pct)
+        # Если useGlobalFilters = true, базовые фильтры проверяются через глобальные настройки
+        # Если useGlobalFilters = false, базовые фильтры должны быть в условиях стратегии
+        use_global_filters = strategy.get("useGlobalFilters", True)
+        
+        if use_global_filters:
+            # Базовые фильтры проверяются через глобальные настройки (не через условия стратегии)
+            # Но мы всё равно проверяем все условия стратегии (series, symbol, exchange_market, direction)
+            # Базовые фильтры (delta, volume, wick_pct) из условий стратегии игнорируются при useGlobalFilters = true
+            pass
+        else:
+            # Базовые фильтры должны быть в условиях стратегии
+            # Проверяем, что они есть
+            has_delta = any(c.get("type") == "delta" for c in conditions)
+            has_volume = any(c.get("type") == "volume" for c in conditions)
+            has_wick_pct = any(c.get("type") == "wick_pct" for c in conditions)
+            
+            if not (has_delta and has_volume and has_wick_pct):
+                # Базовые фильтры отсутствуют - стратегия невалидна
+                logger.debug(f"Стратегия невалидна: отсутствуют базовые фильтры (useGlobalFilters=false)")
+                return False
+        
+        # Проверяем все условия стратегии через единый механизм
+        from core.telegram_notifier import TelegramNotifier
+        
+        for condition in conditions:
+            # Если useGlobalFilters = true, пропускаем базовые фильтры из условий стратегии
+            # (они проверяются через глобальные настройки)
+            if use_global_filters:
+                cond_type = condition.get("type")
+                if cond_type in ("delta", "volume", "wick_pct"):
+                    continue  # Пропускаем базовые фильтры, они проверяются через глобальные настройки
+            
+            # Проверяем условие через единый механизм
+            condition_met = await TelegramNotifier._check_condition(
+                condition, delta, volume_usdt, wick_pct, candle, user_id, conditions
+            )
+            
+            if not condition_met:
+                return False
+        
+        # Все условия выполнены
+        return True
+    
+    async def _check_user_spike(self, user: Dict, candle: Candle) -> Optional[Dict]:
+        """
+        Проверяет детектирование стрелы для одного пользователя (обычные настройки + стратегии)
+        
+        Args:
+            user: Словарь с данными пользователя
+            candle: Свеча для анализа
+            
+        Returns:
+            Optional[Dict]: Словарь с информацией о детектированной стреле или None
+            Формат: {
+                "user_id": int,
+                "user_name": str,
+                "delta": float,
+                "wick_pct": float,
+                "volume_usdt": float,
+                "detected_by_spike_settings": bool,
+                "detected_by_strategy": bool,
+                "matched_strategies": List[Dict]  # Список стратегий, которые сработали
+            }
+        """
+        try:
+            # Парсим настройки пользователя
+            user_options = self._parse_user_options(user.get("options_json", "{}"))
+            user_name = user.get("user", "Unknown")
+            user_id = user["id"]
+            
+            # Вычисляем метрики свечи один раз
+            delta = self._calculate_delta(candle)
+            wick_pct = self._calculate_wick_pct(candle)
+            volume_usdt = self._calculate_volume_usdt(candle)
+            
+            # Флаги детектирования
+            detected_by_spike_settings = False
+            detected_by_strategy = False
+            matched_strategies = []
+            
+            # Проверяем обычные настройки прострела
+            # Проверяем, включена ли эта биржа для пользователя
+            if self._check_exchange_filter(candle.exchange, user_options):
+                # Проверяем, есть ли у пользователя хотя бы какие-то настройки фильтров
+                exchange_settings = user_options.get("exchangeSettings", {})
+                thresholds = user_options.get("thresholds", {})
+                
+                if exchange_settings or thresholds:
+                    # Проверяем пороги
+                    matches, metrics = self._check_thresholds(candle, user_options)
+                    
+                    if matches:
+                        detected_by_spike_settings = True
+                        logger.info(f"Стрела обнаружена через обычные настройки для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
+            
+            # Проверяем стратегии независимо от обычных настроек
+            conditional_templates = user_options.get("conditionalTemplates", [])
+            if conditional_templates:
+                for strategy in conditional_templates:
+                    try:
+                        # Проверяем, включена ли стратегия
+                        if strategy.get("enabled", True) is False:
+                            continue
+                        
+                        # Получаем базовые фильтры из стратегии
+                        use_global_filters = strategy.get("useGlobalFilters", True)
+                        strategy_filters = self._extract_strategy_filters(strategy, user_options, candle)
+                        
+                        # Логика проверки базовых фильтров:
+                        # 1. Если useGlobalFilters = false → используем базовые фильтры из условий стратегии (обязательно)
+                        # 2. Если useGlobalFilters = true и есть глобальные настройки → используем их
+                        # 3. Если useGlobalFilters = true и нет глобальных настроек → используем базовые фильтры из условий стратегии (если есть)
+                        
+                        if not use_global_filters:
+                            # Если useGlobalFilters = false, проверяем базовые фильтры из условий стратегии
+                            if strategy_filters is None:
+                                # Пытаемся извлечь фильтры из условий стратегии напрямую
+                                strategy_filters = self._extract_strategy_filters_from_conditions(strategy)
+                            
+                            if strategy_filters is None:
+                                logger.debug(f"Стратегия '{strategy.get('name', 'Unknown')}' невалидна: отсутствуют базовые фильтры (useGlobalFilters=false)")
+                                continue
+                            
+                            # Проверяем базовые фильтры из условий стратегии
+                            if delta <= strategy_filters.get("delta_min", 0):
+                                continue
+                            if volume_usdt <= strategy_filters.get("volume_min", 0):
+                                continue
+                            wick_pct_max = strategy_filters.get("wick_pct_max")
+                            if wick_pct_max is not None and wick_pct <= wick_pct_max:
+                                continue
+                        else:
+                            # Если useGlobalFilters = true, сначала пытаемся использовать глобальные настройки
+                            if strategy_filters is None:
+                                # Если глобальных настроек нет, пытаемся использовать базовые фильтры из условий стратегии
+                                strategy_filters = self._extract_strategy_filters_from_conditions(strategy)
+                            
+                            if strategy_filters is None:
+                                # Нет ни глобальных настроек, ни базовых фильтров в условиях стратегии - пропускаем стратегию
+                                logger.debug(f"Стратегия '{strategy.get('name', 'Unknown')}' невалидна: отсутствуют базовые фильтры (useGlobalFilters=true, но нет глобальных настроек и нет фильтров в условиях)")
+                                continue
+                            
+                            # Проверяем базовые фильтры (из глобальных настроек или из условий стратегии)
+                            if delta <= strategy_filters.get("delta_min", 0):
+                                continue
+                            if volume_usdt <= strategy_filters.get("volume_min", 0):
+                                continue
+                            wick_pct_max = strategy_filters.get("wick_pct_max")
+                            if wick_pct_max is not None and wick_pct <= wick_pct_max:
+                                continue
+                        
+                        # Проверяем условие exchange в стратегии (для автоматического включения биржи)
+                        matches_exchange_condition, has_exchange_condition = self._check_strategy_exchange_condition(strategy, candle)
+                        
+                        # Если в стратегии указана конкретная биржа, но текущая свеча не соответствует - пропускаем стратегию
+                        if has_exchange_condition and not matches_exchange_condition:
+                            continue
+                        
+                        # Если биржа не указана в стратегии - используем только включенные биржи
+                        # Если биржа указана в стратегии, но отключена в exchanges - временно игнорируем проверку _check_exchange_filter()
+                        # только для этой стратегии (автоматическое включение биржи для стратегии)
+                        if not has_exchange_condition:
+                            # Если биржа не указана в стратегии, проверяем, включена ли она в exchanges
+                            if not self._check_exchange_filter(candle.exchange, user_options):
+                                continue
+                        # Если биржа указана в стратегии, но отключена в exchanges - пропускаем проверку _check_exchange_filter()
+                        # Это позволяет стратегии работать для указанной биржи, даже если она отключена в глобальных настройках
+                        # Глобальные фильтры (exchangeSettings/pairSettings/thresholds) остаются отключенными для этой биржи
+                        # и проверяются отдельно через _extract_strategy_filters() и _check_strategy_conditions()
+                        
+                        # Проверяем все условия стратегии (включая дополнительные: series, symbol, exchange, market, direction)
+                        strategy_passed = await self._check_strategy_conditions(
+                            strategy, candle, delta, volume_usdt, wick_pct, user_id
+                        )
+                        
+                        if strategy_passed:
+                            detected_by_strategy = True
+                            matched_strategies.append({
+                                "name": strategy.get("name", "Unknown"),
+                                "template": strategy.get("template", ""),
+                                "chatId": strategy.get("chatId")
+                            })
+                            logger.info(f"Стрела обнаружена через стратегию '{strategy.get('name', 'Unknown')}' для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol}")
+                    except Exception as e:
+                        logger.warning(f"Ошибка при проверке стратегии для пользователя {user_name}: {e}", exc_info=True, extra={
+                            "log_to_db": True,
+                            "error_type": "strategy_check_error",
+                            "exchange": candle.exchange,
+                            "market": candle.market,
+                            "symbol": candle.symbol,
+                        })
+                        continue
+            
+            # Если стрела детектирована хотя бы одним способом
+            if detected_by_spike_settings or detected_by_strategy:
+                # Добавляем стрелу в трекер серий с параметрами
+                # Уникальность гарантируется внутри метода _add_spike_to_series
+                self._add_spike_to_series(
+                    user_id, candle, delta, volume_usdt, wick_pct,
+                    detected_by_spike_settings, detected_by_strategy
+                )
+                
+                return {
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "delta": delta,
+                    "wick_pct": wick_pct,
+                    "volume_usdt": volume_usdt,
+                    "detected_by_spike_settings": detected_by_spike_settings,
+                    "detected_by_strategy": detected_by_strategy,
+                    "matched_strategies": matched_strategies
+                }
+            
+            return None
+            
+        except Exception as e:
+            # Обрабатываем ошибки для каждого пользователя отдельно
+            try:
+                user_name = user.get("user", "Unknown")
+            except:
+                user_name = "Unknown"
+            logger.error(f"Ошибка при обработке пользователя {user_name} для свечи {candle.exchange} {candle.market} {candle.symbol}: {e}", exc_info=True, extra={
+                "log_to_db": True,
+                "error_type": "spike_detection_user_error",
+                "exchange": candle.exchange,
+                "market": candle.market,
+                "symbol": candle.symbol,
+            })
+            return None
+    
+    async def detect_spike(self, candle: Candle) -> List[Dict]:
+        """
+        Детектирует стрелу для всех пользователей параллельно (обычные настройки + стратегии)
         
         Args:
             candle: Свеча для анализа
             
         Returns:
             List[Dict]: Список детектированных стрел с информацией о пользователях
-            Формат: [{"user_id": int, "user_name": str, "delta": float, "wick_pct": float, "volume_usdt": float}, ...]
+            Формат: [{
+                "user_id": int,
+                "user_name": str,
+                "delta": float,
+                "wick_pct": float,
+                "volume_usdt": float,
+                "detected_by_spike_settings": bool,
+                "detected_by_strategy": bool,
+                "matched_strategies": List[Dict]
+            }, ...]
         """
         # Периодическая очистка старых данных
         self._cleanup_old_data()
         
-        detected_spikes = []
-        
         # Получаем всех пользователей
         users = self._get_users()
         
-        for user in users:
-            try:
-                # Пропускаем пользователей без настроек Telegram (опционально, можно убрать)
-                # if not user.get("tg_token") or not user.get("chat_id"):
-                #     continue
-                
-                # Парсим настройки пользователя
-                user_options = self._parse_user_options(user.get("options_json", "{}"))
-                user_name = user.get("user", "Unknown")
-                user_id = user["id"]
-                
-                # Проверяем, включена ли эта биржа для пользователя
-                if not self._check_exchange_filter(candle.exchange, user_options):
-                    logger.debug(f"Биржа {candle.exchange} отключена для пользователя {user_name}")
-                    continue
-                
-                # Проверяем, есть ли у пользователя хотя бы какие-то настройки фильтров
-                # Если нет ни exchangeSettings, ни thresholds - пропускаем пользователя
-                exchange_settings = user_options.get("exchangeSettings", {})
-                thresholds = user_options.get("thresholds", {})
-                
-                if not exchange_settings and not thresholds:
-                    logger.debug(f"У пользователя {user_name} нет настроек фильтров - пропускаем")
-                    continue
-                
-                # Проверяем пороги
-                matches, metrics = self._check_thresholds(candle, user_options)
-                
-                if matches:
-                    logger.info(f"Стрела обнаружена для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
-                    
-                    # Добавляем стрелу в трекер серий с параметрами
-                    self._add_spike_to_series(user_id, candle, metrics["delta"], metrics["volume_usdt"])
-                    
-                    detected_spikes.append({
-                        "user_id": user_id,
-                        "user_name": user["user"],
-                        "delta": metrics["delta"],
-                        "wick_pct": metrics["wick_pct"],
-                        "volume_usdt": metrics["volume_usdt"],
-                    })
-                else:
-                    logger.debug(f"Стрела НЕ прошла фильтры для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
-            except Exception as e:
-                # Обрабатываем ошибки для каждого пользователя отдельно, чтобы ошибка одного не влияла на других
-                try:
-                    user_name = user.get("user", "Unknown")
-                except:
-                    user_name = "Unknown"
-                logger.error(f"Ошибка при обработке пользователя {user_name} для свечи {candle.exchange} {candle.market} {candle.symbol}: {e}", exc_info=True, extra={
+        if not users:
+            return []
+        
+        # Параллельная обработка всех пользователей через asyncio.gather()
+        import asyncio
+        tasks = [self._check_user_spike(user, candle) for user in users]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Фильтруем результаты: оставляем только успешные детекты (не None и не Exception)
+        detected_spikes = []
+        for result in results:
+            if result is not None and not isinstance(result, Exception):
+                detected_spikes.append(result)
+            elif isinstance(result, Exception):
+                # Логируем исключения, которые не были обработаны в _check_user_spike
+                logger.error(f"Необработанное исключение при детектировании стрелы: {result}", exc_info=result, extra={
                     "log_to_db": True,
-                    "error_type": "spike_detection_user_error",
+                    "error_type": "spike_detection_unhandled_error",
                     "exchange": candle.exchange,
                     "market": candle.market,
                     "symbol": candle.symbol,
                 })
-                # Продолжаем обработку других пользователей
-                continue
         
         return detected_spikes
     
@@ -674,14 +1298,14 @@ class SpikeDetector:
                          conditions: Optional[List[Dict]] = None) -> int:
         """
         Получает количество стрел за указанное время для данной пары (публичный метод)
-        с учетом условий volume и delta (если указаны)
+        с учетом всех условий стратегии (delta, volume, wick_pct, direction, symbol, exchange, market)
         
         Args:
             user_id: ID пользователя
-            candle: Свеча
-            time_window_seconds: Временное окно в секундах
+            candle: Свеча (используется для определения временного окна)
+            time_window_seconds: Временное окно в секундах (смотрим назад от момента текущей стрелы)
             conditions: Список условий для проверки (опционально). Если указан, 
-                       считаются только стрелы, соответствующие всем условиям volume и delta
+                       считаются только стрелы, соответствующие **всем** условиям стратегии
             
         Returns:
             int: Количество стрел за указанное время (соответствующих условиям, если они указаны)
@@ -696,17 +1320,17 @@ class SpikeDetector:
     def _cleanup_old_data(self):
         """
         Периодическая очистка старых данных:
-        - Удаляет записи старше TTL
+        - Удаляет записи старше максимального периода времени из всех стратегий пользователя
         - Удаляет данные для несуществующих пользователей
+        - Использует динамический TTL для каждого пользователя на основе его стратегий
         """
         current_time = time.time()
         
-        # Периодическая очистка: раз в час
+        # Периодическая очистка: раз в 5 минут (более частая очистка для экономии памяти)
         if current_time - self._last_cleanup_time < self._cleanup_interval:
             return
         
         self._last_cleanup_time = current_time
-        ttl_threshold = current_time - self._ttl_seconds
         
         # Получаем список существующих пользователей
         try:
@@ -727,14 +1351,24 @@ class SpikeDetector:
             logger.debug(f"Удалены данные трекера для несуществующего пользователя ID={user_id}")
         
         # Очищаем старые записи (TTL) и ограничиваем размер для существующих пользователей
+        # Используем динамический TTL для каждого пользователя
+        current_ts_ms = int(current_time * 1000)
+        
         for user_id in list(self._series_tracker.keys()):
+            # Получаем максимальный период времени для этого пользователя
+            max_ttl_seconds = self._get_max_time_window_for_user(user_id)
+            ttl_threshold_ts_ms = current_ts_ms - int(max_ttl_seconds * 1000)
+            
             for key in list(self._series_tracker[user_id].keys()):
                 spikes = self._series_tracker[user_id][key]
-                # Фильтруем по TTL
-                spikes = [spike for spike in spikes if spike.get("timestamp", 0) >= ttl_threshold]
+                # Фильтруем по TTL (используем ts_ms для точности)
+                spikes = [spike for spike in spikes if spike.get("ts_ms", 0) >= ttl_threshold_ts_ms]
                 # Ограничиваем размер
                 if len(spikes) > self._max_spikes_per_symbol:
                     spikes = spikes[-self._max_spikes_per_symbol:]
+                
+                # Сортируем по ts_ms для быстрого поиска
+                spikes.sort(key=lambda x: x.get("ts_ms", 0))
                 
                 if spikes:
                     self._series_tracker[user_id][key] = spikes

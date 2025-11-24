@@ -316,9 +316,9 @@ async def on_candle(candle: Candle) -> None:
     metrics.inc_candle(candle.exchange, candle.market)
     # Не логируем каждую свечу - только статистика
     
-    # Детект стрел для всех пользователей
+    # Детект стрел для всех пользователей (параллельно, асинхронно)
     try:
-        detected_spikes = spike_detector.detect_spike(candle)
+        detected_spikes = await spike_detector.detect_spike(candle)
         
         if detected_spikes:
             logger.debug(f"Обнаружена стрела: {candle.exchange} {candle.market} {candle.symbol} - {len(detected_spikes)} пользователей")
@@ -330,6 +330,9 @@ async def on_candle(candle: Candle) -> None:
                 delta = spike_info["delta"]
                 wick_pct = spike_info["wick_pct"]
                 volume_usdt = spike_info["volume_usdt"]
+                detected_by_spike_settings = spike_info.get("detected_by_spike_settings", False)
+                detected_by_strategy = spike_info.get("detected_by_strategy", False)
+                matched_strategies = spike_info.get("matched_strategies", [])
                 
                 # Получаем информацию о пользователе для отправки уведомления
                 user_data = await db.get_user_by_id(user_id)
@@ -337,8 +340,16 @@ async def on_candle(candle: Candle) -> None:
                     logger.warning(f"Пользователь с ID {user_id} не найден")
                     continue
                 
-                # Сохраняем стрелу в БД
+                # Сохраняем стрелу в БД с флагами детектирования
                 try:
+                    # Формируем метаинформацию с флагами детектирования
+                    meta_info = {
+                        "detected_by_spike_settings": detected_by_spike_settings,
+                        "detected_by_strategy": detected_by_strategy,
+                        "matched_strategies": [s.get("name", "Unknown") for s in matched_strategies] if matched_strategies else []
+                    }
+                    meta_json = json.dumps(meta_info)
+                    
                     alert_id = await db.add_alert(
                         ts=candle.ts_ms,
                         exchange=candle.exchange,
@@ -347,10 +358,10 @@ async def on_candle(candle: Candle) -> None:
                         delta=delta,
                         wick_pct=wick_pct,
                         volume_usdt=volume_usdt,
-                        meta=None,
+                        meta=meta_json,
                         user_id=user_id
                     )
-                    logger.debug(f"Стрела сохранена в БД (ID: {alert_id}) для пользователя {user_name}")
+                    logger.debug(f"Стрела сохранена в БД (ID: {alert_id}) для пользователя {user_name} (spike_settings={detected_by_spike_settings}, strategy={detected_by_strategy})")
                 except aiosqlite.IntegrityError as e:
                     logger.warning(f"Стрела уже существует в БД для пользователя {user_name}: {e}")
                 except aiosqlite.OperationalError as e:
@@ -379,6 +390,17 @@ async def on_candle(candle: Candle) -> None:
                 conditional_templates = None
                 user_timezone = "UTC"  # По умолчанию UTC
                 should_send_chart = False  # По умолчанию графики отключены
+                
+                # Определяем, какие шаблоны использовать:
+                # - Если детектирована через стратегию → используем шаблоны стратегий (приоритет)
+                # - Если детектирована только через обычные настройки → используем дефолтный шаблон
+                templates_to_use = None
+                if detected_by_strategy and matched_strategies:
+                    # Используем шаблоны стратегий
+                    templates_to_use = matched_strategies
+                elif detected_by_spike_settings:
+                    # Используем дефолтный шаблон
+                    templates_to_use = None
                 
                 # Системный пользователь "Stats" - пропускаем всю проверку графиков для ускорения
                 if user_name.lower() != "stats":
@@ -438,19 +460,43 @@ async def on_candle(candle: Candle) -> None:
                 
                 if tg_token and chat_id:
                     try:
-                        # Сначала формируем сообщения
-                        messages = await telegram_notifier.format_spike_messages(
-                            candle=candle,
-                            delta=delta,
-                            wick_pct=wick_pct,
-                            volume_usdt=volume_usdt,
-                            template=message_template,
-                            conditional_templates=conditional_templates,
-                            user_id=user_id,
-                            token=tg_token,
-                            timezone=user_timezone,
-                            default_chat_id=chat_id
-                        )
+                        # Формируем сообщения в зависимости от способа детектирования
+                        if templates_to_use is not None:
+                            # Используем шаблоны стратегий (приоритет)
+                            messages = []
+                            for strategy in templates_to_use:
+                                strategy_template = strategy.get("template", "")
+                                strategy_chat_id = strategy.get("chatId") or chat_id
+                                
+                                if strategy_template:
+                                    # Форматируем сообщение из шаблона стратегии
+                                    strategy_messages = await telegram_notifier.format_spike_messages(
+                                        candle=candle,
+                                        delta=delta,
+                                        wick_pct=wick_pct,
+                                        volume_usdt=volume_usdt,
+                                        template=strategy_template,
+                                        conditional_templates=None,  # Не используем условные шаблоны, так как это уже стратегия
+                                        user_id=user_id,
+                                        token=tg_token,
+                                        timezone=user_timezone,
+                                        default_chat_id=strategy_chat_id
+                                    )
+                                    messages.extend(strategy_messages)
+                        else:
+                            # Используем дефолтный шаблон (messageTemplate)
+                            messages = await telegram_notifier.format_spike_messages(
+                                candle=candle,
+                                delta=delta,
+                                wick_pct=wick_pct,
+                                volume_usdt=volume_usdt,
+                                template=message_template,
+                                conditional_templates=None,  # Не используем условные шаблоны, так как это обычный прострел
+                                user_id=user_id,
+                                token=tg_token,
+                                timezone=user_timezone,
+                                default_chat_id=chat_id
+                            )
                         
                         # Если график включен, отправляем график с текстом как подписью
                         if should_send_chart:

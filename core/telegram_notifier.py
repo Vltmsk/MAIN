@@ -265,6 +265,21 @@ class TelegramNotifier:
         """
         Проверяет условие для условного шаблона
         
+        **Расширяемость:** Для добавления нового типа условия:
+        1. Добавьте новый elif блок в этом методе с проверкой `cond_type == "new_type"`
+        2. Реализуйте логику проверки условия
+        3. Новое условие автоматически будет работать в стратегиях, так как `_check_strategy_conditions()` 
+           в `spike_detector.py` использует этот метод
+        
+        Поддерживаемые типы условий:
+        - "volume": проверка объёма (value >= condition.value)
+        - "delta": проверка дельты (valueMin <= delta <= valueMax)
+        - "wick_pct": проверка тени (valueMin <= wick_pct <= valueMax)
+        - "series": проверка серии стрел (count >= condition.count за timeWindowSeconds)
+        - "symbol": проверка символа (с нормализацией)
+        - "exchange_market": проверка биржи и рынка
+        - "direction": проверка направления стрелы ("up" или "down")
+        
         Args:
             condition: Словарь с условием {type: "volume"|"delta"|"series", operator: ">=", value: number, timeWindowSeconds?: number, count?: number}
             delta: Дельта в процентах
@@ -391,37 +406,66 @@ class TelegramNotifier:
                     return False
                 
                 return True
-            elif cond_type == "exchange":
-                # Проверка условия по бирже
+            elif cond_type == "exchange_market":
+                # Проверка условия по бирже и типу рынка (объединенное условие)
                 if candle is None:
                     return False
                 
+                condition_exchange_market = condition.get("exchange_market")
+                if condition_exchange_market:
+                    # Новый формат: "exchange_market" (например, "binance_spot", "bybit_futures")
+                    parts = condition_exchange_market.lower().split("_", 1)
+                    if len(parts) != 2:
+                        return False
+                    
+                    condition_exchange, condition_market = parts
+                    
+                    # Нормализуем рынок: "futures" и "linear" - одно и то же
+                    if condition_market == "linear":
+                        condition_market = "futures"
+                    
+                    # Сравниваем биржу
+                    if candle.exchange.lower() != condition_exchange.lower():
+                        return False
+                    
+                    # Нормализуем и сравниваем тип рынка
+                    market_mapping = {
+                        "futures": "linear",  # Futures и Linear - одно и то же
+                        "linear": "linear",
+                        "spot": "spot"
+                    }
+                    
+                    candle_market = market_mapping.get(candle.market.lower(), candle.market.lower())
+                    condition_market_normalized = market_mapping.get(condition_market.lower(), condition_market.lower())
+                    
+                    return candle_market == condition_market_normalized
+                
+                # Обратная совместимость: проверяем старый формат (отдельные поля exchange и market)
                 condition_exchange = condition.get("exchange")
-                if not condition_exchange:
-                    return False
-                
-                # Сравниваем биржи (без учета регистра)
-                return candle.exchange.lower() == condition_exchange.lower()
-            elif cond_type == "market":
-                # Проверка условия по типу рынка
-                if candle is None:
-                    return False
-                
                 condition_market = condition.get("market")
-                if not condition_market:
-                    return False
                 
-                # Нормализуем типы рынков для сравнения
-                market_mapping = {
-                    "futures": "linear",  # Futures и Linear - одно и то же
-                    "linear": "linear",
-                    "spot": "spot"
-                }
+                if condition_exchange:
+                    # Проверяем биржу
+                    if candle.exchange.lower() != condition_exchange.lower():
+                        return False
                 
-                candle_market = market_mapping.get(candle.market.lower(), candle.market.lower())
-                condition_market_normalized = market_mapping.get(condition_market.lower(), condition_market.lower())
+                if condition_market:
+                    # Проверяем тип рынка
+                    market_mapping = {
+                        "futures": "linear",  # Futures и Linear - одно и то же
+                        "linear": "linear",
+                        "spot": "spot"
+                    }
+                    
+                    candle_market = market_mapping.get(candle.market.lower(), candle.market.lower())
+                    condition_market_normalized = market_mapping.get(condition_market.lower(), condition_market.lower())
+                    
+                    if candle_market != condition_market_normalized:
+                        return False
                 
-                return candle_market == condition_market_normalized
+                # Если указаны оба условия - оба должны совпадать
+                # Если указано только одно - проверяем только его
+                return condition_exchange is not None or condition_market is not None
             elif cond_type == "direction":
                 # Проверка условия по направлению стрелы
                 if candle is None:
