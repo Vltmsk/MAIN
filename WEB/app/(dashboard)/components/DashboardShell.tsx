@@ -26,6 +26,8 @@ export default function Dashboard() {
   const [userLogin, setUserLogin] = useState("");
   const [loading, setLoading] = useState(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isSettingsDropdownOpen, setIsSettingsDropdownOpen] = useState(false);
+  const [activeSettingsSubTab, setActiveSettingsSubTab] = useState<"telegram" | "format" | "charts" | "spikes" | "blacklist" | "strategies">("spikes");
   
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [totalDetects, setTotalDetects] = useState(0);
@@ -80,6 +82,13 @@ export default function Dashboard() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("dashboard_active_tab", activeTab);
+    // Закрываем выпадающее меню только при переключении на другую вкладку
+    if (activeTab !== "settings") {
+      setIsSettingsDropdownOpen(false);
+    } else {
+      // Если переключились на настройки, открываем меню
+      setIsSettingsDropdownOpen(true);
+    }
   }, [activeTab]);
 
   const fetchMetrics = async () => {
@@ -634,23 +643,125 @@ export default function Dashboard() {
             Статистика стрел
           </button>
 
-          <button
-            onClick={() => {
-              setActiveTab("settings");
-              setIsMobileMenuOpen(false);
-            }}
-            className={`w-full flex items-center gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
-              activeTab === "settings"
-                ? "bg-zinc-700 text-white nav-active"
-                : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
-            }`}
-          >
-            <svg className="w-[30px] h-[30px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            Настройки
-          </button>
+          <div className="relative settings-dropdown-container">
+            <button
+              onClick={() => {
+                setActiveTab("settings");
+                // Если уже на вкладке настроек, переключаем меню, иначе открываем его
+                if (activeTab === "settings") {
+                  setIsSettingsDropdownOpen(!isSettingsDropdownOpen);
+                } else {
+                  setIsSettingsDropdownOpen(true);
+                }
+                setIsMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center justify-between gap-[18px] px-6 py-5 rounded-lg smooth-transition ripple text-base ${
+                activeTab === "settings"
+                  ? "bg-zinc-700 text-white nav-active"
+                  : "text-zinc-400 hover:text-white hover:bg-zinc-800/50 hover-glow"
+              }`}
+            >
+              <div className="flex items-center gap-[18px]">
+                <svg className="w-[30px] h-[30px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Настройки
+              </div>
+              <svg 
+                className={`w-5 h-5 transition-transform ${isSettingsDropdownOpen && activeTab === "settings" ? "rotate-180" : ""}`}
+                fill="none" 
+                stroke="currentColor" 
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            
+            {/* Выпадающее меню подтем */}
+            {isSettingsDropdownOpen && activeTab === "settings" && (
+              <div className="mt-2 ml-6 space-y-1 bg-zinc-800/95 border border-zinc-700 rounded-lg p-2 shadow-xl z-50">
+                <button
+                  onClick={() => {
+                    setActiveSettingsSubTab("spikes");
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-2 rounded-lg smooth-transition text-sm ${
+                    activeSettingsSubTab === "spikes"
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-400 hover:text-white hover:bg-zinc-800/50"
+                  }`}
+                >
+                  Настройки прострелов
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveSettingsSubTab("telegram");
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-2 rounded-lg smooth-transition text-sm ${
+                    activeSettingsSubTab === "telegram"
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-400 hover:text-white hover:bg-zinc-800/50"
+                  }`}
+                >
+                  Настройка Телеграм
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveSettingsSubTab("format");
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-2 rounded-lg smooth-transition text-sm ${
+                    activeSettingsSubTab === "format"
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-400 hover:text-white hover:bg-zinc-800/50"
+                  }`}
+                >
+                  Формат сообщений
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveSettingsSubTab("charts");
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-2 rounded-lg smooth-transition text-sm ${
+                    activeSettingsSubTab === "charts"
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-400 hover:text-white hover:bg-zinc-800/50"
+                  }`}
+                >
+                  Отправка графиков
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveSettingsSubTab("blacklist");
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-2 rounded-lg smooth-transition text-sm ${
+                    activeSettingsSubTab === "blacklist"
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-400 hover:text-white hover:bg-zinc-800/50"
+                  }`}
+                >
+                  Чёрный список
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveSettingsSubTab("strategies");
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-2 rounded-lg smooth-transition text-sm ${
+                    activeSettingsSubTab === "strategies"
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-400 hover:text-white hover:bg-zinc-800/50"
+                  }`}
+                >
+                  Стратегии
+                </button>
+              </div>
+            )}
+          </div>
 
           {/* Админ панель - только для Влад */}
           {isAdmin && (
@@ -730,7 +841,11 @@ export default function Dashboard() {
           )}
 
           {activeTab === "settings" && (
-            <SettingsTab userLogin={userLogin} />
+            <SettingsTab 
+              userLogin={userLogin} 
+              activeSubTab={activeSettingsSubTab}
+              onSubTabChange={setActiveSettingsSubTab}
+            />
           )}
 
           {/* Админ панель */}
