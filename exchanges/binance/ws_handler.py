@@ -8,6 +8,7 @@ import asyncio
 from typing import Awaitable, Callable, List
 import aiohttp
 import json
+import socket
 from config import AppConfig
 from core.candle_builder import Candle, CandleBuilder
 from core.logger import get_logger
@@ -165,6 +166,17 @@ async def _ws_connection_worker(
                 
         except asyncio.CancelledError:
             break
+        except (ConnectionResetError, ConnectionError) as e:
+            # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
+            error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
+            logger.warning(f"Binance {market}: {error_msg}")
+            await on_error({
+                "exchange": "binance",
+                "market": market,
+                "connection_id": f"streams-{len(streams)}",
+                "error": error_msg,
+                "error_type": "connection_reset",
+            })
         except Exception as e:
             logger.error(f"Ошибка в WS соединении Binance {market}: {e}")
             await on_error({
@@ -397,6 +409,17 @@ async def _ws_connection_worker_subscribe(
         
         except asyncio.CancelledError:
             break
+        except (ConnectionResetError, ConnectionError) as e:
+            # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
+            error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
+            logger.warning(f"Binance {market} (subscribe mode): {error_msg}")
+            await on_error({
+                "exchange": "binance",
+                "market": market,
+                "connection_id": f"ws-subscribe-{len(streams)}",
+                "error": error_msg,
+                "error_type": "connection_reset",
+            })
         except Exception as e:
             logger.error(f"Ошибка в WS соединении Binance {market} (subscribe mode): {e}")
             await on_error({
@@ -632,7 +655,11 @@ async def start(
     on_trade = kwargs.get('on_trade', None)
     # CandleBuilder не нужен для Binance (свечи уже готовые)
     # Но создадим для совместимости
-    _builder = CandleBuilder(maxlen=config.memory_max_candles_per_symbol, on_trade=on_trade)
+    _builder = CandleBuilder(
+        maxlen=config.memory_max_candles_per_symbol,
+        on_trade=on_trade,
+        on_candle=on_candle,
+    )
     
     # Проверяем конфигурацию и получаем символы только для включенных рынков
     fetch_spot = config.exchanges.binance_spot

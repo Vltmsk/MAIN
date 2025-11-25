@@ -52,27 +52,20 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
   // Состояние для временной зоны
   const [timezone, setTimezone] = useState<string>("UTC");
   
-  // Состояния для фильтров по биржам
+  // Состояния для фильтров по биржам (теперь храним отдельно для каждого рынка)
   const [exchangeFilters, setExchangeFilters] = useState<Record<string, boolean>>({
-    binance: false,
-    bybit: false,
-    bitget: false,
-    gate: false,
-    hyperliquid: false,
+    binance_spot: false,
+    binance_futures: false,
+    bybit_spot: false,
+    bybit_futures: false,
+    bitget_spot: false,
+    bitget_futures: false,
+    gate_spot: false,
+    gate_futures: false,
+    hyperliquid_spot: false,
+    hyperliquid_futures: false,
   });
   const [expandedExchanges, setExpandedExchanges] = useState<Record<string, boolean>>({});
-  
-  // Состояния для настроек Spot и Futures каждой биржи
-  const [exchangeSettings, setExchangeSettings] = useState<Record<string, {
-    spot: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean };
-    futures: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean };
-  }>>({
-    binance: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
-    bybit: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
-    bitget: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
-    gate: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
-    hyperliquid: { spot: { enabled: false, delta: "", volume: "", shadow: "" }, futures: { enabled: false, delta: "", volume: "", shadow: "" } },
-  });
   
   // Состояния для чёрного списка
   const [blacklist, setBlacklist] = useState<string[]>([]);
@@ -202,6 +195,42 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
       return () => clearTimeout(timer);
     }
   }, [saveMessage]);
+
+  // Автоматическое обновление тумблеров бирж при изменении состояния торговых пар
+  useEffect(() => {
+    setExchangeFilters((currentFilters) => {
+      const updatedExchangeFilters = { ...currentFilters };
+      let hasChanges = false;
+
+      // Проверяем каждую комбинацию биржа + рынок
+      ["binance", "bybit", "bitget", "gate", "hyperliquid"].forEach((exchange) => {
+        (["spot", "futures"] as const).forEach((market) => {
+          const sectionKey = `${exchange}_${market}`;
+          const prefix = `${exchange}_${market}_`;
+
+          // Проверяем, есть ли хотя бы одна включенная пара для этой биржи и рынка
+          let hasEnabledPair = false;
+          Object.keys(pairSettings).forEach((pairKey) => {
+            if (pairKey.startsWith(prefix)) {
+              const pairData = pairSettings[pairKey];
+              if (pairData && pairData.enabled === true) {
+                hasEnabledPair = true;
+              }
+            }
+          });
+
+          // Обновляем тумблер биржи, если состояние изменилось
+          if (hasEnabledPair !== currentFilters[sectionKey]) {
+            updatedExchangeFilters[sectionKey] = hasEnabledPair;
+            hasChanges = true;
+          }
+        });
+      });
+
+      // Возвращаем обновленные фильтры только если были изменения, иначе возвращаем текущие
+      return hasChanges ? updatedExchangeFilters : currentFilters;
+    });
+  }, [pairSettings]); // Зависимость только от pairSettings
 
   const formatNumberCompact = (value: string): string => {
     if (!value) return "0";
@@ -820,10 +849,6 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
     const extractedText = extractTextFromEditor();
     
     const pairSettingsWithCharts: Record<string, { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean }> = { ...pairSettings };
-    const exchangeSettingsWithCharts: Record<string, {
-      spot: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean };
-      futures: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean };
-    }> = { ...exchangeSettings };
     
     Object.keys(chartSettings).forEach((key) => {
       if (pairSettings[key]) {
@@ -854,33 +879,13 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
             };
             pairSettingsWithCharts[key] = newSettings;
           }
-        } else if (parts.length === 2) {
-          // Формат: exchange_market (например, binance_spot)
-          const [exchange, market] = parts;
-          if (!exchangeSettingsWithCharts[exchange]) {
-            exchangeSettingsWithCharts[exchange] = {
-              spot: { enabled: false, delta: "", volume: "", shadow: "", sendChart: undefined },
-              futures: { enabled: false, delta: "", volume: "", shadow: "", sendChart: undefined }
-            };
-          }
-          if (market === "spot" || market === "futures") {
-            const currentMarketSettings = exchangeSettingsWithCharts[exchange][market];
-            const newMarketSettings: { enabled: boolean; delta: string; volume: string; shadow: string; sendChart?: boolean } = {
-              enabled: currentMarketSettings.enabled,
-              delta: currentMarketSettings.delta,
-              volume: currentMarketSettings.volume,
-              shadow: currentMarketSettings.shadow,
-              sendChart: chartSettings[key]
-            };
-            exchangeSettingsWithCharts[exchange][market] = newMarketSettings;
-          }
         }
+        // Игнорируем формат exchange_market (2 части) - теперь используем только pairSettings
       }
     });
     
     const options = {
       exchanges: exchangeFilters,
-      exchangeSettings: exchangeSettingsWithCharts,
       pairSettings: pairSettingsWithCharts,
       blacklist,
       messageTemplate: convertToTechnicalKeys(extractedText),
@@ -1057,60 +1062,54 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
           }
           
           if (options.exchanges && typeof options.exchanges === "object") {
-            setExchangeFilters({
-              binance: options.exchanges.binance === true,
-              bybit: options.exchanges.bybit === true,
-              bitget: options.exchanges.bitget === true,
-              gate: options.exchanges.gate === true,
-              hyperliquid: options.exchanges.hyperliquid === true,
-            });
+            // Поддержка старого формата (обратная совместимость)
+            const oldFormat = options.exchanges.binance !== undefined || 
+                             options.exchanges.bybit !== undefined ||
+                             options.exchanges.bitget !== undefined ||
+                             options.exchanges.gate !== undefined ||
+                             options.exchanges.hyperliquid !== undefined;
+            
+            if (oldFormat) {
+              // Старый формат: биржа целиком
+              setExchangeFilters({
+                binance_spot: options.exchanges.binance === true,
+                binance_futures: options.exchanges.binance === true,
+                bybit_spot: options.exchanges.bybit === true,
+                bybit_futures: options.exchanges.bybit === true,
+                bitget_spot: options.exchanges.bitget === true,
+                bitget_futures: options.exchanges.bitget === true,
+                gate_spot: options.exchanges.gate === true,
+                gate_futures: options.exchanges.gate === true,
+                hyperliquid_spot: options.exchanges.hyperliquid === true,
+                hyperliquid_futures: options.exchanges.hyperliquid === true,
+              });
+            } else {
+              // Новый формат: отдельно для каждого рынка
+              setExchangeFilters({
+                binance_spot: options.exchanges.binance_spot === true,
+                binance_futures: options.exchanges.binance_futures === true,
+                bybit_spot: options.exchanges.bybit_spot === true,
+                bybit_futures: options.exchanges.bybit_futures === true,
+                bitget_spot: options.exchanges.bitget_spot === true,
+                bitget_futures: options.exchanges.bitget_futures === true,
+                gate_spot: options.exchanges.gate_spot === true,
+                gate_futures: options.exchanges.gate_futures === true,
+                hyperliquid_spot: options.exchanges.hyperliquid_spot === true,
+                hyperliquid_futures: options.exchanges.hyperliquid_futures === true,
+              });
+            }
           } else {
             setExchangeFilters({
-              binance: false,
-              bybit: false,
-              bitget: false,
-              gate: false,
-              hyperliquid: false,
-            });
-          }
-          
-          if (options.exchangeSettings && typeof options.exchangeSettings === "object") {
-            setExchangeSettings((prevSettings) => {
-              const merged = { ...prevSettings };
-              Object.keys(options.exchangeSettings).forEach((exchange) => {
-                if (merged[exchange]) {
-                  merged[exchange] = {
-                    spot: {
-                      enabled: options.exchangeSettings[exchange].spot?.enabled === true,
-                      delta: options.exchangeSettings[exchange].spot?.delta || "",
-                      volume: options.exchangeSettings[exchange].spot?.volume || "",
-                      shadow: options.exchangeSettings[exchange].spot?.shadow || "",
-                    },
-                    futures: {
-                      enabled: options.exchangeSettings[exchange].futures?.enabled === true,
-                      delta: options.exchangeSettings[exchange].futures?.delta || "",
-                      volume: options.exchangeSettings[exchange].futures?.volume || "",
-                      shadow: options.exchangeSettings[exchange].futures?.shadow || "",
-                    },
-                  };
-                } else {
-                  merged[exchange] = {
-                    spot: {
-                      enabled: options.exchangeSettings[exchange].spot?.enabled === true,
-                      delta: options.exchangeSettings[exchange].spot?.delta || "",
-                      volume: options.exchangeSettings[exchange].spot?.volume || "",
-                      shadow: options.exchangeSettings[exchange].spot?.shadow || "",
-                    },
-                    futures: {
-                      enabled: options.exchangeSettings[exchange].futures?.enabled === true,
-                      delta: options.exchangeSettings[exchange].futures?.delta || "",
-                      volume: options.exchangeSettings[exchange].futures?.volume || "",
-                      shadow: options.exchangeSettings[exchange].futures?.shadow || "",
-                    },
-                  };
-                }
-              });
-              return merged;
+              binance_spot: false,
+              binance_futures: false,
+              bybit_spot: false,
+              bybit_futures: false,
+              bitget_spot: false,
+              bitget_futures: false,
+              gate_spot: false,
+              gate_futures: false,
+              hyperliquid_spot: false,
+              hyperliquid_futures: false,
             });
           }
           
@@ -1257,21 +1256,6 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
             });
           }
           
-          if (options.exchangeSettings && typeof options.exchangeSettings === "object") {
-            Object.keys(options.exchangeSettings).forEach((exchange) => {
-              const exchangeConfig = options.exchangeSettings[exchange];
-              if (exchangeConfig && typeof exchangeConfig === "object") {
-                ["spot", "futures"].forEach((market) => {
-                  const marketConfig = exchangeConfig[market];
-                  if (marketConfig && typeof marketConfig === "object" && 'sendChart' in marketConfig) {
-                    const key = `${exchange}_${market}`;
-                    chartSettingsMap[key] = marketConfig.sendChart === true;
-                  }
-                });
-              }
-            });
-          }
-          
           setChartSettings(chartSettingsMap);
           
           if (options.timezone && typeof options.timezone === "string") {
@@ -1293,13 +1277,18 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
           });
         } catch (e) {
           console.error("Ошибка парсинга options_json:", e);
-          setExchangeFilters({
-            binance: false,
-            bybit: false,
-            bitget: false,
-            gate: false,
-            hyperliquid: false,
-          });
+            setExchangeFilters({
+              binance_spot: false,
+              binance_futures: false,
+              bybit_spot: false,
+              bybit_futures: false,
+              bitget_spot: false,
+              bitget_futures: false,
+              gate_spot: false,
+              gate_futures: false,
+              hyperliquid_spot: false,
+              hyperliquid_futures: false,
+            });
         }
       } else if (res.status === 404) {
         console.log(`Пользователь "${userLogin}" не найден в БД. Будет создан при сохранении настроек.`);
@@ -1770,7 +1759,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                       <div className="flex items-center gap-2 mb-2">
                         <h2 className="text-xl font-bold text-white">Отправка графиков прострелов</h2>
                         <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <title>Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.</title>
+                          <title>Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта. Важно: включение отправки графика задержит приход сигнала в Telegram канал на 1-2 секунды.</title>
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                       </div>
@@ -2110,13 +2099,21 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                         <div className="flex items-center gap-2 mb-2">
                           <h2 className="text-xl font-bold text-white">Отправка графиков прострелов</h2>
                           <svg className="w-5 h-5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <title>Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.</title>
+                            <title>Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта. Важно: включение отправки графика задержит приход сигнала в Telegram канал на 1-2 секунды.</title>
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
                         </div>
-                        <p className="text-sm text-zinc-400">
+                        <p className="text-sm text-zinc-400 mb-3">
                           Включите отправку тиковых графиков для выбранных торговых пар. Графики будут отправляться вместе с текстовыми детектами и показывать движение цены за 30 минут до момента детекта.
                         </p>
+                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 flex items-start gap-2">
+                          <svg className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                          </svg>
+                          <p className="text-sm text-amber-300 font-medium">
+                            <span className="font-bold">Важно:</span> Включение отправки графика задержит приход сигнала в ваш Telegram канал на 1-2 секунды, так как система сначала генерирует график, а затем отправляет сообщение.
+                          </p>
+                        </div>
                       </div>
                       <div className="flex items-center gap-2 ml-4">
                         <button
@@ -2279,10 +2276,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                             const isExpanded = expandedExchanges[sectionKey] || false;
                             const exchangeDisplayName = exchange === "gate" ? "Gate" : exchange === "hyperliquid" ? "Hyperliquid" : exchange.charAt(0).toUpperCase() + exchange.slice(1);
                             const marketDisplayName = market === "spot" ? "Spot" : "Futures";
-                            const settings = exchangeSettings[exchange];
-                            const marketSettings = market === "spot" ? settings.spot : settings.futures;
                             const pairs = getPairsForExchange(exchange, market);
-                            const quoteCurrency = getQuoteCurrencyForExchange(exchange, market);
                             const showPairsImmediately = shouldShowPairsImmediately(exchange, market);
                             
                             return (
@@ -2291,21 +2285,58 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                 <div className="flex items-center gap-3 p-4">
                                   <div
                                     className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                                      marketSettings.enabled ? "bg-emerald-500" : "bg-zinc-600"
+                                      exchangeFilters[sectionKey] ? "bg-emerald-500" : "bg-zinc-600"
                                     }`}
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      setExchangeSettings({
-                                        ...exchangeSettings,
-                                        [exchange]: {
-                                          ...settings,
-                                          [market]: { ...marketSettings, enabled: !marketSettings.enabled },
-                                        },
+                                      const newExchangeState = !exchangeFilters[sectionKey];
+                                      
+                                      // Обновляем состояние биржи
+                                      setExchangeFilters({
+                                        ...exchangeFilters,
+                                        [sectionKey]: newExchangeState,
                                       });
+                                      
+                                      // Автоматически включаем/отключаем все торговые пары этой биржи
+                                      const updatedPairSettings = { ...pairSettings };
+                                      const prefix = `${exchange}_${market}_`;
+                                      
+                                      // Обновляем все существующие пары для этой биржи и рынка
+                                      Object.keys(pairSettings).forEach((pairKey) => {
+                                        if (pairKey.startsWith(prefix)) {
+                                          const currentPairData = pairSettings[pairKey];
+                                          updatedPairSettings[pairKey] = {
+                                            ...currentPairData,
+                                            enabled: newExchangeState,
+                                          };
+                                        }
+                                      });
+                                      
+                                      // Также обновляем стандартные пары, если их еще нет в pairSettings
+                                      const pairs = getPairsForExchange(exchange, market);
+                                      pairs.forEach((pair) => {
+                                        const pairKey = `${exchange}_${market}_${pair}`;
+                                        if (!(pairKey in updatedPairSettings)) {
+                                          updatedPairSettings[pairKey] = {
+                                            enabled: newExchangeState,
+                                            delta: "",
+                                            volume: "",
+                                            shadow: "",
+                                          };
+                                        } else {
+                                          // Обновляем enabled для существующих пар
+                                          updatedPairSettings[pairKey] = {
+                                            ...updatedPairSettings[pairKey],
+                                            enabled: newExchangeState,
+                                          };
+                                        }
+                                      });
+                                      
+                                      setPairSettings(updatedPairSettings);
                                     }}
                                   >
                                     <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                                      marketSettings.enabled ? "translate-x-6" : "translate-x-1"
+                                      exchangeFilters[sectionKey] ? "translate-x-6" : "translate-x-1"
                                     }`} />
                                   </div>
                                   <span
@@ -2360,12 +2391,12 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                 const pairKey = `${exchange}_${market}_${pair}`;
                                                 const savedPairData = pairSettings[pairKey];
                                                 
-                                                // Используем общие настройки рынка, если для пары не заданы индивидуальные
+                                                // Используем пустые значения по умолчанию, если для пары не заданы индивидуальные настройки
                                                 const pairData = savedPairData || {
                                                   enabled: false,
-                                                  delta: marketSettings.delta || "",
-                                                  volume: marketSettings.volume || "",
-                                                  shadow: marketSettings.shadow || ""
+                                                  delta: "",
+                                                  volume: "",
+                                                  shadow: ""
                                                 };
                                                 
                                                 return (
@@ -2391,12 +2422,21 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                     <td className="py-2 px-3">
                                                       <input
                                                         type="number"
+                                                        min="0"
+                                                        step="any"
                                                         value={pairData.delta}
                                                         onChange={(e) => {
-                                                          setPairSettings({
-                                                            ...pairSettings,
-                                                            [pairKey]: { ...pairData, delta: e.target.value },
-                                                          });
+                                                          const value = e.target.value;
+                                                          // Не допускаем отрицательные значения
+                                                          if (value === "" || !value.startsWith("-")) {
+                                                            const numValue = value === "" ? "" : parseFloat(value);
+                                                            if (value === "" || (numValue >= 0 && !isNaN(numValue))) {
+                                                              setPairSettings({
+                                                                ...pairSettings,
+                                                                [pairKey]: { ...pairData, delta: value },
+                                                              });
+                                                            }
+                                                          }
                                                         }}
                                                         className="w-20 px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                                         placeholder=""
@@ -2405,12 +2445,21 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                     <td className="py-2 px-3">
                                                       <input
                                                         type="number"
+                                                        min="0"
+                                                        step="any"
                                                         value={pairData.volume}
                                                         onChange={(e) => {
-                                                          setPairSettings({
-                                                            ...pairSettings,
-                                                            [pairKey]: { ...pairData, volume: e.target.value },
-                                                          });
+                                                          const value = e.target.value;
+                                                          // Не допускаем отрицательные значения
+                                                          if (value === "" || !value.startsWith("-")) {
+                                                            const numValue = value === "" ? "" : parseFloat(value);
+                                                            if (value === "" || (numValue >= 0 && !isNaN(numValue))) {
+                                                              setPairSettings({
+                                                                ...pairSettings,
+                                                                [pairKey]: { ...pairData, volume: value },
+                                                              });
+                                                            }
+                                                          }
                                                         }}
                                                         className="w-24 px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                                         placeholder=""
@@ -2419,12 +2468,21 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                                     <td className="py-2 px-3">
                                                       <input
                                                         type="number"
+                                                        min="0"
+                                                        step="any"
                                                         value={pairData.shadow}
                                                         onChange={(e) => {
-                                                          setPairSettings({
-                                                            ...pairSettings,
-                                                            [pairKey]: { ...pairData, shadow: e.target.value },
-                                                          });
+                                                          const value = e.target.value;
+                                                          // Не допускаем отрицательные значения
+                                                          if (value === "" || !value.startsWith("-")) {
+                                                            const numValue = value === "" ? "" : parseFloat(value);
+                                                            if (value === "" || (numValue >= 0 && !isNaN(numValue))) {
+                                                              setPairSettings({
+                                                                ...pairSettings,
+                                                                [pairKey]: { ...pairData, shadow: value },
+                                                              });
+                                                            }
+                                                          }
                                                         }}
                                                         className="w-20 px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                                         placeholder=""
@@ -2440,68 +2498,118 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                     ) : (
                                       // Для остальных бирж - показываем настройки для одной пары
                                       <div className="bg-zinc-900 rounded-lg p-4 space-y-4">
-                                        {quoteCurrency && (
-                                          <div className="flex items-center justify-between mb-4">
-                                            <div>
-                                              <h3 className="text-white font-medium">{quoteCurrency}</h3>
-                                              <p className="text-sm text-zinc-400">Торговая пара</p>
-                                            </div>
-                                          </div>
-                                        )}
-                                        
-                                        <div className="grid grid-cols-3 gap-3">
-                                          <div>
-                                            <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
-                                            <input
-                                              type="number"
-                                              value={marketSettings.delta}
-                                              onChange={(e) => {
-                                                setExchangeSettings({
-                                                  ...exchangeSettings,
-                                                  [exchange]: {
-                                                    ...settings,
-                                                    [market]: { ...marketSettings, delta: e.target.value },
-                                                  },
-                                                });
-                                              }}
-                                              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
-                                            <input
-                                              type="number"
-                                              value={marketSettings.volume}
-                                              onChange={(e) => {
-                                                setExchangeSettings({
-                                                  ...exchangeSettings,
-                                                  [exchange]: {
-                                                    ...settings,
-                                                    [market]: { ...marketSettings, volume: e.target.value },
-                                                  },
-                                                });
-                                              }}
-                                              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
-                                            <input
-                                              type="number"
-                                              value={marketSettings.shadow}
-                                              onChange={(e) => {
-                                                setExchangeSettings({
-                                                  ...exchangeSettings,
-                                                  [exchange]: {
-                                                    ...settings,
-                                                    [market]: { ...marketSettings, shadow: e.target.value },
-                                                  },
-                                                });
-                                              }}
-                                              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                            />
-                                          </div>
-                                        </div>
+                                        {(() => {
+                                          const quoteCurrency = getQuoteCurrencyForExchange(exchange, market);
+                                          const pairKey = `${exchange}_${market}_${quoteCurrency}`;
+                                          const savedPairData = pairSettings[pairKey];
+                                          
+                                          const pairData = savedPairData || {
+                                            enabled: false,
+                                            delta: "",
+                                            volume: "",
+                                            shadow: ""
+                                          };
+                                          
+                                          return (
+                                            <>
+                                              {quoteCurrency && (
+                                                <div className="flex items-center justify-between mb-4">
+                                                  <div>
+                                                    <h3 className="text-white font-medium">{quoteCurrency}</h3>
+                                                    <p className="text-sm text-zinc-400">Торговая пара</p>
+                                                  </div>
+                                                  <div
+                                                    className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
+                                                      pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
+                                                    }`}
+                                                    onClick={() => {
+                                                      setPairSettings({
+                                                        ...pairSettings,
+                                                        [pairKey]: { ...pairData, enabled: !pairData.enabled },
+                                                      });
+                                                    }}
+                                                  >
+                                                    <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
+                                                      pairData.enabled ? "translate-x-6" : "translate-x-1"
+                                                    }`} />
+                                                  </div>
+                                                </div>
+                                              )}
+                                              
+                                              <div className="grid grid-cols-3 gap-3">
+                                                <div>
+                                                  <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="any"
+                                                    value={pairData.delta}
+                                                    onChange={(e) => {
+                                                      const value = e.target.value;
+                                                      // Не допускаем отрицательные значения
+                                                      if (value === "" || !value.startsWith("-")) {
+                                                        const numValue = value === "" ? "" : parseFloat(value);
+                                                        if (value === "" || (numValue >= 0 && !isNaN(numValue))) {
+                                                          setPairSettings({
+                                                            ...pairSettings,
+                                                            [pairKey]: { ...pairData, delta: value },
+                                                          });
+                                                        }
+                                                      }
+                                                    }}
+                                                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                  />
+                                                </div>
+                                                <div>
+                                                  <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="any"
+                                                    value={pairData.volume}
+                                                    onChange={(e) => {
+                                                      const value = e.target.value;
+                                                      // Не допускаем отрицательные значения
+                                                      if (value === "" || !value.startsWith("-")) {
+                                                        const numValue = value === "" ? "" : parseFloat(value);
+                                                        if (value === "" || (numValue >= 0 && !isNaN(numValue))) {
+                                                          setPairSettings({
+                                                            ...pairSettings,
+                                                            [pairKey]: { ...pairData, volume: value },
+                                                          });
+                                                        }
+                                                      }
+                                                    }}
+                                                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                  />
+                                                </div>
+                                                <div>
+                                                  <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="any"
+                                                    value={pairData.shadow}
+                                                    onChange={(e) => {
+                                                      const value = e.target.value;
+                                                      // Не допускаем отрицательные значения
+                                                      if (value === "" || !value.startsWith("-")) {
+                                                        const numValue = value === "" ? "" : parseFloat(value);
+                                                        if (value === "" || (numValue >= 0 && !isNaN(numValue))) {
+                                                          setPairSettings({
+                                                            ...pairSettings,
+                                                            [pairKey]: { ...pairData, shadow: value },
+                                                          });
+                                                        }
+                                                      }
+                                                    }}
+                                                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                  />
+                                                </div>
+                                              </div>
+                                            </>
+                                          );
+                                        })()}
                                       </div>
                                     )}
                                   </div>
@@ -2546,36 +2654,10 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                               ? "Hyperliquid"
                               : exchangeKey.charAt(0).toUpperCase() + exchangeKey.slice(1);
 
-                          const settings = exchangeSettings[exchangeKey];
-                          if (!settings) return;
-
+                          // Индивидуальные настройки пар
                           (["spot", "futures"] as const).forEach((marketKey) => {
-                            const marketSettings = marketKey === "spot" ? settings.spot : settings.futures;
                             const marketLabel = marketKey === "spot" ? "Spot" : "Futures";
 
-                            // Проверяем, есть ли дополнительные пары для данного рынка
-                            const hasAdditionalPairs = Object.keys(pairSettings).some(
-                              (key) => key.startsWith(`${exchangeKey}_${marketKey}_`) && pairSettings[key]?.enabled
-                            );
-
-                            // Общий фильтр по рынку (все пары)
-                            if (marketSettings.enabled && !hasAdditionalPairs) {
-                              const id = `${exchangeKey}_${marketKey}_ALL`;
-                              rows.push({
-                                id,
-                                exchangeKey,
-                                exchangeLabel: exchangeDisplayName,
-                                marketKey,
-                                marketLabel,
-                                pair: null,
-                                delta: marketSettings.delta || "0",
-                                volume: marketSettings.volume || "0",
-                                shadow: marketSettings.shadow || "0",
-                                enabled: marketSettings.enabled,
-                              });
-                            }
-
-                            // Индивидуальные настройки пар
                             Object.entries(pairSettings).forEach(([key, pairData]) => {
                               if (!key.startsWith(`${exchangeKey}_${marketKey}_`)) return;
                               if (!pairData?.enabled) return;
@@ -2623,38 +2705,18 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                         }
 
                         const handleToggleStatus = async (row: ActiveFilterRow) => {
-                          if (row.pair === null) {
-                            const settings = exchangeSettings[row.exchangeKey];
-                            if (!settings) return;
-                            const marketSettings =
-                              row.marketKey === "spot" ? settings.spot : settings.futures;
+                          const pairKey = `${row.exchangeKey}_${row.marketKey}_${row.pair}`;
+                          const currentPair = pairSettings[pairKey] || {
+                            enabled: false,
+                            delta: row.delta,
+                            volume: row.volume,
+                            shadow: row.shadow,
+                          };
 
-                            const updatedMarket = {
-                              ...marketSettings,
-                              enabled: !marketSettings.enabled,
-                            };
-
-                            setExchangeSettings({
-                              ...exchangeSettings,
-                              [row.exchangeKey]: {
-                                ...settings,
-                                [row.marketKey]: updatedMarket,
-                              },
-                            });
-                          } else {
-                            const pairKey = `${row.exchangeKey}_${row.marketKey}_${row.pair}`;
-                            const currentPair = pairSettings[pairKey] || {
-                              enabled: false,
-                              delta: row.delta,
-                              volume: row.volume,
-                              shadow: row.shadow,
-                            };
-
-                            setPairSettings({
-                              ...pairSettings,
-                              [pairKey]: { ...currentPair, enabled: !currentPair.enabled },
-                            });
-                          }
+                          setPairSettings({
+                            ...pairSettings,
+                            [pairKey]: { ...currentPair, enabled: !currentPair.enabled },
+                          });
 
                           await saveAllSettings();
                         };
@@ -2666,77 +2728,37 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                           previousValue: string
                         ) => {
                           // Обновляем состояние
-                          if (row.pair === null) {
-                            const settings = exchangeSettings[row.exchangeKey];
-                            if (!settings) return;
-                            const marketSettings =
-                              row.marketKey === "spot" ? settings.spot : settings.futures;
+                          const pairKey = `${row.exchangeKey}_${row.marketKey}_${row.pair}`;
+                          const currentPair = pairSettings[pairKey] || {
+                            enabled: true,
+                            delta: row.delta,
+                            volume: row.volume,
+                            shadow: row.shadow,
+                          };
 
-                            const updatedMarket = {
-                              ...marketSettings,
+                          setPairSettings({
+                            ...pairSettings,
+                            [pairKey]: {
+                              ...currentPair,
                               [field]: newValue,
-                            };
-
-                            setExchangeSettings({
-                              ...exchangeSettings,
-                              [row.exchangeKey]: {
-                                ...settings,
-                                [row.marketKey]: updatedMarket,
-                              },
-                            });
-                          } else {
-                            const pairKey = `${row.exchangeKey}_${row.marketKey}_${row.pair}`;
-                            const currentPair = pairSettings[pairKey] || {
-                              enabled: true,
-                              delta: row.delta,
-                              volume: row.volume,
-                              shadow: row.shadow,
-                            };
-
-                            setPairSettings({
-                              ...pairSettings,
-                              [pairKey]: {
-                                ...currentPair,
-                                [field]: newValue,
-                              },
-                            });
-                          }
+                            },
+                          });
 
                           const success = await saveAllSettings();
 
                           if (!success) {
                             // Откатываем в случае ошибки
-                            if (row.pair === null) {
-                              const settings = exchangeSettings[row.exchangeKey];
-                              if (!settings) return;
-                              const marketSettings =
-                                row.marketKey === "spot" ? settings.spot : settings.futures;
+                            const pairKey = `${row.exchangeKey}_${row.marketKey}_${row.pair}`;
+                            const currentPair = pairSettings[pairKey];
+                            if (!currentPair) return;
 
-                              const revertedMarket = {
-                                ...marketSettings,
+                            setPairSettings({
+                              ...pairSettings,
+                              [pairKey]: {
+                                ...currentPair,
                                 [field]: previousValue,
-                              };
-
-                              setExchangeSettings({
-                                ...exchangeSettings,
-                                [row.exchangeKey]: {
-                                  ...settings,
-                                  [row.marketKey]: revertedMarket,
-                                },
-                              });
-                            } else {
-                              const pairKey = `${row.exchangeKey}_${row.marketKey}_${row.pair}`;
-                              const currentPair = pairSettings[pairKey];
-                              if (!currentPair) return;
-
-                              setPairSettings({
-                                ...pairSettings,
-                                [pairKey]: {
-                                  ...currentPair,
-                                  [field]: previousValue,
-                                },
-                              });
-                            }
+                              },
+                            });
                           } else {
                             // Подсветка строки при успешном сохранении
                             if (highlightTimeoutRef.current) {
@@ -2848,16 +2870,25 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                           editingCell.field === "delta" ? (
                                             <input
                                               type="number"
+                                              min="0"
+                                              step="any"
                                               className="w-full px-2 py-1 bg-zinc-800 border border-emerald-500 rounded text-right text-xs md:text-sm text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                               value={editingCell.value}
                                               autoFocus
-                                              onChange={(e) =>
-                                                setEditingCell((prev) =>
-                                                  prev
-                                                    ? { ...prev, value: e.target.value }
-                                                    : prev
-                                                )
-                                              }
+                                              onChange={(e) => {
+                                                const value = e.target.value;
+                                                // Не допускаем отрицательные значения
+                                                if (value === "" || !value.startsWith("-")) {
+                                                  const numValue = value === "" ? "" : parseFloat(value);
+                                                  if (value === "" || (numValue >= 0 && !isNaN(numValue))) {
+                                                    setEditingCell((prev) =>
+                                                      prev
+                                                        ? { ...prev, value: value }
+                                                        : prev
+                                                    );
+                                                  }
+                                                }
+                                              }}
                                               onBlur={() => handleCellBlur(row, "delta")}
                                               onKeyDown={(e) => handleCellKeyDown(e, row, "delta")}
                                             />
@@ -2881,16 +2912,25 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                           editingCell.field === "volume" ? (
                                             <input
                                               type="number"
+                                              min="0"
+                                              step="any"
                                               className="w-full px-2 py-1 bg-zinc-800 border border-emerald-500 rounded text-right text-xs md:text-sm text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                               value={editingCell.value}
                                               autoFocus
-                                              onChange={(e) =>
-                                                setEditingCell((prev) =>
-                                                  prev
-                                                    ? { ...prev, value: e.target.value }
-                                                    : prev
-                                                )
-                                              }
+                                              onChange={(e) => {
+                                                const value = e.target.value;
+                                                // Не допускаем отрицательные значения
+                                                if (value === "" || !value.startsWith("-")) {
+                                                  const numValue = value === "" ? "" : parseFloat(value);
+                                                  if (value === "" || (numValue >= 0 && !isNaN(numValue))) {
+                                                    setEditingCell((prev) =>
+                                                      prev
+                                                        ? { ...prev, value: value }
+                                                        : prev
+                                                    );
+                                                  }
+                                                }
+                                              }}
                                               onBlur={() => handleCellBlur(row, "volume")}
                                               onKeyDown={(e) => handleCellKeyDown(e, row, "volume")}
                                             />
@@ -2914,16 +2954,25 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                                           editingCell.field === "shadow" ? (
                                             <input
                                               type="number"
+                                              min="0"
+                                              step="any"
                                               className="w-full px-2 py-1 bg-zinc-800 border border-emerald-500 rounded text-right text-xs md:text-sm text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                               value={editingCell.value}
                                               autoFocus
-                                              onChange={(e) =>
-                                                setEditingCell((prev) =>
-                                                  prev
-                                                    ? { ...prev, value: e.target.value }
-                                                    : prev
-                                                )
-                                              }
+                                              onChange={(e) => {
+                                                const value = e.target.value;
+                                                // Не допускаем отрицательные значения
+                                                if (value === "" || !value.startsWith("-")) {
+                                                  const numValue = value === "" ? "" : parseFloat(value);
+                                                  if (value === "" || (numValue >= 0 && !isNaN(numValue))) {
+                                                    setEditingCell((prev) =>
+                                                      prev
+                                                        ? { ...prev, value: value }
+                                                        : prev
+                                                    );
+                                                  }
+                                                }
+                                              }}
                                               onBlur={() => handleCellBlur(row, "shadow")}
                                               onKeyDown={(e) => handleCellKeyDown(e, row, "shadow")}
                                             />
@@ -3051,7 +3100,7 @@ export default function SettingsTab({ userLogin }: SettingsTabProps) {
                               </span>
                               <svg className="w-4 h-4 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <title>
-                                  Если включено: стратегия будет использовать фильтры дельты, объёма и тени из ваших глобальных настроек прострела (exchangeSettings/pairSettings/thresholds).
+                                  Если включено: стратегия будет использовать фильтры дельты, объёма и тени из ваших настроек пары (pairSettings).
                                   Если выключено: вы должны указать значения для дельты, объёма и тени в условиях стратегии.
                                 </title>
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />

@@ -7,6 +7,7 @@ import asyncio
 from typing import Awaitable, Callable, List
 import aiohttp
 import json
+import socket
 from config import AppConfig
 from core.candle_builder import CandleBuilder, Candle
 from core.logger import get_logger
@@ -176,6 +177,17 @@ async def _ws_consumer_with_batches(
             
         except asyncio.CancelledError:
             break
+        except (ConnectionResetError, ConnectionError) as e:
+            # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
+            error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
+            logger.warning(f"Bybit {connection_id}: {error_msg}")
+            await on_error({
+                "exchange": "bybit",
+                "market": market,
+                "connection_id": connection_id,
+                "error": error_msg,
+                "error_type": "connection_reset",
+            })
         except Exception as e:
             logger.error(f"Ошибка в WS соединении {connection_id}: {e}")
             await on_error({
@@ -225,7 +237,11 @@ async def start(
     # Получаем callback для подсчёта трейдов, если передан
     on_trade = kwargs.get('on_trade', None)
     # Создаём CandleBuilder
-    _builder = CandleBuilder(maxlen=config.memory_max_candles_per_symbol, on_trade=on_trade)
+    _builder = CandleBuilder(
+        maxlen=config.memory_max_candles_per_symbol,
+        on_trade=on_trade,
+        on_candle=on_candle,
+    )
     
     # Создаём сессию с SSL сертификатами из certifi
     ssl_context = ssl.create_default_context(cafile=certifi.where())

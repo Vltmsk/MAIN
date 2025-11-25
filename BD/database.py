@@ -374,6 +374,18 @@ class Database:
                 )
             """)
             
+            # Таблица настроек метрик производительности для пользователей
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_metrics_settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL UNIQUE,
+                    enable_metrics BOOLEAN NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+            """)
+            
             # Создаём индексы через отдельные команды (для совместимости)
             # SQLite не поддерживает INDEX в CREATE TABLE напрямую, создаём отдельно
 
@@ -410,6 +422,8 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_exchange_blacklists_exchange_market_symbol ON exchange_blacklists(exchange, market, symbol)",
                 # Индексы для symbol_aliases
                 "CREATE INDEX IF NOT EXISTS idx_symbol_aliases_exchange_market_symbol ON symbol_aliases(exchange, market, original_symbol)",
+                # Индексы для user_metrics_settings
+                "CREATE INDEX IF NOT EXISTS idx_user_metrics_settings_user_id ON user_metrics_settings(user_id)",
             ]
             
             for index_sql in indexes:
@@ -716,14 +730,7 @@ class Database:
                             logger.warning(f"[Database] Found user with different case: '{found_user['user']}' (requested: '{user}')")
                             return found_user
                 
-                # Проверяем, не является ли параметр 'login' (это может быть ошибка маршрутизации)
-                if user.lower() == 'login':
-                    logger.error(
-                        f"[Database] Обнаружена попытка получить пользователя с именем 'login'. "
-                        f"Это может быть ошибка маршрутизации. Доступные пользователи: {all_users}"
-                    )
-                else:
-                    logger.warning(f"[Database] User '{user}' not found. Available users: {all_users}")
+                logger.warning(f"[Database] User '{user}' not found. Available users: {all_users}")
                 return None
         except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
             logger.error(f"Ошибка БД при получении пользователя {user}: {e}", exc_info=True)
@@ -979,6 +986,109 @@ class Database:
             logger.error(f"Ошибка БД при обновлении временной зоны пользователя {user}: {e}", exc_info=True)
             await conn.rollback()
             raise
+        finally:
+            await conn.close()
+    
+    # ==================== РАБОТА С НАСТРОЙКАМИ МЕТРИК ====================
+    
+    async def get_user_metrics_enabled(self, user_id: int) -> bool:
+        """
+        Проверяет, включены ли метрики производительности для пользователя.
+        
+        Args:
+            user_id: ID пользователя
+            
+        Returns:
+            bool: True если метрики включены, False если выключены или настройка не найдена
+        """
+        conn = await self._get_connection()
+        try:
+            async with conn.execute(
+                "SELECT enable_metrics FROM user_metrics_settings WHERE user_id = ?",
+                (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row:
+                return bool(row[0])
+            # Если настройка не найдена, возвращаем False (по умолчанию метрики выключены)
+            return False
+        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
+            logger.error(f"Ошибка БД при получении настройки метрик для пользователя {user_id}: {e}", exc_info=True)
+            return False
+        except aiosqlite.Error as e:
+            logger.error(f"Ошибка БД при получении настройки метрик для пользователя {user_id}: {e}", exc_info=True)
+            return False
+        finally:
+            await conn.close()
+    
+    async def set_user_metrics_enabled(self, user_id: int, enabled: bool) -> bool:
+        """
+        Устанавливает настройку метрик производительности для пользователя.
+        
+        Args:
+            user_id: ID пользователя
+            enabled: Включены ли метрики (True/False)
+            
+        Returns:
+            bool: True если настройка успешно установлена, False в случае ошибки
+        """
+        conn = await self._get_connection()
+        try:
+            # Проверяем, существует ли пользователь
+            async with conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)) as cursor:
+                if not await cursor.fetchone():
+                    logger.warning(f"Попытка установить настройку метрик для несуществующего пользователя с ID {user_id}")
+                    return False
+            
+            # Используем INSERT OR REPLACE для создания или обновления записи
+            await conn.execute("""
+                INSERT OR REPLACE INTO user_metrics_settings (user_id, enable_metrics, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            """, (user_id, 1 if enabled else 0))
+            await conn.commit()
+            logger.info(f"Настройка метрик для пользователя {user_id} установлена: enable_metrics={enabled}")
+            return True
+        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
+            logger.error(f"Ошибка БД при установке настройки метрик для пользователя {user_id}: {e}", exc_info=True)
+            await conn.rollback()
+            return False
+        except aiosqlite.Error as e:
+            logger.error(f"Ошибка БД при установке настройки метрик для пользователя {user_id}: {e}", exc_info=True)
+            await conn.rollback()
+            return False
+        finally:
+            await conn.close()
+    
+    async def get_all_users_metrics_settings(self) -> List[Dict[str, Any]]:
+        """
+        Получает все настройки метрик для всех пользователей.
+        Возвращает всех пользователей, даже если у них нет записи в user_metrics_settings
+        (в этом случае enable_metrics будет False).
+        
+        Returns:
+            List[Dict]: Список словарей с настройками метрик, включая информацию о пользователе
+        """
+        conn = await self._get_connection()
+        try:
+            async with conn.execute("""
+                SELECT 
+                    u.id as user_id,
+                    u.user as user_name,
+                    COALESCE(ums.enable_metrics, 0) as enable_metrics,
+                    ums.created_at,
+                    ums.updated_at
+                FROM users u
+                LEFT JOIN user_metrics_settings ums ON u.id = ums.user_id
+                ORDER BY u.user
+            """) as cursor:
+                rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
+            logger.error(f"Ошибка БД при получении всех настроек метрик: {e}", exc_info=True)
+            return []
+        except aiosqlite.Error as e:
+            logger.error(f"Ошибка БД при получении всех настроек метрик: {e}", exc_info=True)
+            return []
         finally:
             await conn.close()
     

@@ -6,8 +6,12 @@ echo   Crypto Spikes Web Interface
 echo ========================================
 echo.
 
+REM Получаем путь к директории скрипта и переходим в корень проекта
+cd /d "%~dp0\.."
+set "WEB_DIR=%CD%\WEB"
+
 echo [1/2] Проверка зависимостей...
-cd WEB
+cd /d "%WEB_DIR%"
 if not exist "node_modules" (
     echo Установка зависимостей Node.js...
     call npm install
@@ -34,6 +38,8 @@ echo   Для остановки нажмите Ctrl+C
 echo ========================================
 echo.
 
+REM Убеждаемся, что мы в правильной директории
+cd /d "%WEB_DIR%"
 call npm run dev
 
 pause

@@ -1,0 +1,102 @@
+"""
+Модуль для замера производительности этапов обработки сигналов
+"""
+import time
+from typing import Dict, Optional
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class PerformanceTimer:
+    """
+    Класс для замера времени выполнения ключевых этапов обработки сигнала.
+    Используется для мониторинга производительности для пользователя "Влад".
+    """
+    
+    def __init__(self, user_name: str):
+        """
+        Инициализация таймера.
+        
+        Args:
+            user_name: Имя пользователя (для логирования)
+        """
+        self.user_name = user_name
+        self.metrics: Dict[str, float] = {}
+        self._start_times: Dict[str, float] = {}
+    
+    def start(self, stage: str) -> None:
+        """
+        Начинает замер времени для этапа.
+        
+        Args:
+            stage: Название этапа (например, "detect", "db.save", "tg.send")
+        """
+        self._start_times[stage] = time.perf_counter()
+    
+    def end(self, stage: str) -> None:
+        """
+        Завершает замер времени для этапа и сохраняет результат.
+        
+        Args:
+            stage: Название этапа
+        """
+        if stage in self._start_times:
+            duration = time.perf_counter() - self._start_times[stage]
+            self.metrics[f"{stage}_duration"] = duration * 1000  # в миллисекундах
+            del self._start_times[stage]
+        else:
+            logger.warning(f"Попытка завершить этап '{stage}', который не был начат для {self.user_name}")
+    
+    def get_summary(self) -> str:
+        """
+        Форматирует метрики для отправки в Telegram.
+        
+        Returns:
+            Отформатированная строка с метриками
+        """
+        if not self.metrics:
+            return "Нет метрик для отображения"
+        
+        lines = ["📊 <b>Метрики производительности</b>\n"]
+        lines.append(f"👤 Пользователь: {self.user_name}\n")
+        
+        # Порядок этапов для отображения
+        stage_order = [
+            "detect",
+            "db.get_user",
+            "db.save",
+            "format.message",
+            "chart.fetch",
+            "chart.render",
+            "tg.send",
+        ]
+        
+        # Добавляем метрики в порядке этапов
+        for stage in stage_order:
+            key = f"{stage}_duration"
+            if key in self.metrics:
+                duration_ms = self.metrics[key]
+                lines.append(f"⏱ {stage}: {duration_ms:.2f}мс")
+        
+        # Добавляем остальные метрики (если есть)
+        for key, value in sorted(self.metrics.items()):
+            if key not in [f"{s}_duration" for s in stage_order]:
+                lines.append(f"⏱ {key}: {value:.2f}мс")
+        
+        # Вычисляем общее время
+        total_duration = sum(v for k, v in self.metrics.items() if k.endswith("_duration"))
+        if total_duration > 0:
+            lines.append(f"\n<b>Общее время: {total_duration:.2f}мс</b>")
+        
+        return "\n".join(lines)
+    
+    def has_metrics(self) -> bool:
+        """
+        Проверяет, есть ли собранные метрики.
+        
+        Returns:
+            True если есть метрики, False иначе
+        """
+        return len(self.metrics) > 0
+

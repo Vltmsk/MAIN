@@ -2,6 +2,7 @@
 Конфигурация приложения
 """
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -39,6 +40,10 @@ class AppConfig:
     
     # Переключатели бирж
     exchanges: ExchangeToggle = None
+    
+    # Chat ID для отправки ошибок админу (опционально)
+    admin_chat_id: Optional[str] = "-1003153484874"
+    admin_bot_token: Optional[str] = "8483602131:AAFcLzlVcGxUfe0vyr-b78-Y1rjrdjyhX-I"
     
     def __post_init__(self):
         """Инициализация после создания dataclass"""

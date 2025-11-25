@@ -11,6 +11,7 @@ from typing import Awaitable, Callable, List
 from collections import deque
 import aiohttp
 import json
+import socket
 from config import AppConfig
 from core.candle_builder import Candle, CandleBuilder
 from core.logger import get_logger
@@ -554,6 +555,18 @@ async def _ws_connection_worker(
                 "status_code": status,
             })
             _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+        except (ConnectionResetError, ConnectionError) as e:
+            # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
+            error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
+            logger.warning(f"Hyperliquid {connection_id}: {error_msg}")
+            await on_error({
+                "exchange": "hyperliquid",
+                "market": market,
+                "connection_id": connection_id,
+                "error": error_msg,
+                "error_type": "connection_reset",
+            })
+            _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
         except aiohttp.ClientError as e:
             # Обработка других ошибок клиента (сеть, таймауты и т.д.)
             error_msg = f"Client error: {e}"
@@ -629,7 +642,11 @@ async def start(
     # Получаем callback для подсчёта трейдов, если передан
     on_trade = kwargs.get('on_trade', None)
     # Создаём CandleBuilder
-    _builder = CandleBuilder(maxlen=config.memory_max_candles_per_symbol, on_trade=on_trade)
+    _builder = CandleBuilder(
+        maxlen=config.memory_max_candles_per_symbol,
+        on_trade=on_trade,
+        on_candle=on_candle,
+    )
     
     # Проверяем конфигурацию и получаем символы только для включенных рынков
     fetch_spot = config.exchanges.hyperliquid_spot

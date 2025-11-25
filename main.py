@@ -14,6 +14,7 @@ from core.metrics import Metrics
 from core.spike_detector import spike_detector
 from core.telegram_notifier import telegram_notifier
 from core.health_monitor import health_monitor
+from core.performance_timer import PerformanceTimer
 from BD.database import db
 from config import config
 
@@ -116,6 +117,42 @@ class ExchangeManager:
 exchange_manager = ExchangeManager()
 
 
+async def _send_performance_metrics_to_user(
+    timer: PerformanceTimer, 
+    candle: Candle,
+    tg_token: str,
+    chat_id: str
+) -> None:
+    """
+    Отправляет метрики производительности пользователю сразу после сигнала.
+    
+    Args:
+        timer: Таймер с собранными метриками
+        candle: Свеча для контекста
+        tg_token: Telegram Bot Token пользователя
+        chat_id: Telegram Chat ID пользователя
+    """
+    if not tg_token or not chat_id:
+        logger.debug(f"Пользователь {timer.user_name} не настроил Telegram, пропускаем отправку метрик")
+        return
+    
+    try:
+        summary = timer.get_summary()
+        
+        success, error = await telegram_notifier.send_message(
+            token=tg_token,
+            chat_id=chat_id,
+            message=summary,
+        )
+        
+        if success:
+            logger.debug(f"Метрики производительности отправлены пользователю {timer.user_name}")
+        else:
+            logger.warning(f"Не удалось отправить метрики пользователю {timer.user_name}: {error}")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке метрик пользователю {timer.user_name}: {e}", exc_info=True)
+
+
 async def _send_chart_async(
     candle: Candle,
     delta: float,
@@ -124,7 +161,8 @@ async def _send_chart_async(
     token: str,
     chat_id: str,
     user_name: str,
-    message_text: str
+    message_text: str,
+    timer: Optional[PerformanceTimer] = None,
 ) -> None:
     """
     Асинхронно отправляет график прострела пользователю с текстом как подписью
@@ -138,6 +176,7 @@ async def _send_chart_async(
         chat_id: Telegram Chat ID
         user_name: Имя пользователя (для логирования)
         message_text: Текст сообщения для подписи к графику
+        timer: Таймер для замера производительности (опционально)
     """
     try:
         logger.debug(
@@ -148,11 +187,13 @@ async def _send_chart_async(
         
         # Генерируем график
         logger.debug(f"Генерация графика для {user_name} ({candle.exchange} {candle.symbol})...")
+        # Передаём таймер для замера времени генерации графика
         chart_bytes = await chart_generator.generate_chart(
             candle=candle,
             delta=delta,
             volume_usdt=volume_usdt,
-            wick_pct=wick_pct
+            wick_pct=wick_pct,
+            timer=timer
         )
         
         if chart_bytes:
@@ -169,12 +210,19 @@ async def _send_chart_async(
             
             # Отправляем график с текстом как подписью
             logger.debug(f"Отправка графика с текстом в Telegram для {user_name}...")
+            if timer:
+                timer.start("tg.send")
             success, error_msg = await telegram_notifier.send_photo(
                 token=token,
                 chat_id=chat_id,
                 photo_bytes=chart_bytes,
                 caption=caption_text
             )
+            if timer:
+                timer.end("tg.send")
+                # Отправляем метрики пользователю сразу после сигнала
+                if timer.has_metrics():
+                    await _send_performance_metrics_to_user(timer, candle, token, chat_id)
             
             if success:
                 logger.info(
@@ -214,6 +262,7 @@ async def _send_chart_async(
                     target_chat_id=chat_id,
                     user_name=user_name,
                     message_text=fallback_message,
+                    timer=timer,
                 )
         else:
             # Fallback: отправляем текстовое сообщение при ошибке генерации графика
@@ -234,6 +283,7 @@ async def _send_chart_async(
                 target_chat_id=chat_id,
                 user_name=user_name,
                 message_text=fallback_message_text,
+                timer=timer,
             )
     except Exception as e:
         logger.warning(
@@ -255,17 +305,25 @@ async def _send_text_message_async(
     target_chat_id: str,
     user_name: str,
     message_text: str,
+    timer: Optional[PerformanceTimer] = None,
 ) -> None:
     """
     Асинхронно отправляет текстовое уведомление пользователю в Telegram.
     Использует ретраи внутри TelegramNotifier и не блокирует основной поток детектора.
     """
     try:
+        if timer:
+            timer.start("tg.send")
         msg_success, msg_error = await telegram_notifier.send_message(
             token=tg_token,
             chat_id=target_chat_id,
             message=message_text,
         )
+        if timer:
+            timer.end("tg.send")
+            # Отправляем метрики пользователю сразу после сигнала
+            if timer.has_metrics():
+                await _send_performance_metrics_to_user(timer, candle, tg_token, target_chat_id)
         if msg_success:
             logger.info(
                 f"Уведомление отправлено пользователю {user_name} "
@@ -334,14 +392,30 @@ async def on_candle(candle: Candle) -> None:
                 detected_by_strategy = spike_info.get("detected_by_strategy", False)
                 matched_strategies = spike_info.get("matched_strategies", [])
                 
+                # Проверяем, включены ли метрики производительности для пользователя
+                enable_metrics = await db.get_user_metrics_enabled(user_id)
+                
+                # Создаём таймер для пользователей с включенными метриками
+                # Примечание: детект выполняется для всех пользователей одновременно,
+                # поэтому замер времени детекта для отдельного пользователя не имеет смысла
+                timer: Optional[PerformanceTimer] = None
+                if enable_metrics:
+                    timer = PerformanceTimer(user_name)
+                
                 # Получаем информацию о пользователе для отправки уведомления
+                if timer:
+                    timer.start("db.get_user")
                 user_data = await db.get_user_by_id(user_id)
+                if timer:
+                    timer.end("db.get_user")
                 if not user_data:
                     logger.warning(f"Пользователь с ID {user_id} не найден")
                     continue
                 
                 # Сохраняем стрелу в БД с флагами детектирования
                 try:
+                    if timer:
+                        timer.start("db.save")
                     # Формируем метаинформацию с флагами детектирования
                     meta_info = {
                         "detected_by_spike_settings": detected_by_spike_settings,
@@ -361,6 +435,8 @@ async def on_candle(candle: Candle) -> None:
                         meta=meta_json,
                         user_id=user_id
                     )
+                    if timer:
+                        timer.end("db.save")
                     logger.debug(f"Стрела сохранена в БД (ID: {alert_id}) для пользователя {user_name} (spike_settings={detected_by_spike_settings}, strategy={detected_by_strategy})")
                 except aiosqlite.IntegrityError as e:
                     logger.warning(f"Стрела уже существует в БД для пользователя {user_name}: {e}")
@@ -437,18 +513,6 @@ async def on_candle(candle: Candle) -> None:
                                     should_send_chart = pair_config.get("sendChart", False)
                                     logger.debug(f"Найдены индивидуальные настройки пары: sendChart={should_send_chart}")
                             
-                            # Если не найдено в индивидуальных настройках, проверяем глобальные настройки биржи/рынка
-                            if not should_send_chart:
-                                exchange_settings = options.get("exchangeSettings", {})
-                                logger.debug(f"Проверка глобальных настроек: exchange_key={exchange_key}, exists={exchange_key in exchange_settings}")
-                                if exchange_key in exchange_settings:
-                                    exchange_config = exchange_settings[exchange_key]
-                                    logger.debug(f"Настройки биржи {exchange_key}: {list(exchange_config.keys())}")
-                                    market_config = exchange_config.get(market_key, {})
-                                    logger.debug(f"Настройки рынка {market_key}: {market_config}")
-                                    should_send_chart = market_config.get("sendChart", False)
-                                    logger.debug(f"Глобальные настройки: sendChart={should_send_chart}")
-                            
                             logger.info(
                                 f"Результат проверки отправки графика для {user_name} "
                                 f"({candle.exchange} {candle.market} {candle.symbol}): should_send_chart={should_send_chart}"
@@ -470,6 +534,8 @@ async def on_candle(candle: Candle) -> None:
                                 
                                 if strategy_template:
                                     # Форматируем сообщение из шаблона стратегии
+                                    if timer:
+                                        timer.start("format.message")
                                     strategy_messages = await telegram_notifier.format_spike_messages(
                                         candle=candle,
                                         delta=delta,
@@ -482,9 +548,13 @@ async def on_candle(candle: Candle) -> None:
                                         timezone=user_timezone,
                                         default_chat_id=strategy_chat_id
                                     )
+                                    if timer:
+                                        timer.end("format.message")
                                     messages.extend(strategy_messages)
                         else:
                             # Используем дефолтный шаблон (messageTemplate)
+                            if timer:
+                                timer.start("format.message")
                             messages = await telegram_notifier.format_spike_messages(
                                 candle=candle,
                                 delta=delta,
@@ -497,6 +567,8 @@ async def on_candle(candle: Candle) -> None:
                                 timezone=user_timezone,
                                 default_chat_id=chat_id
                             )
+                            if timer:
+                                timer.end("format.message")
                         
                         # Если график включен, отправляем график с текстом как подписью
                         if should_send_chart:
@@ -519,7 +591,8 @@ async def on_candle(candle: Candle) -> None:
                                         token=tg_token,
                                         chat_id=target_chat_id,
                                         user_name=user_name,
-                                        message_text=message_text
+                                        message_text=message_text,
+                                        timer=timer  # Передаём таймер для замера времени
                                     ))
                         else:
                             # Если график не включен, отправляем только текстовые сообщения
@@ -543,6 +616,7 @@ async def on_candle(candle: Candle) -> None:
                                         target_chat_id=target_chat_id,
                                         user_name=user_name,
                                         message_text=message_text,
+                                        timer=timer  # Передаём таймер для замера времени
                                     )
                                 )
                     except (asyncio.TimeoutError, aiohttp.ClientError) as e:
@@ -572,6 +646,9 @@ async def on_candle(candle: Candle) -> None:
                         )
                 else:
                     logger.debug(f"Пользователь {user_name} не настроил Telegram (нет token или chat_id)")
+                
+                # Примечание: Метрики отправляются внутри функций _send_chart_async и _send_text_message_async
+                # после завершения всех операций, чтобы получить точные данные о времени выполнения
     
     except Exception as e:
         logger.error(f"Ошибка при детекте стрел: {e}", exc_info=True, extra={

@@ -10,6 +10,7 @@ import sys
 from typing import Awaitable, Callable, List
 import websockets
 import json
+import socket
 from config import AppConfig
 from core.candle_builder import Candle, CandleBuilder
 from core.logger import get_logger
@@ -283,6 +284,17 @@ async def _ws_connection_worker(
         
         except asyncio.CancelledError:
             break
+        except (ConnectionResetError, ConnectionError) as e:
+            # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
+            error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
+            logger.warning(f"Gate {connection_id}: {error_msg}")
+            await on_error({
+                "exchange": "gate",
+                "market": market,
+                "connection_id": connection_id,
+                "error": error_msg,
+                "error_type": "connection_reset",
+            })
         except Exception as e:
             logger.error(f"Ошибка в WS соединении Gate {connection_id}: {e}")
             await on_error({
@@ -308,7 +320,11 @@ async def start(
     
     # Получаем callback для подсчёта трейдов, если передан
     on_trade = kwargs.get('on_trade', None)
-    _builder = CandleBuilder(maxlen=config.memory_max_candles_per_symbol, on_trade=on_trade)
+    _builder = CandleBuilder(
+        maxlen=config.memory_max_candles_per_symbol,
+        on_trade=on_trade,
+        on_candle=on_candle,
+    )
     
     _tasks = []
     

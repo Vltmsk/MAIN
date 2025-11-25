@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import MetricsAdminTab from "./MetricsAdminTab";
 
 // Типы
 type AdminUser = {
@@ -54,16 +55,6 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
     hyperliquid: true,
   });
   const [adminExpandedExchanges, setAdminExpandedExchanges] = useState<Record<string, boolean>>({});
-  const [adminExchangeSettings, setAdminExchangeSettings] = useState<Record<string, {
-    spot: { enabled: boolean; delta: string; volume: string; shadow: string };
-    futures: { enabled: boolean; delta: string; volume: string; shadow: string };
-  }>>({
-    binance: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
-    bybit: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
-    bitget: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
-    gate: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
-    hyperliquid: { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } },
-  });
   const [adminPairSettings, setAdminPairSettings] = useState<Record<string, { enabled: boolean; delta: string; volume: string; shadow: string }>>({});
   const [adminOpenPairs, setAdminOpenPairs] = useState<Record<string, boolean>>({});
 
@@ -206,10 +197,9 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
             return hasNonZeroNumericValue(input);
           };
 
-          const exchangeSettingsActive = hasNonZeroThresholds(opts?.exchangeSettings);
           const pairSettingsActive = hasNonZeroThresholds(opts?.pairSettings);
 
-          settingsActive = Boolean(exchangeSettingsActive || pairSettingsActive);
+          settingsActive = Boolean(pairSettingsActive);
         }
       } catch (e) {
         console.warn("[AdminTab] Невозможно распарсить options_json", e);
@@ -253,9 +243,7 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
           tg_token: "",
           chat_id: "",
           options_json: JSON.stringify({
-            thresholds: { delta_pct: 0, volume_usdt: 0, wick_pct: 0 },
             exchanges: { gate: false, binance: false, bitget: false, bybit: false, hyperliquid: false },
-            exchangeSettings: {},
             pairSettings: {},
           }),
         }),
@@ -290,8 +278,8 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
         let optionsJson = data.options_json || "{}";
         if (!optionsJson || optionsJson.trim() === "") {
           optionsJson = JSON.stringify({
-            thresholds: { delta_pct: 1.0, volume_usdt: 10000.0, wick_pct: 50.0 },
             exchanges: { gate: true, binance: true, bitget: true, bybit: true, hyperliquid: true },
+            pairSettings: {},
           });
         }
         setSelectedUserSettings({
@@ -321,30 +309,6 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
               bitget: true,
               gate: true,
               hyperliquid: true,
-            });
-          }
-          
-          // Загружаем настройки бирж (Spot/Futures)
-          if (options.exchangeSettings) {
-            setAdminExchangeSettings((prevSettings) => {
-              const merged = { ...prevSettings };
-              Object.keys(options.exchangeSettings).forEach((exchange) => {
-                if (merged[exchange]) {
-                  merged[exchange] = {
-                    spot: {
-                      ...merged[exchange].spot,
-                      ...options.exchangeSettings[exchange].spot,
-                    },
-                    futures: {
-                      ...merged[exchange].futures,
-                      ...options.exchangeSettings[exchange].futures,
-                    },
-                  };
-                } else {
-                  merged[exchange] = options.exchangeSettings[exchange];
-                }
-              });
-              return merged;
             });
           }
           
@@ -472,60 +436,6 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
     }
   };
 
-  // Админ панель - копирование значений порогов во все биржи
-  const copyThresholdsToAllExchanges = () => {
-    if (!selectedUserSettings) return;
-    
-    try {
-      // Получаем актуальные значения порогов из текущих настроек
-      const options = selectedUserSettings.options_json 
-        ? JSON.parse(selectedUserSettings.options_json) 
-        : {};
-      const thresholds = options.thresholds || { delta_pct: 1.0, volume_usdt: 10000.0, wick_pct: 50.0 };
-      
-      // Получаем значения из порогов (конвертируем в строки для совместимости с полями)
-      const deltaValue = String(thresholds.delta_pct || 0);
-      const volumeValue = String(thresholds.volume_usdt || 0);
-      const shadowValue = String(thresholds.wick_pct || 0);
-      
-      // Список всех бирж
-      const exchanges = ["binance", "bybit", "bitget", "gate", "hyperliquid"];
-      
-      // Обновляем настройки для всех бирж, сохраняя состояние enabled
-      const updatedSettings = { ...adminExchangeSettings };
-      
-      exchanges.forEach((exchange) => {
-        const currentSettings = adminExchangeSettings[exchange] || {
-          spot: { enabled: true, delta: "0", volume: "0", shadow: "0" },
-          futures: { enabled: true, delta: "0", volume: "0", shadow: "0" }
-        };
-        
-        updatedSettings[exchange] = {
-          spot: {
-            ...currentSettings.spot,
-            delta: deltaValue,
-            volume: volumeValue,
-            shadow: shadowValue,
-          },
-          futures: {
-            ...currentSettings.futures,
-            delta: deltaValue,
-            volume: volumeValue,
-            shadow: shadowValue,
-          },
-        };
-      });
-      
-      setAdminExchangeSettings(updatedSettings);
-      setAdminMsg("Значения порогов скопированы во все биржи (Spot и Futures)!");
-      setTimeout(() => setAdminMsg(""), 3000);
-    } catch (e) {
-      console.error("Ошибка при копировании значений:", e);
-      setAdminMsg("Ошибка при копировании значений");
-      setTimeout(() => setAdminMsg(""), 3000);
-    }
-  };
-
   // Админ панель - сохранение настроек пользователя
   const saveAdminUserSettings = async () => {
     if (!selectedUserSettings) return;
@@ -542,15 +452,7 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
       
       // Обновляем настройки из состояний редактирования
       options.exchanges = adminExchangeFilters;
-      options.exchangeSettings = adminExchangeSettings;
       options.pairSettings = adminPairSettings;
-      
-      // Сохраняем пороги детектора (они уже должны быть в options из selectedUserSettings.options_json,
-      // но убеждаемся, что они есть, иначе используем дефолтные значения)
-      if (!options.thresholds) {
-        options.thresholds = { delta_pct: 1.0, volume_usdt: 10000.0, wick_pct: 50.0 };
-      }
-      // Пороги уже обновлены через onChange в UI и находятся в options из selectedUserSettings.options_json
       
       const optionsJson = JSON.stringify(options);
 
@@ -853,6 +755,9 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
         )}
       </div>
 
+      {/* Управление метриками производительности */}
+      <MetricsAdminTab isAdmin={isAdmin} />
+
       {/* Панель настроек выбранного пользователя */}
       {selectedUserSettings && (
         <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
@@ -922,9 +827,7 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
               
               <div className="space-y-2">
                 {["binance", "bybit", "bitget", "gate", "hyperliquid"].map((exchange) => {
-                  const isExpanded = adminExpandedExchanges[exchange] || false;
                   const exchangeDisplayName = exchange === "gate" ? "Gate" : exchange === "hyperliquid" ? "Hyperliquid" : exchange.charAt(0).toUpperCase() + exchange.slice(1);
-                  const settings = adminExchangeSettings[exchange] || { spot: { enabled: true, delta: "0", volume: "0", shadow: "0" }, futures: { enabled: true, delta: "0", volume: "0", shadow: "0" } };
                   
                   return (
                     <div key={exchange} className="bg-zinc-800 rounded-lg overflow-hidden">
@@ -946,499 +849,219 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
                             adminExchangeFilters[exchange] ? "translate-x-6" : "translate-x-1"
                           }`} />
                         </div>
-                        <span
-                          className="flex-1 text-white font-medium cursor-pointer hover:text-zinc-300 transition-colors"
-                          onClick={() => {
-                            setAdminExpandedExchanges({
-                              ...adminExpandedExchanges,
-                              [exchange]: !isExpanded,
-                            });
-                          }}
-                        >
+                        <span className="flex-1 text-white font-medium">
                           {exchangeDisplayName}
                         </span>
-                        <svg
-                          className={`w-5 h-5 text-zinc-400 transition-transform cursor-pointer ${
-                            isExpanded ? "rotate-180" : ""
-                          }`}
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                          onClick={() => {
-                            setAdminExpandedExchanges({
-                              ...adminExpandedExchanges,
-                              [exchange]: !isExpanded,
-                            });
-                          }}
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
                       </div>
                       
-                      {/* Раскрывающийся контент */}
-                      {isExpanded && (
-                        <div className="px-4 pb-4 space-y-4">
-                          {/* Spot секция */}
-                          <div className="bg-zinc-900 rounded-lg p-4 space-y-4">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <h3 className="text-white font-medium">Spot</h3>
-                                <p className="text-sm text-zinc-400">Все торговые пары</p>
-                              </div>
-                              <div
-                                className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                                  settings.spot.enabled ? "bg-emerald-500" : "bg-zinc-600"
-                                }`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setAdminExchangeSettings({
-                                    ...adminExchangeSettings,
-                                    [exchange]: {
-                                      ...settings,
-                                      spot: { ...settings.spot, enabled: !settings.spot.enabled },
-                                    },
-                                  });
-                                }}
-                              >
-                                <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                                  settings.spot.enabled ? "translate-x-6" : "translate-x-1"
-                                }`} />
-                              </div>
-                            </div>
-                            
-                            {!adminOpenPairs[`${exchange}_spot`] && (
-                              <div className="grid grid-cols-3 gap-3">
-                                <div>
-                                  <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
-                                  <input
-                                    type="number"
-                                    value={settings.spot.delta}
-                                    onChange={(e) => {
-                                      setAdminExchangeSettings({
-                                        ...adminExchangeSettings,
-                                        [exchange]: {
-                                          ...settings,
-                                          spot: { ...settings.spot, delta: e.target.value },
-                                        },
-                                      });
-                                    }}
-                                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
-                                  <input
-                                    type="number"
-                                    value={settings.spot.volume}
-                                    onChange={(e) => {
-                                      setAdminExchangeSettings({
-                                        ...adminExchangeSettings,
-                                        [exchange]: {
-                                          ...settings,
-                                          spot: { ...settings.spot, volume: e.target.value },
-                                        },
-                                      });
-                                    }}
-                                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
-                                  <input
-                                    type="number"
-                                    value={settings.spot.shadow}
-                                    onChange={(e) => {
-                                      setAdminExchangeSettings({
-                                        ...adminExchangeSettings,
-                                        [exchange]: {
-                                          ...settings,
-                                          spot: { ...settings.spot, shadow: e.target.value },
-                                        },
-                                      });
-                                    }}
-                                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                  />
-                                </div>
-                              </div>
-                            )}
-                            
-                            {/* Дополнительные пары для Spot (если есть) */}
-                            {((exchange === "binance" || exchange === "bybit") && adminOpenPairs[`${exchange}_spot`]) && (
-                              <div className="bg-zinc-950 rounded-lg p-4 border border-zinc-700">
-                                <h4 className="text-sm font-medium text-white mb-4">Дополнительные пары для Spot</h4>
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                                  {getPairsForExchange(exchange, "spot").map((pair) => {
-                                    const pairKey = `${exchange}_spot_${pair}`;
-                                    const savedPairData = adminPairSettings[pairKey];
-                                    const spotSettings = settings.spot;
-                                    
-                                    const pairData = savedPairData || {
-                                      enabled: true,
-                                      delta: spotSettings.delta || "0",
-                                      volume: spotSettings.volume || "0",
-                                      shadow: spotSettings.shadow || "0"
-                                    };
-                                    
-                                    return (
-                                      <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2">
-                                        <div className="flex items-center justify-between mb-2">
-                                          <div className="text-white font-medium text-sm">{pair}</div>
-                                          <div
-                                            className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${
-                                              pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
-                                            }`}
-                                            onClick={() => {
-                                              setAdminPairSettings({
-                                                ...adminPairSettings,
-                                                [pairKey]: { ...pairData, enabled: !pairData.enabled },
-                                              });
-                                            }}
-                                          >
-                                            <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
-                                              pairData.enabled ? "translate-x-5" : "translate-x-1"
-                                            }`} />
-                                          </div>
-                                        </div>
-                                        <div>
-                                          <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
-                                          <input
-                                            type="number"
-                                            value={pairData.delta}
-                                            onChange={(e) => {
-                                              setAdminPairSettings({
-                                                ...adminPairSettings,
-                                                [pairKey]: { ...pairData, delta: e.target.value },
-                                              });
-                                            }}
-                                            className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                          />
-                                        </div>
-                                        <div>
-                                          <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
-                                          <input
-                                            type="number"
-                                            value={pairData.volume}
-                                            onChange={(e) => {
-                                              setAdminPairSettings({
-                                                ...adminPairSettings,
-                                                [pairKey]: { ...pairData, volume: e.target.value },
-                                              });
-                                            }}
-                                            className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                          />
-                                        </div>
-                                        <div>
-                                          <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
-                                          <input
-                                            type="number"
-                                            value={pairData.shadow}
-                                            onChange={(e) => {
-                                              setAdminPairSettings({
-                                                ...adminPairSettings,
-                                                [pairKey]: { ...pairData, shadow: e.target.value },
-                                              });
-                                            }}
-                                            className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                          />
-                                        </div>
+                      {/* Кнопки для открытия дополнительных пар */}
+                      {((exchange === "binance" || exchange === "bybit") && (
+                        <div className="px-4 pb-4 space-y-2">
+                          <button
+                            onClick={() => {
+                              const key = `${exchange}_spot`;
+                              setAdminOpenPairs({
+                                ...adminOpenPairs,
+                                [key]: !adminOpenPairs[key],
+                              });
+                            }}
+                            className="w-full px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg transition-colors"
+                          >
+                            {adminOpenPairs[`${exchange}_spot`] ? "Скрыть пары Spot" : "Открыть дополнительные пары Spot"}
+                          </button>
+                          {exchange === "binance" && (
+                            <button
+                              onClick={() => {
+                                const key = `${exchange}_futures`;
+                                setAdminOpenPairs({
+                                  ...adminOpenPairs,
+                                  [key]: !adminOpenPairs[key],
+                                });
+                              }}
+                              className="w-full px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg transition-colors"
+                            >
+                              {adminOpenPairs[`${exchange}_futures`] ? "Скрыть пары Futures" : "Открыть дополнительные пары Futures"}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      
+                      {/* Дополнительные пары для Spot (если открыты) */}
+                      {((exchange === "binance" || exchange === "bybit") && adminOpenPairs[`${exchange}_spot`]) && (
+                        <div className="px-4 pb-4">
+                          <div className="bg-zinc-950 rounded-lg p-4 border border-zinc-700">
+                            <h4 className="text-sm font-medium text-white mb-4">Дополнительные пары для Spot</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                              {getPairsForExchange(exchange, "spot").map((pair) => {
+                                const pairKey = `${exchange}_spot_${pair}`;
+                                const savedPairData = adminPairSettings[pairKey];
+                                
+                                const pairData = savedPairData || {
+                                  enabled: true,
+                                  delta: "0",
+                                  volume: "0",
+                                  shadow: "0"
+                                };
+                                
+                                return (
+                                  <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <div className="text-white font-medium text-sm">{pair}</div>
+                                      <div
+                                        className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${
+                                          pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
+                                        }`}
+                                        onClick={() => {
+                                          setAdminPairSettings({
+                                            ...adminPairSettings,
+                                            [pairKey]: { ...pairData, enabled: !pairData.enabled },
+                                          });
+                                        }}
+                                      >
+                                        <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
+                                          pairData.enabled ? "translate-x-5" : "translate-x-1"
+                                        }`} />
                                       </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-                            
-                            {(exchange === "binance" || exchange === "bybit") && (
-                              <div className="flex justify-end">
-                                <button
-                                  onClick={() => {
-                                    const key = `${exchange}_spot`;
-                                    setAdminOpenPairs({
-                                      ...adminOpenPairs,
-                                      [key]: !adminOpenPairs[key],
-                                    });
-                                  }}
-                                  className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg transition-colors"
-                                >
-                                  {adminOpenPairs[`${exchange}_spot`] ? "Скрыть пары" : "Открыть дополнительные пары"}
-                                </button>
-                              </div>
-                            )}
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
+                                      <input
+                                        type="number"
+                                        value={pairData.delta}
+                                        onChange={(e) => {
+                                          setAdminPairSettings({
+                                            ...adminPairSettings,
+                                            [pairKey]: { ...pairData, delta: e.target.value },
+                                          });
+                                        }}
+                                        className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
+                                      <input
+                                        type="number"
+                                        value={pairData.volume}
+                                        onChange={(e) => {
+                                          setAdminPairSettings({
+                                            ...adminPairSettings,
+                                            [pairKey]: { ...pairData, volume: e.target.value },
+                                          });
+                                        }}
+                                        className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
+                                      <input
+                                        type="number"
+                                        value={pairData.shadow}
+                                        onChange={(e) => {
+                                          setAdminPairSettings({
+                                            ...adminPairSettings,
+                                            [pairKey]: { ...pairData, shadow: e.target.value },
+                                          });
+                                        }}
+                                        className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                      />
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
-                          
-                          {/* Futures секция */}
-                          <div className="bg-zinc-900 rounded-lg p-4 space-y-4">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <h3 className="text-white font-medium">Futures</h3>
-                                <p className="text-sm text-zinc-400">Все торговые пары</p>
-                              </div>
-                              <div
-                                className={`w-12 h-6 rounded-full transition-colors cursor-pointer ${
-                                  settings.futures.enabled ? "bg-emerald-500" : "bg-zinc-600"
-                                }`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setAdminExchangeSettings({
-                                    ...adminExchangeSettings,
-                                    [exchange]: {
-                                      ...settings,
-                                      futures: { ...settings.futures, enabled: !settings.futures.enabled },
-                                    },
-                                  });
-                                }}
-                              >
-                                <div className={`w-5 h-5 bg-white rounded-full transition-transform mt-0.5 ${
-                                  settings.futures.enabled ? "translate-x-6" : "translate-x-1"
-                                }`} />
-                              </div>
-                            </div>
-                            
-                            {!adminOpenPairs[`${exchange}_futures`] && (
-                              <div className="grid grid-cols-3 gap-3">
-                                <div>
-                                  <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
-                                  <input
-                                    type="number"
-                                    value={settings.futures.delta}
-                                    onChange={(e) => {
-                                      setAdminExchangeSettings({
-                                        ...adminExchangeSettings,
-                                        [exchange]: {
-                                          ...settings,
-                                          futures: { ...settings.futures, delta: e.target.value },
-                                        },
-                                      });
-                                    }}
-                                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
-                                  <input
-                                    type="number"
-                                    value={settings.futures.volume}
-                                    onChange={(e) => {
-                                      setAdminExchangeSettings({
-                                        ...adminExchangeSettings,
-                                        [exchange]: {
-                                          ...settings,
-                                          futures: { ...settings.futures, volume: e.target.value },
-                                        },
-                                      });
-                                    }}
-                                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
-                                  <input
-                                    type="number"
-                                    value={settings.futures.shadow}
-                                    onChange={(e) => {
-                                      setAdminExchangeSettings({
-                                        ...adminExchangeSettings,
-                                        [exchange]: {
-                                          ...settings,
-                                          futures: { ...settings.futures, shadow: e.target.value },
-                                        },
-                                      });
-                                    }}
-                                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                  />
-                                </div>
-                              </div>
-                            )}
-                            
-                            {/* Дополнительные пары для Futures (если есть) */}
-                            {exchange === "binance" && adminOpenPairs[`${exchange}_futures`] && (
-                              <div className="bg-zinc-950 rounded-lg p-4 border border-zinc-700">
-                                <h4 className="text-sm font-medium text-white mb-4">Дополнительные пары для Futures</h4>
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                  {getPairsForExchange(exchange, "futures").map((pair) => {
-                                    const pairKey = `${exchange}_futures_${pair}`;
-                                    const savedPairData = adminPairSettings[pairKey];
-                                    const futuresSettings = settings.futures;
-                                    
-                                    const pairData = savedPairData || {
-                                      enabled: true,
-                                      delta: futuresSettings.delta || "0",
-                                      volume: futuresSettings.volume || "0",
-                                      shadow: futuresSettings.shadow || "0"
-                                    };
-                                    
-                                    return (
-                                      <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2">
-                                        <div className="flex items-center justify-between mb-2">
-                                          <div className="text-white font-medium text-sm">{pair}</div>
-                                          <div
-                                            className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${
-                                              pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
-                                            }`}
-                                            onClick={() => {
-                                              setAdminPairSettings({
-                                                ...adminPairSettings,
-                                                [pairKey]: { ...pairData, enabled: !pairData.enabled },
-                                              });
-                                            }}
-                                          >
-                                            <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
-                                              pairData.enabled ? "translate-x-5" : "translate-x-1"
-                                            }`} />
-                                          </div>
-                                        </div>
-                                        <div>
-                                          <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
-                                          <input
-                                            type="number"
-                                            value={pairData.delta}
-                                            onChange={(e) => {
-                                              setAdminPairSettings({
-                                                ...adminPairSettings,
-                                                [pairKey]: { ...pairData, delta: e.target.value },
-                                              });
-                                            }}
-                                            className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                          />
-                                        </div>
-                                        <div>
-                                          <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
-                                          <input
-                                            type="number"
-                                            value={pairData.volume}
-                                            onChange={(e) => {
-                                              setAdminPairSettings({
-                                                ...adminPairSettings,
-                                                [pairKey]: { ...pairData, volume: e.target.value },
-                                              });
-                                            }}
-                                            className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                          />
-                                        </div>
-                                        <div>
-                                          <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
-                                          <input
-                                            type="number"
-                                            value={pairData.shadow}
-                                            onChange={(e) => {
-                                              setAdminPairSettings({
-                                                ...adminPairSettings,
-                                                [pairKey]: { ...pairData, shadow: e.target.value },
-                                              });
-                                            }}
-                                            className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                          />
-                                        </div>
+                        </div>
+                      )}
+                      
+                      {/* Дополнительные пары для Futures (если открыты) */}
+                      {exchange === "binance" && adminOpenPairs[`${exchange}_futures`] && (
+                        <div className="px-4 pb-4">
+                          <div className="bg-zinc-950 rounded-lg p-4 border border-zinc-700">
+                            <h4 className="text-sm font-medium text-white mb-4">Дополнительные пары для Futures</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                              {getPairsForExchange(exchange, "futures").map((pair) => {
+                                const pairKey = `${exchange}_futures_${pair}`;
+                                const savedPairData = adminPairSettings[pairKey];
+                                
+                                const pairData = savedPairData || {
+                                  enabled: true,
+                                  delta: "0",
+                                  volume: "0",
+                                  shadow: "0"
+                                };
+                                
+                                return (
+                                  <div key={pair} className="bg-zinc-800 rounded-lg p-3 space-y-2">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <div className="text-white font-medium text-sm">{pair}</div>
+                                      <div
+                                        className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${
+                                          pairData.enabled ? "bg-emerald-500" : "bg-zinc-600"
+                                        }`}
+                                        onClick={() => {
+                                          setAdminPairSettings({
+                                            ...adminPairSettings,
+                                            [pairKey]: { ...pairData, enabled: !pairData.enabled },
+                                          });
+                                        }}
+                                      >
+                                        <div className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
+                                          pairData.enabled ? "translate-x-5" : "translate-x-1"
+                                        }`} />
                                       </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-                            
-                            {exchange === "binance" && (
-                              <div className="flex justify-end">
-                                <button
-                                  onClick={() => {
-                                    const key = `${exchange}_futures`;
-                                    setAdminOpenPairs({
-                                      ...adminOpenPairs,
-                                      [key]: !adminOpenPairs[key],
-                                    });
-                                  }}
-                                  className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium rounded-lg transition-colors"
-                                >
-                                  {adminOpenPairs[`${exchange}_futures`] ? "Скрыть пары" : "Открыть дополнительные пары"}
-                                </button>
-                              </div>
-                            )}
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs text-zinc-400 mb-1">Дельта %</label>
+                                      <input
+                                        type="number"
+                                        value={pairData.delta}
+                                        onChange={(e) => {
+                                          setAdminPairSettings({
+                                            ...adminPairSettings,
+                                            [pairKey]: { ...pairData, delta: e.target.value },
+                                          });
+                                        }}
+                                        className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs text-zinc-400 mb-1">Объём USDT</label>
+                                      <input
+                                        type="number"
+                                        value={pairData.volume}
+                                        onChange={(e) => {
+                                          setAdminPairSettings({
+                                            ...adminPairSettings,
+                                            [pairKey]: { ...pairData, volume: e.target.value },
+                                          });
+                                        }}
+                                        className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
+                                      <input
+                                        type="number"
+                                        value={pairData.shadow}
+                                        onChange={(e) => {
+                                          setAdminPairSettings({
+                                            ...adminPairSettings,
+                                            [pairKey]: { ...pairData, shadow: e.target.value },
+                                          });
+                                        }}
+                                        className="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                      />
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
                         </div>
                       )}
                     </div>
                   );
                 })}
-              </div>
-            </div>
-
-            {/* Пороги детектора */}
-            <div className="border-t border-zinc-700 pt-4">
-              <h3 className="text-lg font-semibold text-white mb-3">Пороги детектора</h3>
-              {(() => {
-                try {
-                  const options = selectedUserSettings.options_json 
-                    ? JSON.parse(selectedUserSettings.options_json) 
-                    : {};
-                  const thresholds = options.thresholds || { delta_pct: 1.0, volume_usdt: 10000.0, wick_pct: 50.0 };
-                  return (
-                      <div className="grid md:grid-cols-3 gap-4">
-                        <div>
-                          <label className="block text-sm text-zinc-400 mb-1">Дельта %</label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            value={thresholds.delta_pct || 0}
-                            onChange={(e) => {
-                              const newThresholds = { ...thresholds, delta_pct: Number(e.target.value) || 0 };
-                              const newOptions = { ...options, thresholds: newThresholds };
-                              setSelectedUserSettings({
-                                ...selectedUserSettings,
-                                options_json: JSON.stringify(newOptions),
-                              });
-                            }}
-                            className="w-full px-4 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm text-zinc-400 mb-1">Объём USDT</label>
-                          <input
-                            type="number"
-                            step="1000"
-                            value={thresholds.volume_usdt || 0}
-                            onChange={(e) => {
-                              const newThresholds = { ...thresholds, volume_usdt: Number(e.target.value) || 0 };
-                              const newOptions = { ...options, thresholds: newThresholds };
-                              setSelectedUserSettings({
-                                ...selectedUserSettings,
-                                options_json: JSON.stringify(newOptions),
-                              });
-                            }}
-                            className="w-full px-4 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm text-zinc-400 mb-1">Тень %</label>
-                          <input
-                            type="number"
-                            step="1"
-                            value={thresholds.wick_pct || 0}
-                            onChange={(e) => {
-                              const newThresholds = { ...thresholds, wick_pct: Number(e.target.value) || 0 };
-                              const newOptions = { ...options, thresholds: newThresholds };
-                              setSelectedUserSettings({
-                                ...selectedUserSettings,
-                                options_json: JSON.stringify(newOptions),
-                              });
-                            }}
-                            className="w-full px-4 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-                      </div>
-                  );
-                } catch (e) {
-                  return <p className="text-zinc-500 text-sm">Ошибка парсинга настроек</p>;
-                }
-              })()}
-              
-              {/* Кнопка для копирования значений во все биржи */}
-              <div className="mt-4">
-                <button
-                  onClick={copyThresholdsToAllExchanges}
-                  className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
-                  title="Скопировать значения порогов (Дельта %, Объём USDT, Тень %) из общих фильтров во все биржи (Spot и Futures)"
-                >
-                  Вставить значения во все биржи
-                </button>
               </div>
             </div>
 

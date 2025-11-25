@@ -8,7 +8,7 @@ import ssl
 import certifi
 import sys
 import os
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 from io import BytesIO
 import matplotlib
 matplotlib.use('Agg')  # Используем backend без GUI
@@ -483,7 +483,8 @@ class ChartGenerator:
         spike_ratio: Optional[float] = None,
         duration: Optional[float] = None,
         strategy: Optional[str] = None,
-        score: Optional[float] = None
+        score: Optional[float] = None,
+        timer: Optional[Any] = None  # PerformanceTimer для замера времени
     ) -> Optional[bytes]:
         """
         Генерирует тиковый график прострела
@@ -522,6 +523,8 @@ class ChartGenerator:
             end_time_ms = detection_time_ms + 1000  # До конца секунды детекта включительно (ts_ms + 1000ms)
             
             # Получаем историю сделок
+            if timer:
+                timer.start("chart.fetch")
             trades = await ChartGenerator._fetch_trades(
                 candle.exchange,
                 candle.symbol,
@@ -529,6 +532,8 @@ class ChartGenerator:
                 start_time_ms,
                 end_time_ms
             )
+            if timer:
+                timer.end("chart.fetch")
             
             if not trades:
                 logger.warning(f"Не удалось получить сделки для графика: {candle.exchange} {candle.market} {candle.symbol}")
@@ -581,6 +586,8 @@ class ChartGenerator:
             price_percentages = [((price - base_price) / base_price) * 100 for price in prices]
             
             # Создаем график
+            if timer:
+                timer.start("chart.render")
             fig, ax = plt.subplots(figsize=(19.2, 10.8), dpi=100)  # 1920x1080 пикселей
             
             # Рисуем scatter plot с точками сделок (в процентах)
@@ -677,6 +684,9 @@ class ChartGenerator:
             
             # Сохраняем в кэш
             ChartGenerator._save_to_cache(cache_key, image_bytes)
+            
+            if timer:
+                timer.end("chart.render")
             
             logger.debug(f"График успешно сгенерирован: {candle.exchange} {candle.market} {candle.symbol}")
             return image_bytes

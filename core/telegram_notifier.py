@@ -57,6 +57,33 @@ class TelegramNotifier:
     TELEGRAM_PHOTO_API_URL = "https://api.telegram.org/bot{token}/sendPhoto"
     TELEGRAM_CUSTOM_EMOJI_API_URL = "https://api.telegram.org/bot{token}/getCustomEmojiStickers"
     
+    # Семафор для ограничения параллельных запросов к Telegram API
+    # Лимит Telegram Bot API: 30 сообщений в секунду
+    _rate_limit_semaphore: Optional[asyncio.Semaphore] = None
+    _semaphore_lock: Optional[asyncio.Lock] = None
+    
+    @classmethod
+    async def _get_semaphore(cls) -> asyncio.Semaphore:
+        """
+        Получает или создаёт семафор для rate limit Telegram API.
+        Использует блокировку для потокобезопасной инициализации.
+        
+        Returns:
+            asyncio.Semaphore: Семафор на 30 параллельных запросов
+        """
+        # Двойная проверка с блокировкой для потокобезопасности
+        if cls._rate_limit_semaphore is None:
+            if cls._semaphore_lock is None:
+                cls._semaphore_lock = asyncio.Lock()
+            
+            async with cls._semaphore_lock:
+                # Проверяем ещё раз после получения блокировки
+                if cls._rate_limit_semaphore is None:
+                    # 30 запросов в секунду = семафор на 30
+                    cls._rate_limit_semaphore = asyncio.Semaphore(30)
+        
+        return cls._rate_limit_semaphore
+    
     @staticmethod
     async def _get_custom_emoji_id(token: str, emoji_name: str = "up") -> Optional[str]:
         """
@@ -170,48 +197,50 @@ class TelegramNotifier:
         }
         
         last_error_msg = ""
+        semaphore = await TelegramNotifier._get_semaphore()
         
         for attempt in range(1, max_retries + 1):
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        url,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as response:
-                        if response.status == 200:
-                            logger.info(f"Сообщение успешно отправлено в Telegram (chat_id: {chat_id})")
-                            return True, ""
-                        
-                        # Получаем детали ошибки от Telegram API
-                        try:
-                            error_data = await response.json()
-                            error_description = error_data.get("description", "Unknown error")
-                            error_code = error_data.get("error_code", response.status)
-                            last_error_msg = f"Telegram API error {error_code}: {error_description}"
-                        except Exception:
-                            error_text = await response.text()
-                            last_error_msg = f"HTTP {response.status}: {error_text[:200]}"
+                async with semaphore:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            url,
+                            json=payload,
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as response:
+                            if response.status == 200:
+                                logger.info(f"Сообщение успешно отправлено в Telegram (chat_id: {chat_id})")
+                                return True, ""
+                            
+                            # Получаем детали ошибки от Telegram API
+                            try:
+                                error_data = await response.json()
+                                error_description = error_data.get("description", "Unknown error")
+                                error_code = error_data.get("error_code", response.status)
+                                last_error_msg = f"Telegram API error {error_code}: {error_description}"
+                            except Exception:
+                                error_text = await response.text()
+                                last_error_msg = f"HTTP {response.status}: {error_text[:200]}"
 
-                        # Логические ошибки (например, неверный chat_id, блокировка бота)
-                        log_extra = {
-                            "log_to_db": True,
-                            "error_type": "telegram_error",
-                            "market": "telegram",
-                            "symbol": chat_id,
-                        }
-                        # Для промежуточных попыток логируем как warning, финальную - как error
-                        if attempt < max_retries:
-                            logger.warning(
-                                f"Ошибка отправки в Telegram (попытка {attempt}/{max_retries}): {last_error_msg}",
-                                extra=log_extra,
-                            )
-                        else:
-                            logger.error(
-                                f"Ошибка отправки в Telegram после {attempt} попыток: {last_error_msg}",
-                                extra=log_extra,
-                            )
-                        return False, last_error_msg
+                            # Логические ошибки (например, неверный chat_id, блокировка бота)
+                            log_extra = {
+                                "log_to_db": True,
+                                "error_type": "telegram_error",
+                                "market": "telegram",
+                                "symbol": chat_id,
+                            }
+                            # Для промежуточных попыток логируем как warning, финальную - как error
+                            if attempt < max_retries:
+                                logger.warning(
+                                    f"Ошибка отправки в Telegram (попытка {attempt}/{max_retries}): {last_error_msg}",
+                                    extra=log_extra,
+                                )
+                            else:
+                                logger.error(
+                                    f"Ошибка отправки в Telegram после {attempt} попыток: {last_error_msg}",
+                                    extra=log_extra,
+                                )
+                            return False, last_error_msg
             except asyncio.TimeoutError:
                 last_error_msg = "Таймаут при подключении к Telegram API (проверьте интернет-соединение)"
                 # Таймауты считаем временными сетевыми ошибками
@@ -815,6 +844,7 @@ class TelegramNotifier:
         url = TelegramNotifier.TELEGRAM_PHOTO_API_URL.format(token=token)
         
         last_error_msg = ""
+        semaphore = await TelegramNotifier._get_semaphore()
         
         for attempt in range(1, max_retries + 1):
             # Формируем FormData внутри цикла, так как его нельзя переиспользовать
@@ -826,43 +856,44 @@ class TelegramNotifier:
                 form_data.add_field("parse_mode", "HTML")
             
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        url,
-                        data=form_data,
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as response:
-                        if response.status == 200:
-                            logger.info(f"Фото успешно отправлено в Telegram (chat_id: {chat_id})")
-                            return True, ""
-                        
-                        # Получаем детали ошибки от Telegram API
-                        try:
-                            error_data = await response.json()
-                            error_description = error_data.get("description", "Unknown error")
-                            error_code = error_data.get("error_code", response.status)
-                            last_error_msg = f"Telegram API error {error_code}: {error_description}"
-                        except Exception:
-                            error_text = await response.text()
-                            last_error_msg = f"HTTP {response.status}: {error_text[:200]}"
+                async with semaphore:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            url,
+                            data=form_data,
+                            timeout=aiohttp.ClientTimeout(total=30),
+                        ) as response:
+                            if response.status == 200:
+                                logger.info(f"Фото успешно отправлено в Telegram (chat_id: {chat_id})")
+                                return True, ""
+                            
+                            # Получаем детали ошибки от Telegram API
+                            try:
+                                error_data = await response.json()
+                                error_description = error_data.get("description", "Unknown error")
+                                error_code = error_data.get("error_code", response.status)
+                                last_error_msg = f"Telegram API error {error_code}: {error_description}"
+                            except Exception:
+                                error_text = await response.text()
+                                last_error_msg = f"HTTP {response.status}: {error_text[:200]}"
 
-                        log_extra = {
-                            "log_to_db": True,
-                            "error_type": "telegram_error",
-                            "market": "telegram",
-                            "symbol": chat_id,
-                        }
-                        if attempt < max_retries:
-                            logger.warning(
-                                f"Ошибка отправки фото в Telegram (попытка {attempt}/{max_retries}): {last_error_msg}",
-                                extra=log_extra,
-                            )
-                        else:
-                            logger.error(
-                                f"Ошибка отправки фото в Telegram после {attempt} попыток: {last_error_msg}",
-                                extra=log_extra,
-                            )
-                        return False, last_error_msg
+                            log_extra = {
+                                "log_to_db": True,
+                                "error_type": "telegram_error",
+                                "market": "telegram",
+                                "symbol": chat_id,
+                            }
+                            if attempt < max_retries:
+                                logger.warning(
+                                    f"Ошибка отправки фото в Telegram (попытка {attempt}/{max_retries}): {last_error_msg}",
+                                    extra=log_extra,
+                                )
+                            else:
+                                logger.error(
+                                    f"Ошибка отправки фото в Telegram после {attempt} попыток: {last_error_msg}",
+                                    extra=log_extra,
+                                )
+                            return False, last_error_msg
             except asyncio.TimeoutError:
                 last_error_msg = "Таймаут при подключении к Telegram API (проверьте интернет-соединение)"
                 log_extra = {

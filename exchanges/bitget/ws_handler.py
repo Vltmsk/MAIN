@@ -10,6 +10,7 @@ import random
 from typing import Awaitable, Callable, List
 import aiohttp
 import json
+import socket
 from config import AppConfig
 from core.candle_builder import Candle, CandleBuilder
 from core.logger import get_logger
@@ -309,6 +310,17 @@ async def _ws_batch_worker(
                 
         except asyncio.CancelledError:
             break
+        except (ConnectionResetError, ConnectionError) as e:
+            # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
+            error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
+            logger.warning(f"Bitget {market} batch-{batch_id}: {error_msg}")
+            await on_error({
+                "exchange": "bitget",
+                "market": market,
+                "connection_id": f"batch-{batch_id}",
+                "error": error_msg,
+                "error_type": "connection_reset",
+            })
         except Exception as e:
             # Если это была попытка реконнекта, ошибка уже залогирована через on_error выше
             # Не логируем повторно, просто переходим к следующей итерации
@@ -341,7 +353,11 @@ async def start(
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     connector = aiohttp.TCPConnector(ssl=ssl_context)
     _session = aiohttp.ClientSession(connector=connector)
-    _builder = CandleBuilder(maxlen=config.memory_max_candles_per_symbol, on_trade=on_trade)
+    _builder = CandleBuilder(
+        maxlen=config.memory_max_candles_per_symbol,
+        on_trade=on_trade,
+        on_candle=on_candle,
+    )
     
     # Проверяем конфигурацию и получаем символы только для включенных рынков
     fetch_spot = config.exchanges.bitget_spot

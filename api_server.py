@@ -428,7 +428,6 @@ async def register_user(request: Request, user: str, user_data: UserRegister):
         
         # Дефолтные настройки для нового пользователя: все биржи отключены, все значения пустые
         default_options = {
-            "thresholds": {},
             "exchanges": {
                 "gate": False,
                 "binance": False,
@@ -436,7 +435,6 @@ async def register_user(request: Request, user: str, user_data: UserRegister):
                 "bybit": False,
                 "hyperliquid": False,
             },
-            "exchangeSettings": {},
             "pairSettings": {}
         }
         
@@ -642,6 +640,20 @@ async def get_all_users():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==================== МЕТРИКИ ПРОИЗВОДИТЕЛЬНОСТИ ====================
+# ВАЖНО: Этот маршрут должен быть ПЕРЕД /api/users/{user}, иначе FastAPI будет интерпретировать "metrics" как имя пользователя
+
+@app.get("/api/users/metrics", response_model=dict)
+async def get_all_users_metrics():
+    """Получает все настройки метрик для всех пользователей"""
+    try:
+        settings = await db.get_all_users_metrics_settings()
+        return {"settings": settings}
+    except Exception as e:
+        logger.error(f"Ошибка при получении настроек метрик: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/users/{user}", response_model=Optional[UserResponse])
 async def get_user(user: str):
     """Получает пользователя по имени"""
@@ -806,6 +818,40 @@ async def test_telegram(user: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class MetricsUpdateRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/users/{user}/metrics", response_model=dict)
+async def update_user_metrics(user: str, request: MetricsUpdateRequest):
+    """Обновляет настройку метрик производительности для пользователя"""
+    try:
+        # Получаем пользователя по имени
+        user_data = await db.get_user(user)
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        user_id = user_data.get("id")
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User ID not found")
+        
+        # Обновляем настройку метрик
+        success = await db.set_user_metrics_enabled(user_id, request.enabled)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update metrics settings")
+        
+        return {
+            "message": f"Metrics settings updated for user {user}",
+            "user_id": user_id,
+            "enabled": request.enabled
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении настроек метрик для пользователя {user}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== СТРЕЛЫ (ALERTS) ====================
 
 @app.post("/api/alerts", response_model=dict)
@@ -967,28 +1013,6 @@ async def get_user_spikes_stats(
             # limit не указываем - получаем все записи
         )
         
-        # Извлекаем настройки Binance Spot USDT для пользователя Stats (даже если нет alerts)
-        binance_spot_settings = None
-        if user.lower() == "stats":
-            import json
-            try:
-                options_json = user_data.get("options_json", "{}")
-                if options_json:
-                    options = json.loads(options_json)
-                    exchange_settings = options.get("exchangeSettings", {})
-                    binance_settings = exchange_settings.get("binance", {})
-                    spot_settings = binance_settings.get("spot", {})
-                    
-                    if spot_settings:
-                        binance_spot_settings = {
-                            "delta": spot_settings.get("delta", ""),
-                            "volume": spot_settings.get("volume", ""),
-                            "shadow": spot_settings.get("shadow", "")
-                        }
-            except (json.JSONDecodeError, ValueError, TypeError):
-                # Если ошибка парсинга, просто не добавляем настройки
-                pass
-        
         if not alerts:
             result = {
                 "total_count": 0,
@@ -1003,9 +1027,6 @@ async def get_user_spikes_stats(
                 "top_by_volume": [],
                 "spikes": []
             }
-            # Добавляем настройки Binance Spot USDT, если они есть
-            if binance_spot_settings:
-                result["binance_spot_settings"] = binance_spot_settings
             return result
         
         # Вычисляем статистику
@@ -1117,10 +1138,6 @@ async def get_user_spikes_stats(
             "top_by_volume": top_by_volume,
             "spikes": recent_spikes
         }
-        
-        # Добавляем настройки Binance Spot USDT, если они есть
-        if binance_spot_settings:
-            result["binance_spot_settings"] = binance_spot_settings
         
         return result
     except HTTPException:

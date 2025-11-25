@@ -1,8 +1,11 @@
 """
 Универсальный построитель свечей для всех бирж
 """
+import asyncio
 from typing import Dict, Optional, Callable, Awaitable
 from dataclasses import dataclass
+
+from core.logger import get_logger
 
 
 @dataclass
@@ -32,6 +35,9 @@ class Candle:
     symbol: str     # Название пары (например, "BTCUSDT")
 
 
+logger = get_logger(__name__)
+
+
 class CandleBuilder:
     """
     Построитель 1-секундных свечей из сделок.
@@ -40,7 +46,13 @@ class CandleBuilder:
     При добавлении сделки автоматически завершает предыдущую секунду, если сделка относится к новой.
     """
     
-    def __init__(self, maxlen: int = 1000, on_trade: Optional[Callable[[str, str], Awaitable[None]]] = None):
+    def __init__(
+        self,
+        maxlen: int = 1000,
+        on_trade: Optional[Callable[[str, str], Awaitable[None]]] = None,
+        on_candle: Optional[Callable[[Candle], Awaitable[None]]] = None,
+        close_timeout: float = 1.0,
+    ):
         """
         Инициализация построителя свечей.
         
@@ -50,8 +62,48 @@ class CandleBuilder:
         """
         self.maxlen = maxlen
         self.on_trade = on_trade
+        self._on_candle = on_candle
         # Словарь активных свечей: {(exchange, market, symbol): CurrentCandle}
         self._active_candles: Dict[tuple, 'CurrentCandle'] = {}
+        # Таймеры принудительного закрытия свечей
+        self._close_timers: Dict[tuple, asyncio.Task] = {}
+        self._close_timeout = close_timeout
+
+    def _cancel_close_timer(self, key: tuple):
+        """Отменяет таймер закрытия свечи для указанного ключа."""
+        task = self._close_timers.pop(key, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _schedule_close_timer(self, key: tuple, candle_ts_ms: int):
+        """Запускает таймер принудительного закрытия свечи."""
+        if not self._on_candle:
+            return
+
+        async def _close_task():
+            try:
+                await asyncio.sleep(self._close_timeout)
+                active = self._active_candles.get(key)
+                if not active or active.ts_ms != candle_ts_ms:
+                    return
+
+                finished = active.to_candle()
+                if finished is None:
+                    return
+
+                # Удаляем активную свечу и таймер до вызова callback
+                self._active_candles.pop(key, None)
+                self._close_timers.pop(key, None)
+
+                await self._on_candle(finished)
+            except asyncio.CancelledError:
+                # Таймер отменён, ничего не делаем
+                pass
+            except Exception as exc:
+                logger.error(f"Ошибка принудительного закрытия свечи {key}: {exc}", exc_info=True)
+
+        task = asyncio.create_task(_close_task())
+        self._close_timers[key] = task
         
     async def add_trade(
         self,
@@ -96,12 +148,14 @@ class CandleBuilder:
                 symbol=symbol,
                 ts_ms=candle_ts_ms
             )
+            self._schedule_close_timer(key, candle_ts_ms)
         
         active_candle = self._active_candles[key]
         
         # Проверяем, относится ли сделка к текущей активной свече
         if candle_ts_ms != active_candle.ts_ms:
             # Сделка относится к новой секунде - завершаем предыдущую
+            self._cancel_close_timer(key)
             finished = active_candle.to_candle()
             # Создаём новую активную свечу для новой секунды
             self._active_candles[key] = CurrentCandle(
@@ -110,6 +164,7 @@ class CandleBuilder:
                 symbol=symbol,
                 ts_ms=candle_ts_ms
             )
+            self._schedule_close_timer(key, candle_ts_ms)
             
             # Добавляем сделку в новую свечу
             self._active_candles[key].add_trade(price, qty)

@@ -46,8 +46,8 @@ export default function RegisterPage() {
           tg_token: "",
           chat_id: "",
           options_json: JSON.stringify({
-            thresholds: {},
             exchanges: { gate: false, binance: false, bitget: false, bybit: false, hyperliquid: false },
+            pairSettings: {},
           }),
         }),
       });
