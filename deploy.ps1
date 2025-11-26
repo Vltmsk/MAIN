@@ -12,7 +12,45 @@ function Write-Log {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logMessage = "[$timestamp] $Message"
     Write-Host $logMessage
-    Add-Content -Path $LogFile -Value $logMessage
+    
+    # Безопасная запись в лог с обработкой блокировки файла
+    $maxRetries = 3
+    $retryDelay = 100  # миллисекунды
+    $retryCount = 0
+    $success = $false
+    
+    # Убеждаемся, что директория для лога существует
+    $logDir = Split-Path -Path $LogFile -Parent
+    if ($logDir -and -not (Test-Path $logDir)) {
+        try {
+            New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        } catch {
+            # Если не удалось создать директорию, просто пропускаем запись в файл
+        }
+    }
+    
+    while (-not $success -and $retryCount -lt $maxRetries) {
+        try {
+            # Используем FileStream с FileShare для избежания блокировок
+            # FileMode.Append создаст файл, если его нет
+            $fileStream = [System.IO.File]::Open($LogFile, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+            $writer = New-Object System.IO.StreamWriter($fileStream)
+            $writer.WriteLine($logMessage)
+            $writer.Flush()
+            $writer.Close()
+            $fileStream.Close()
+            $success = $true
+        } catch {
+            $retryCount++
+            if ($retryCount -lt $maxRetries) {
+                Start-Sleep -Milliseconds $retryDelay
+                $retryDelay *= 2  # Экспоненциальная задержка
+            } else {
+                # Если не удалось записать после всех попыток, просто выводим предупреждение
+                Write-Host "WARNING: Failed to write to log file after $maxRetries attempts: $_" -ForegroundColor Yellow
+            }
+        }
+    }
 }
 
 # Check if repository exists
@@ -173,15 +211,35 @@ try {
     
     # Update Python dependencies
     Write-Log "Updating Python dependencies..."
-    pip install -r requirements.txt --upgrade 2>&1 | Out-Null
+    $pipOutput = pip install -r requirements.txt --upgrade 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "WARNING: Python dependencies update had issues (exit code: $LASTEXITCODE)"
+        $pipOutput | ForEach-Object { Write-Log $_ }
+    }
     
     # Update Node.js dependencies and build Next.js
     if (Test-Path "WEB\package.json") {
         Write-Log "Updating Node.js dependencies..."
         Set-Location "WEB"
-        npm install 2>&1 | Out-Null
-        npm run build 2>&1 | ForEach-Object {
-            Write-Log $_
+        $npmInstallOutput = npm install 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "ERROR: npm install failed (exit code: $LASTEXITCODE)"
+            $npmInstallOutput | ForEach-Object { Write-Log $_ }
+            Set-Location $RepoPath
+            # Продолжаем выполнение, но логируем ошибку
+        } else {
+            Write-Log "Node.js dependencies updated successfully"
+            Write-Log "Building Next.js application..."
+            $npmBuildOutput = npm run build 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "ERROR: npm build failed (exit code: $LASTEXITCODE)"
+                $npmBuildOutput | ForEach-Object { Write-Log $_ }
+                Set-Location $RepoPath
+                # Продолжаем выполнение, но логируем ошибку
+            } else {
+                Write-Log "Next.js application built successfully"
+                $npmBuildOutput | ForEach-Object { Write-Log $_ }
+            }
         }
         Set-Location $RepoPath
     }
