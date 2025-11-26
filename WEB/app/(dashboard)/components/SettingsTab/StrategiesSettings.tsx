@@ -34,7 +34,6 @@ export default function StrategiesSettings({
   messageTemplate,
   generateTemplateDescription,
   setSaveMessage,
-  onUnsavedChangesChange,
 }: StrategiesSettingsProps) {
   // Состояния для управления интерфейсом
   const [selectedStrategyIndex, setSelectedStrategyIndex] = useState<number | null>(null);
