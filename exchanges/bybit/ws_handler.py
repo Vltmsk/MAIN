@@ -56,6 +56,19 @@ async def _ws_consumer_with_batches(
 ):
     """
     WebSocket consumer для одного соединения с несколькими батчами внутри.
+    
+    Args:
+        market: Тип рынка ("spot" или "linear")
+        connection_id: Уникальный идентификатор соединения
+        all_symbols: Полный список всех символов
+        batches: Список кортежей (batch_id, symbols) - батчи символов для подписки
+        session: HTTP сессия для WebSocket соединения
+        on_candle: Callback для обработки завершённых свечей
+        on_error: Callback для обработки ошибок
+    
+    Примечание:
+        Функция подписывается на каждый батч отдельно из-за лимита Bybit на количество символов
+        в одной подписке. Каждый батч обрабатывается в отдельном WebSocket соединении.
     """
     global _builder
     

@@ -36,6 +36,13 @@ def _extract_base_currency_algorithmic(symbol: str, exchange: str, market: str) 
         
     Returns:
         Нормализованный символ (базовая монета) или None если не удалось определить
+    
+    Примечание:
+        Для Hyperliquid выполняется специальная обработка:
+        - Для linear рынка символы уже нормализованы (BTC, ETH, ADA и т.д.)
+        - Для spot рынка может быть два формата:
+          1. С разделителем "/": PURR/USDC, BTC/USDC
+          2. Слитный формат: TNSRUSDC, XPLUSDC, STRKUSDC
     """
     if not symbol:
         return None

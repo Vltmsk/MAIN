@@ -59,6 +59,8 @@ class CandleBuilder:
         Args:
             maxlen: Максимальное количество свечей в памяти (для ограничения использования памяти)
             on_trade: Опциональный callback для подсчёта трейдов: on_trade(exchange, market)
+            on_candle: Опциональный callback для завершённых свечей: on_candle(Candle)
+            close_timeout: Таймаут в секундах для принудительного закрытия свечи (по умолчанию 1.0)
         """
         self.maxlen = maxlen
         self.on_trade = on_trade
@@ -127,6 +129,9 @@ class CandleBuilder:
             
         Returns:
             Candle или None, если свеча ещё не завершена
+        
+        Примечание:
+            Метод автоматически вызывает callback `on_trade` (если он установлен) для каждой добавленной сделки.
         """
         # Вызываем callback для подсчёта трейда, если он установлен
         if self.on_trade:

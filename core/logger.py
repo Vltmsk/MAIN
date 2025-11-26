@@ -194,7 +194,10 @@ def setup_root_logger(level: str = "INFO", enable_file_logging: bool = True):
     
     Args:
         level: Уровень логирования (DEBUG, INFO, WARNING, ERROR)
-        enable_file_logging: Включить запись логов в файл с ротацией
+        enable_file_logging: Включить запись логов в файл с ротацией.
+            При включении создаётся RotatingFileHandler с параметрами:
+            - maxBytes: 10 MB (10 * 1024 * 1024 байт)
+            - backupCount: 5 файлов (хранится текущий файл + 5 архивных)
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
 

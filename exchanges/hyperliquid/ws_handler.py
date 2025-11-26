@@ -82,7 +82,8 @@ async def _check_rate_limit(is_ping: bool = False) -> None:
     превышение лимита, когда несколько корутин одновременно ждут и просыпаются.
     
     Args:
-        is_ping: Если True, ping сообщения обходят rate limiting (критично для соединения)
+        is_ping: Если True, ping сообщения не учитываются в rate limit (критично для соединения),
+            но всё равно очищают старые timestamps для предотвращения утечки памяти
     """
     global _message_timestamps
     

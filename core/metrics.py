@@ -29,7 +29,17 @@ class Metrics:
         self._candles_counter: Dict[tuple, Dict] = {}
         
     def inc_candle(self, exchange: str, market: str = None):
-        """Увеличить счётчик свечей."""
+        """
+        Увеличить счётчик свечей.
+        
+        Args:
+            exchange: Название биржи (например, "binance")
+            market: Тип рынка ("spot" или "linear"), опционально
+        
+        Примечание:
+            Для Binance сохраняется время последней свечи в формате ISO timestamp
+            (поле "last_candle_time" в статистике). Для других бирж это поле не обновляется.
+        """
         current_time = time.time()
         if market:
             self.stats[exchange][market]["candles"] += 1

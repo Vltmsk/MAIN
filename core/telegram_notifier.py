@@ -58,7 +58,8 @@ class TelegramNotifier:
     TELEGRAM_CUSTOM_EMOJI_API_URL = "https://api.telegram.org/bot{token}/getCustomEmojiStickers"
     
     # Семафор для ограничения параллельных запросов к Telegram API
-    # Лимит Telegram Bot API: 30 сообщений в секунду
+    # Создаётся семафор на 30, что означает максимум 30 параллельных запросов одновременно
+    # (это concurrency limit, а не rate limit - не путать с лимитом "30 сообщений в секунду")
     _rate_limit_semaphore: Optional[asyncio.Semaphore] = None
     _semaphore_lock: Optional[asyncio.Lock] = None
     
@@ -87,7 +88,11 @@ class TelegramNotifier:
     @staticmethod
     async def _get_custom_emoji_id(token: str, emoji_name: str = "up") -> Optional[str]:
         """
-        Получает ID кастомного emoji из пака через Telegram Bot API
+        Получает ID кастомного emoji из пака.
+        
+        Логика работы:
+        1. Сначала проверяет глобальные константы CUSTOM_EMOJI_UP_ID и CUSTOM_EMOJI_DOWN_ID (приоритет)
+        2. Если константы не установлены, пытается получить через Telegram Bot API (не реализовано полностью)
         
         Args:
             token: Telegram Bot Token
@@ -98,8 +103,8 @@ class TelegramNotifier:
             
         Примечание:
             Для работы этого метода нужно:
-            1. Добавить бота в пак emoji (https://t.me/addemoji/Strelk167)
-            2. Или указать ID вручную через константы CUSTOM_EMOJI_UP_ID и CUSTOM_EMOJI_DOWN_ID
+            1. Указать ID вручную через константы CUSTOM_EMOJI_UP_ID и CUSTOM_EMOJI_DOWN_ID (рекомендуется)
+            2. Или добавить бота в пак emoji (https://t.me/addemoji/Strelk167) и реализовать получение через Bot API
             3. ID можно получить через @BotFather или из сообщения с кастомным emoji
         """
         global _emoji_id_cache
@@ -153,6 +158,11 @@ class TelegramNotifier:
             
         Returns:
             Отформатированная строка с кастомным emoji (если доступно) или fallback
+        
+        Примечание:
+            Используется формат Telegram: <tg-emoji emoji-id="{emoji_id}">{fallback_emoji}</tg-emoji>
+            Telegram сначала попытается показать кастомное emoji из пака, а если не получится -
+            автоматически покажет fallback emoji, указанный внутри тега.
         """
         if emoji_id and emoji_id.strip():  # Проверяем, что ID не пустой
             # Используем формат Telegram для кастомных emoji
@@ -179,6 +189,8 @@ class TelegramNotifier:
             token: Telegram Bot Token
             chat_id: Telegram Chat ID
             message: Текст сообщения
+            max_retries: Максимальное количество попыток отправки (по умолчанию 3)
+            base_delay: Базовая задержка между попытками в секундах (по умолчанию 1.0)
             
         Returns:
             tuple[bool, str]: (успех, сообщение_об_ошибке)
@@ -301,7 +313,7 @@ class TelegramNotifier:
            в `spike_detector.py` использует этот метод
         
         Поддерживаемые типы условий:
-        - "volume": проверка объёма (value >= condition.value)
+        - "volume": проверка объёма (volume_usdt >= value)
         - "delta": проверка дельты (valueMin <= delta <= valueMax)
         - "wick_pct": проверка тени (wick_pct >= valueMin)
         - "series": проверка серии стрел (count >= condition.count за timeWindowSeconds)

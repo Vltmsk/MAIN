@@ -64,6 +64,11 @@ class PerformanceTimer:
         """
         Форматирует метрики для отправки в Telegram.
         
+        Метрики отображаются в определённом порядке этапов:
+        - user.check, db.get_user, db.save, format.message, chart.fetch, chart.render, tg.send
+        
+        В конце строки добавляется общее время (сумма всех этапов).
+        
         Returns:
             Отформатированная строка с метриками
         """
