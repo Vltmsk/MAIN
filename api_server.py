@@ -309,22 +309,19 @@ def validate_strategy(strategy: dict, strategy_index: int) -> List[str]:
             
             elif condition_type == "wick_pct":
                 value_min = condition.get("valueMin")
+                value_max = condition.get("valueMax")
                 if value_min is not None:
                     has_wick_pct = True
-                    # Валидация диапазона wick_pct (0% - 100%)
+                    # Валидация минимального значения wick_pct (0% - 100%)
                     if value_min < 0 or value_min > 100:
                         errors.append(
                             f'Стратегия "{strategy_name}": Тень должна быть в диапазоне от 0% до 100%'
                         )
-                    value_max = condition.get("valueMax")
-                    if value_max is not None and (value_max < 0 or value_max > 100):
-                        errors.append(
-                            f'Стратегия "{strategy_name}": Максимальная тень должна быть в диапазоне от 0% до 100%'
-                        )
-                    if value_max is not None and value_min > value_max:
-                        errors.append(
-                            f'Стратегия "{strategy_name}": Минимальная тень не может быть больше максимальной'
-                        )
+                # Проверяем, что valueMax не указан для wick_pct (больше не поддерживается)
+                if value_max is not None:
+                    errors.append(
+                        f'Стратегия "{strategy_name}": Для условия "wick_pct" поддерживается только минимальное значение (valueMin). Параметр valueMax больше не используется.'
+                    )
             
         
         # Проверяем наличие базовых фильтров

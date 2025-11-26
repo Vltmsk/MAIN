@@ -281,6 +281,9 @@ export default function SettingsTab({ userLogin, activeSubTab: externalActiveSub
             onTemplateChange={messageTemplate.setMessageTemplate}
             onTimezoneChange={messageTemplate.setTimezone}
             isUserEditingRef={messageTemplate.isUserEditingRef}
+            onSave={handleSave}
+            saving={settings.saving}
+            setSaveMessage={settings.setSaveMessage}
           />
         )}
 

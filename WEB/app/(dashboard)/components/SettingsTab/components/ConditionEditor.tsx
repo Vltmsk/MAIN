@@ -132,46 +132,23 @@ export default function ConditionEditor({
 
       {condition.type === "wick_pct" && (
         <div className="flex-1">
-          <label className="block text-xs text-zinc-400 mb-2">Диапазон (%)</label>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-xs text-zinc-500 mb-1">От</label>
-              <input
-                type="number"
-                step="0.1"
-                min="0"
-                max="100"
-                value={condition.valueMin !== undefined ? condition.valueMin : ""}
-                onChange={(e) => {
-                  const val = e.target.value === "" ? 0 : parseFloat(e.target.value);
-                  handleChange({ valueMin: isNaN(val) ? 0 : Math.max(0, Math.min(100, val)) });
-                }}
-                className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder="0"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-zinc-500 mb-1">До</label>
-              <input
-                type="text"
-                value={condition.valueMax === null || condition.valueMax === undefined ? "∞" : String(condition.valueMax)}
-                onChange={(e) => {
-                  if (e.target.value === "∞" || e.target.value === "" || e.target.value.trim() === "") {
-                    handleChange({ valueMax: null });
-                  } else {
-                    const numValue = parseFloat(e.target.value);
-                    if (!isNaN(numValue)) {
-                      handleChange({ valueMax: Math.max(0, Math.min(100, numValue)) });
-                    } else {
-                      handleChange({ valueMax: null });
-                    }
-                  }
-                }}
-                className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder="∞"
-              />
-            </div>
-          </div>
+          <label className="block text-xs text-zinc-400 mb-1">Тень от (%)</label>
+          <input
+            type="number"
+            step="0.1"
+            min="0"
+            max="100"
+            value={condition.valueMin !== undefined ? condition.valueMin : ""}
+            onChange={(e) => {
+              const val = e.target.value === "" ? 0 : parseFloat(e.target.value);
+              handleChange({ 
+                valueMin: isNaN(val) ? 0 : Math.max(0, Math.min(100, val)),
+                valueMax: null
+              });
+            }}
+            className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            placeholder="0"
+          />
         </div>
       )}
 

@@ -10,7 +10,7 @@
  */
 export const getPairsForExchange = (exchange: string, market: "spot" | "futures"): string[] => {
   if (exchange === "binance" && market === "spot") {
-    return ["BTC", "ETH", "USDT", "BNB", "AUD", "TUSD", "BRL", "GBP", "USDC", "TRX", "EUR", "BIDR", "DOGE", "TRY", "FDUSD", "AEUR"];
+    return ["BTC", "ETH", "USDT", "BNB", "USD", "TUSD", "BRL", "USDC", "TRX", "EUR", "DOGE", "TRY", "FDUSD"];
   }
   if (exchange === "binance" && market === "futures") {
     return ["USDT", "USDC", "BTC"];

@@ -7,6 +7,18 @@ from core.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Маппинг английских названий этапов на русские для отображения в Telegram
+STAGE_NAMES_RU = {
+    "user.check": "Проверка условий",
+    "db.get_user": "Получение данных пользователя",
+    "db.save": "Сохранение в БД",
+    "format.message": "Форматирование сообщения",
+    "chart.fetch": "Получение данных графика",
+    "chart.render": "Рендеринг графика",
+    "tg.send": "Отправка в Telegram",
+    "detect": "Детектирование",
+}
+
 
 class PerformanceTimer:
     """
@@ -63,7 +75,7 @@ class PerformanceTimer:
         
         # Порядок этапов для отображения
         stage_order = [
-            "detect",
+            "user.check",
             "db.get_user",
             "db.save",
             "format.message",
@@ -75,17 +87,28 @@ class PerformanceTimer:
         # Добавляем метрики в порядке этапов
         for stage in stage_order:
             key = f"{stage}_duration"
+            stage_name_ru = STAGE_NAMES_RU.get(stage, stage)
+            
             if key in self.metrics:
                 duration_ms = self.metrics[key]
-                lines.append(f"⏱ {stage}: {duration_ms:.2f}мс")
+                lines.append(f"⏱ {stage_name_ru}: {duration_ms:.2f}мс")
         
         # Добавляем остальные метрики (если есть)
+        processed_keys = set()
+        for stage in stage_order:
+            key = f"{stage}_duration"
+            if key in self.metrics:
+                processed_keys.add(key)
+        
         for key, value in sorted(self.metrics.items()):
-            if key not in [f"{s}_duration" for s in stage_order]:
+            if key not in processed_keys:
                 lines.append(f"⏱ {key}: {value:.2f}мс")
         
         # Вычисляем общее время
-        total_duration = sum(v for k, v in self.metrics.items() if k.endswith("_duration"))
+        total_duration = sum(
+            v for k, v in self.metrics.items() 
+            if k.endswith("_duration")
+        )
         if total_duration > 0:
             lines.append(f"\n<b>Общее время: {total_duration:.2f}мс</b>")
         

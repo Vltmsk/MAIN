@@ -61,6 +61,13 @@ class SpikeDetector:
             except RuntimeError:
                 # Нет запущенного event loop, можем использовать asyncio.run()
                 users = asyncio.run(db.get_all_users())
+            
+            # Логируем при обновлении кэша (каждое обновление)
+            logger.info(f"Обновлен кэш пользователей: загружено {len(users)} пользователей")
+            if users:
+                user_names = [u.get("user", "Unknown") for u in users[:5]]  # Первые 5 для логирования
+                logger.debug(f"Загруженные пользователи (первые 5): {', '.join(user_names)}")
+            
             self._users_cache = users
             self._cache_timestamp = current_time
             return users
@@ -70,6 +77,9 @@ class SpikeDetector:
                 "error_type": "spike_detector_db_error",
                 "market": "spike_detector",
             })
+            # Логируем, сколько пользователей было в кэше
+            cached_count = len(self._users_cache) if self._users_cache else 0
+            logger.warning(f"Используем старый кэш пользователей: {cached_count} пользователей")
             return self._users_cache or []
     
     def _parse_user_options(self, options_json: str) -> Dict:
@@ -90,7 +100,30 @@ class SpikeDetector:
             
             # Дефолтные настройки только для exchanges (включение/выключение бирж)
             default = self._get_default_options()
-            exchanges = options.get("exchanges", default["exchanges"])
+            exchanges_input = options.get("exchanges", {})
+            
+            # Сохраняем все ключи из исходного словаря exchanges (поддерживаем и старый, и новый формат)
+            # Старый формат: "binance", "gate" и т.д.
+            # Новый формат: "binance_spot", "binance_futures", "gate_spot" и т.д.
+            exchanges = {}
+            
+            # Сначала копируем все ключи из исходного словаря (сохраняем новый формат)
+            if isinstance(exchanges_input, dict):
+                for key, value in exchanges_input.items():
+                    exchanges[key] = bool(value)
+            
+            # Затем добавляем старый формат для обратной совместимости (если его нет)
+            # Это нужно для поддержки старого формата, если пользователь использует только его
+            old_format_keys = ["gate", "binance", "bitget", "bybit", "hyperliquid"]
+            for key in old_format_keys:
+                if key not in exchanges:
+                    # Проверяем, есть ли новый формат для этой биржи
+                    has_new_format = any(
+                        k.startswith(f"{key}_") for k in exchanges.keys()
+                    )
+                    if not has_new_format:
+                        # Если нет нового формата, используем дефолтное значение
+                        exchanges[key] = default["exchanges"].get(key, False)
             
             # Сохраняем pairSettings для индивидуальных настроек пар
             pair_settings = options.get("pairSettings", {})
@@ -99,13 +132,7 @@ class SpikeDetector:
             conditional_templates = options.get("conditionalTemplates", [])
             
             return {
-                "exchanges": {
-                    "gate": bool(exchanges.get("gate", default["exchanges"]["gate"])),
-                    "binance": bool(exchanges.get("binance", default["exchanges"]["binance"])),
-                    "bitget": bool(exchanges.get("bitget", default["exchanges"]["bitget"])),
-                    "bybit": bool(exchanges.get("bybit", default["exchanges"]["bybit"])),
-                    "hyperliquid": bool(exchanges.get("hyperliquid", default["exchanges"]["hyperliquid"])),
-                },
+                "exchanges": exchanges,
                 "pairSettings": pair_settings,
                 "conditionalTemplates": conditional_templates
             }
@@ -265,14 +292,25 @@ class SpikeDetector:
         # Проверяем новый формат: exchange_market (например, "bitget_spot", "bitget_futures")
         exchange_market_key = f"{exchange_key}_{market_normalized}"
         if exchange_market_key in exchanges:
-            return exchanges.get(exchange_market_key, False)
+            result = bool(exchanges.get(exchange_market_key, False))
+            logger.debug(f"🔍 Проверка биржи {exchange} {market}: ключ '{exchange_market_key}' найден в exchanges, результат={result} (exchanges={exchanges})")
+            return result
         
         # Обратная совместимость: старый формат (только биржа)
-        if exchange_key in exchanges:
-            return exchanges.get(exchange_key, False)
+        # Проверяем только если в настройках нет ни одного ключа нового формата для этой биржи
+        # Это позволяет использовать старый формат, если пользователь не перешёл на новый
+        has_new_format = any(
+            key.startswith(f"{exchange_key}_") for key in exchanges.keys()
+        )
+        
+        if not has_new_format and exchange_key in exchanges:
+            result = bool(exchanges.get(exchange_key, False))
+            logger.debug(f"🔍 Проверка биржи {exchange} {market}: используется старый формат '{exchange_key}', результат={result} (exchanges={exchanges})")
+            return result
         
         # Если биржа не указана в настройках, считаем её отключенной (False)
         # Это гарантирует, что пользователи с нулевыми настройками не будут получать детекты
+        logger.debug(f"❌ Проверка биржи {exchange} {market}: биржа не найдена в настройках (ключ '{exchange_market_key}' отсутствует, старый формат '{exchange_key}' {'найден' if exchange_key in exchanges else 'отсутствует'}, exchanges={exchanges})")
         return False
     
     def _check_strategy_exchange_condition(self, strategy: Dict, candle: Candle) -> Tuple[bool, bool]:
@@ -406,16 +444,16 @@ class SpikeDetector:
                 
                 delta_min = float(delta_str)
                 volume_min = float(volume_str)
-                wick_pct_max = float(shadow_str)
+                wick_pct_min = float(shadow_str)
 
                 # Значение 0 или меньше означает, что пользователь не задал фильтр
-                if delta_min <= 0 or volume_min <= 0 or wick_pct_max <= 0:
+                if delta_min <= 0 or volume_min <= 0 or wick_pct_min <= 0:
                     logger.debug(
-                        f"Игнорируем фильтры пары {pair_key}: delta={delta_min}, volume={volume_min}, shadow={wick_pct_max} (не заданы пользователем)"
+                        f"Игнорируем фильтры пары {pair_key}: delta={delta_min}, volume={volume_min}, shadow={wick_pct_min} (не заданы пользователем)"
                     )
                     return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
                 
-                logger.debug(f"Проверка индивидуальных фильтров для пары {pair_key}: delta_min={delta_min}, volume_min={volume_min}, wick_pct_max={wick_pct_max}")
+                logger.debug(f"Проверка индивидуальных фильтров для пары {pair_key}: delta_min={delta_min}, volume_min={volume_min}, wick_pct_min={wick_pct_min}")
                 logger.debug(f"Фактические значения: delta={delta:.2f}, volume={volume_usdt:.2f}, wick_pct={wick_pct:.2f}")
                 
                 # Проверяем пороги
@@ -427,12 +465,12 @@ class SpikeDetector:
                     logger.debug(f"Объём {volume_usdt:.2f} <= {volume_min} - фильтр не пройден (нужно строго больше)")
                     return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
                 
-                if wick_pct <= wick_pct_max:
-                    logger.debug(f"Тень {wick_pct:.2f}% <= {wick_pct_max}% - фильтр не пройден (нужно строго больше)")
+                if wick_pct < wick_pct_min:
+                    logger.debug(f"Тень {wick_pct:.2f}% < {wick_pct_min}% - фильтр не пройден (нужно больше или равно)")
                     return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
                 
                 # Все проверки пройдены
-                logger.debug(f"Все индивидуальные фильтры пройдены для пары {pair_key}: delta={delta:.2f}% > {delta_min}%, volume={volume_usdt:.2f} > {volume_min}, wick_pct={wick_pct:.2f}% > {wick_pct_max}%")
+                logger.debug(f"Все индивидуальные фильтры пройдены для пары {pair_key}: delta={delta:.2f}% > {delta_min}%, volume={volume_usdt:.2f} > {volume_min}, wick_pct={wick_pct:.2f}% >= {wick_pct_min}%")
                 return True, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
                 
             except (ValueError, TypeError) as e:
@@ -457,8 +495,10 @@ class SpikeDetector:
                 logger.debug(f"Для рынка {exchange_key} {market_key} есть дополнительные пары, но для текущей пары ({quote_currency or 'unknown'}) нет индивидуальных настроек - детектирование не применяется (пара не включена пользователем)")
                 return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
         
-        # Если нет настроек для пары - не пропускаем детект
-        logger.debug(f"Нет настроек фильтров для {exchange_key} {market_key} {candle.symbol}")
+        # Если нет настроек для пары и нет других пар для этого рынка - не пропускаем детект
+        # Это означает, что пользователь не настроил фильтры для этой пары
+        # Но это нормально, если у него есть стратегии, которые будут работать независимо
+        logger.debug(f"Нет настроек фильтров для {exchange_key} {market_key} {candle.symbol} (quote_currency={quote_currency})")
         return False, {"delta": delta, "wick_pct": wick_pct, "volume_usdt": volume_usdt}
     
     def _get_series_count(self, user_id: int, candle: Candle, time_window_seconds: float, 
@@ -540,12 +580,9 @@ class SpikeDetector:
                             break
                     
                     elif cond_type == "wick_pct":
+                        # Для wick_pct используется только valueMin (valueMax больше не поддерживается и игнорируется)
                         value_min = condition.get("valueMin")
-                        value_max = condition.get("valueMax")
                         if value_min is not None and spike_wick_pct < value_min:
-                            matches_all = False
-                            break
-                        if value_max is not None and spike_wick_pct > value_max:
                             matches_all = False
                             break
                     
@@ -719,7 +756,7 @@ class SpikeDetector:
             candle: Свеча (для определения биржи и рынка)
             
         Returns:
-            Optional[Dict]: Словарь с фильтрами {"delta_min": float, "volume_min": float, "wick_pct_max": float}
+            Optional[Dict]: Словарь с фильтрами {"delta_min": float, "volume_min": float, "wick_pct_min": float}
                           или None если фильтры не найдены
         """
         use_global_filters = strategy.get("useGlobalFilters", True)  # По умолчанию true
@@ -747,13 +784,13 @@ class SpikeDetector:
                             if delta_str and volume_str and shadow_str:
                                 delta_min = float(delta_str)
                                 volume_min = float(volume_str)
-                                wick_pct_max = float(shadow_str)
+                                wick_pct_min = float(shadow_str)
                                 
-                                if delta_min > 0 and volume_min > 0 and wick_pct_max > 0:
+                                if delta_min > 0 and volume_min > 0 and wick_pct_min > 0:
                                     return {
                                         "delta_min": delta_min,
                                         "volume_min": volume_min,
-                                        "wick_pct_max": wick_pct_max
+                                        "wick_pct_min": wick_pct_min
                                     }
                         except (ValueError, TypeError):
                             pass
@@ -772,14 +809,14 @@ class SpikeDetector:
                 - conditions: List[Dict] - список условий
                 
         Returns:
-            Optional[Dict]: Словарь с фильтрами {"delta_min": float, "volume_min": float, "wick_pct_max": float}
+            Optional[Dict]: Словарь с фильтрами {"delta_min": float, "volume_min": float, "wick_pct_min": float}
                           или None если фильтры не найдены
         """
         conditions = strategy.get("conditions", [])
         
         delta_min = None
         volume_min = None
-        wick_pct_max = None
+        wick_pct_min = None
         
         for condition in conditions:
             cond_type = condition.get("type")
@@ -806,22 +843,23 @@ class SpikeDetector:
                         pass
             
             elif cond_type == "wick_pct":
-                # Для тени используем valueMax (максимальное значение тени)
-                # Если valueMax не указан, используем None (бесконечность)
-                value_max = condition.get("valueMax")
-                if value_max is not None:
+                # Для тени используем только valueMin (минимальное значение тени)
+                # valueMax больше не поддерживается и игнорируется
+                value_min = condition.get("valueMin")
+                if value_min is not None:
                     try:
-                        wick_pct_max = float(value_max)
+                        wick_pct_min = float(value_min)
                     except (ValueError, TypeError):
                         pass
-                # Если valueMax не указан, wick_pct_max остается None (бесконечность)
+                # Явно игнорируем valueMax для wick_pct (если присутствует в данных)
+                # Это гарантирует, что старые данные с valueMax не вызовут проблем
         
-        # Проверяем, что все базовые фильтры найдены (delta и volume обязательны, wick_pct_max может быть None)
+        # Проверяем, что все базовые фильтры найдены (delta и volume обязательны, wick_pct_min может быть None)
         if delta_min is not None and volume_min is not None:
             return {
                 "delta_min": delta_min,
                 "volume_min": volume_min,
-                "wick_pct_max": wick_pct_max  # Может быть None (бесконечность)
+                "wick_pct_min": wick_pct_min  # Может быть None
             }
         
         return None
@@ -920,9 +958,11 @@ class SpikeDetector:
                 "volume_usdt": float,
                 "detected_by_spike_settings": bool,
                 "detected_by_strategy": bool,
-                "matched_strategies": List[Dict]  # Список стратегий, которые сработали
+                "matched_strategies": List[Dict],  # Список стратегий, которые сработали
+                "user_check_duration_ms": float  # Время проверки условий пользователя в миллисекундах
             }
         """
+        check_start_time = time.perf_counter()
         try:
             # Парсим настройки пользователя
             user_options = self._parse_user_options(user.get("options_json", "{}"))
@@ -941,9 +981,16 @@ class SpikeDetector:
             
             # Проверяем обычные настройки прострела
             # Проверяем, включена ли эта биржа для пользователя
-            if self._check_exchange_filter(candle.exchange, candle.market, user_options):
+            exchanges_config = user_options.get("exchanges", {})
+            logger.debug(f"🔍 Проверка детекта для {user_name}: {candle.exchange} {candle.market} {candle.symbol}, exchanges={exchanges_config}")
+            
+            exchange_enabled = self._check_exchange_filter(candle.exchange, candle.market, user_options)
+            logger.debug(f"🔍 Биржа {candle.exchange} {candle.market} для {user_name}: exchange_enabled={exchange_enabled}")
+            
+            if exchange_enabled:
                 # Проверяем, есть ли у пользователя настройки фильтров в pairSettings
                 pair_settings = user_options.get("pairSettings", {})
+                logger.debug(f"🔍 pairSettings для {user_name}: {len(pair_settings)} пар настроено")
                 
                 if pair_settings:
                     # Проверяем пороги
@@ -951,11 +998,21 @@ class SpikeDetector:
                     
                     if matches:
                         detected_by_spike_settings = True
-                        logger.info(f"Стрела обнаружена через обычные настройки для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
+                        logger.info(f"✅ Стрела обнаружена через обычные настройки для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
+                    else:
+                        logger.debug(f"❌ Стрела не прошла фильтры для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={metrics['delta']:.2f}%, volume={metrics['volume_usdt']:.2f}, wick_pct={metrics['wick_pct']:.2f}%")
+                else:
+                    # Биржа включена, но нет настроек пар - это нормально, просто не детектируем через обычные настройки
+                    logger.debug(f"⚠️ Биржа {candle.exchange} {candle.market} включена для {user_name}, но нет pairSettings - пропускаем обычные настройки")
+            else:
+                logger.debug(f"❌ Биржа {candle.exchange} {candle.market} отключена для пользователя {user_name} (exchanges={exchanges_config})")
             
             # Проверяем стратегии независимо от обычных настроек
             conditional_templates = user_options.get("conditionalTemplates", [])
+            logger.debug(f"🔍 Проверка стратегий для {user_name}: найдено {len(conditional_templates)} стратегий")
+            
             if conditional_templates:
+                logger.debug(f"🔍 Проверка {len(conditional_templates)} стратегий для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol}")
                 for strategy in conditional_templates:
                     try:
                         # Проверяем, включена ли стратегия
@@ -982,12 +1039,18 @@ class SpikeDetector:
                                 continue
                             
                             # Проверяем базовые фильтры из условий стратегии
-                            if delta <= strategy_filters.get("delta_min", 0):
+                            delta_min = strategy_filters.get("delta_min")
+                            volume_min = strategy_filters.get("volume_min")
+                            wick_pct_min = strategy_filters.get("wick_pct_min")
+                            
+                            if delta_min is not None and delta <= delta_min:
+                                logger.debug(f"Стратегия '{strategy.get('name', 'Unknown')}': дельта {delta:.2f}% <= {delta_min}% - фильтр не пройден")
                                 continue
-                            if volume_usdt <= strategy_filters.get("volume_min", 0):
+                            if volume_min is not None and volume_usdt <= volume_min:
+                                logger.debug(f"Стратегия '{strategy.get('name', 'Unknown')}': объём {volume_usdt:.2f} <= {volume_min} - фильтр не пройден")
                                 continue
-                            wick_pct_max = strategy_filters.get("wick_pct_max")
-                            if wick_pct_max is not None and wick_pct <= wick_pct_max:
+                            if wick_pct_min is not None and wick_pct < wick_pct_min:
+                                logger.debug(f"Стратегия '{strategy.get('name', 'Unknown')}': тень {wick_pct:.2f}% < {wick_pct_min}% - фильтр не пройден")
                                 continue
                         else:
                             # Если useGlobalFilters = true, сначала пытаемся использовать глобальные настройки
@@ -1001,12 +1064,18 @@ class SpikeDetector:
                                 continue
                             
                             # Проверяем базовые фильтры (из глобальных настроек или из условий стратегии)
-                            if delta <= strategy_filters.get("delta_min", 0):
+                            delta_min = strategy_filters.get("delta_min")
+                            volume_min = strategy_filters.get("volume_min")
+                            wick_pct_min = strategy_filters.get("wick_pct_min")
+                            
+                            if delta_min is not None and delta <= delta_min:
+                                logger.debug(f"Стратегия '{strategy.get('name', 'Unknown')}': дельта {delta:.2f}% <= {delta_min}% - фильтр не пройден")
                                 continue
-                            if volume_usdt <= strategy_filters.get("volume_min", 0):
+                            if volume_min is not None and volume_usdt <= volume_min:
+                                logger.debug(f"Стратегия '{strategy.get('name', 'Unknown')}': объём {volume_usdt:.2f} <= {volume_min} - фильтр не пройден")
                                 continue
-                            wick_pct_max = strategy_filters.get("wick_pct_max")
-                            if wick_pct_max is not None and wick_pct <= wick_pct_max:
+                            if wick_pct_min is not None and wick_pct < wick_pct_min:
+                                logger.debug(f"Стратегия '{strategy.get('name', 'Unknown')}': тень {wick_pct:.2f}% < {wick_pct_min}% - фильтр не пройден")
                                 continue
                         
                         # Проверяем условие exchange в стратегии (для автоматического включения биржи)
@@ -1021,8 +1090,13 @@ class SpikeDetector:
                         # только для этой стратегии (автоматическое включение биржи для стратегии)
                         if not has_exchange_condition:
                             # Если биржа не указана в стратегии, проверяем, включена ли она в exchanges
-                            if not self._check_exchange_filter(candle.exchange, candle.market, user_options):
+                            exchange_enabled_for_strategy = self._check_exchange_filter(candle.exchange, candle.market, user_options)
+                            logger.debug(f"🔍 Стратегия '{strategy.get('name', 'Unknown')}' для {user_name}: биржа не указана в стратегии, exchange_enabled={exchange_enabled_for_strategy}")
+                            if not exchange_enabled_for_strategy:
+                                logger.debug(f"❌ Стратегия '{strategy.get('name', 'Unknown')}' для {user_name}: биржа {candle.exchange} {candle.market} не включена в exchanges, пропускаем")
                                 continue
+                        else:
+                            logger.debug(f"🔍 Стратегия '{strategy.get('name', 'Unknown')}' для {user_name}: биржа указана в стратегии (has_exchange_condition=True), пропускаем проверку exchanges")
                         # Если биржа указана в стратегии, но отключена в exchanges - пропускаем проверку _check_exchange_filter()
                         # Это позволяет стратегии работать для указанной биржи, даже если она отключена в глобальных настройках
                         # Глобальные фильтры (pairSettings) остаются отключенными для этой биржи
@@ -1040,7 +1114,9 @@ class SpikeDetector:
                                 "template": strategy.get("template", ""),
                                 "chatId": strategy.get("chatId")
                             })
-                            logger.info(f"Стрела обнаружена через стратегию '{strategy.get('name', 'Unknown')}' для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol}")
+                            logger.info(f"Стрела обнаружена через стратегию '{strategy.get('name', 'Unknown')}' для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={delta:.2f}%, volume={volume_usdt:.2f}, wick_pct={wick_pct:.2f}%")
+                        else:
+                            logger.debug(f"Стратегия '{strategy.get('name', 'Unknown')}' не прошла проверку условий для пользователя {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={delta:.2f}%, volume={volume_usdt:.2f}, wick_pct={wick_pct:.2f}%")
                     except Exception as e:
                         logger.warning(f"Ошибка при проверке стратегии для пользователя {user_name}: {e}", exc_info=True, extra={
                             "log_to_db": True,
@@ -1051,6 +1127,9 @@ class SpikeDetector:
                         })
                         continue
             
+            # Вычисляем время проверки условий пользователя
+            check_duration_ms = (time.perf_counter() - check_start_time) * 1000
+            
             # Если стрела детектирована хотя бы одним способом
             if detected_by_spike_settings or detected_by_strategy:
                 # Добавляем стрелу в трекер серий с параметрами
@@ -1060,6 +1139,8 @@ class SpikeDetector:
                     detected_by_spike_settings, detected_by_strategy
                 )
                 
+                logger.info(f"✅ ДЕТЕКТИРОВАНО для {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={delta:.2f}%, volume={volume_usdt:.2f}, wick_pct={wick_pct:.2f}% (spike_settings={detected_by_spike_settings}, strategy={detected_by_strategy})")
+                
                 return {
                     "user_id": user_id,
                     "user_name": user_name,
@@ -1068,12 +1149,20 @@ class SpikeDetector:
                     "volume_usdt": volume_usdt,
                     "detected_by_spike_settings": detected_by_spike_settings,
                     "detected_by_strategy": detected_by_strategy,
-                    "matched_strategies": matched_strategies
+                    "matched_strategies": matched_strategies,
+                    "user_check_duration_ms": check_duration_ms
                 }
+            
+            # Логируем, почему стрела не была детектирована (только для отладки, периодически)
+            import random
+            if random.randint(1, 100) == 1:  # Логируем каждую 100-ю проверку
+                logger.debug(f"❌ НЕ детектировано для {user_name}: {candle.exchange} {candle.market} {candle.symbol} - delta={delta:.2f}%, volume={volume_usdt:.2f}, wick_pct={wick_pct:.2f}% (exchange_enabled={exchange_enabled if 'exchange_enabled' in locals() else 'N/A'})")
             
             return None
             
         except Exception as e:
+            # Вычисляем время проверки даже при ошибке
+            check_duration_ms = (time.perf_counter() - check_start_time) * 1000
             # Обрабатываем ошибки для каждого пользователя отдельно
             try:
                 user_name = user.get("user", "Unknown")
@@ -1118,8 +1207,13 @@ class SpikeDetector:
         
         if not users:
             detect_duration = time.perf_counter() - detect_start_time
-            logger.debug(f"Детект стрелы пропущен (нет пользователей), {detect_duration * 1000:.2f}мс")
+            logger.warning(f"Детект стрелы пропущен (нет пользователей): {candle.exchange} {candle.market} {candle.symbol}, {detect_duration * 1000:.2f}мс")
             return []
+        
+        # Логируем периодически для диагностики (каждую 100-ю проверку)
+        import random
+        if random.randint(1, 100) == 1:
+            logger.debug(f"Проверка детекта: {candle.exchange} {candle.market} {candle.symbol}, пользователей: {len(users)}")
         
         # Параллельная обработка всех пользователей через asyncio.gather()
         import asyncio
@@ -1142,9 +1236,21 @@ class SpikeDetector:
                 })
         
         detect_duration = time.perf_counter() - detect_start_time
-        logger.debug(
-            f"Детект стрелы занял {detect_duration * 1000:.2f}мс для {len(users)} пользователей"
-        )
+        
+        # Логируем результат детекта
+        if detected_spikes:
+            logger.info(
+                f"Детект завершен: найдено {len(detected_spikes)} стрел для {candle.exchange} {candle.market} {candle.symbol}, "
+                f"проверено {len(users)} пользователей, время: {detect_duration * 1000:.2f}мс"
+            )
+        else:
+            # Логируем периодически, если детектов нет (каждую 1000-ю проверку)
+            import random
+            if random.randint(1, 1000) == 1:
+                logger.debug(
+                    f"Детект завершен: стрел не найдено для {candle.exchange} {candle.market} {candle.symbol}, "
+                    f"проверено {len(users)} пользователей, время: {detect_duration * 1000:.2f}мс"
+                )
 
         return detected_spikes
     

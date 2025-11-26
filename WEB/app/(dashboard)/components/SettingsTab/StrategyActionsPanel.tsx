@@ -9,6 +9,7 @@ interface StrategyActionsPanelProps {
   onTemplatesChange: (templates: any[]) => void;
   onSave: () => Promise<void>;
   onAddStrategy: () => void;
+  onDeleteStrategy: (index: number) => void;
   onClose: () => void;
   setHasUnsavedChanges: (value: boolean) => void;
   setSaveMessage: (message: { type: "success" | "error"; text: string } | null) => void;
@@ -23,6 +24,7 @@ export default function StrategyActionsPanel({
   onTemplatesChange,
   onSave,
   onAddStrategy,
+  onDeleteStrategy,
   onClose,
   setHasUnsavedChanges,
   setSaveMessage,
@@ -31,17 +33,30 @@ export default function StrategyActionsPanel({
     <div className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 overflow-y-auto">
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-1 gap-3">
         <button
-          onClick={() => {
+          onClick={async () => {
             if (confirm("Остановить все активные стратегии?")) {
               const newTemplates = conditionalTemplates.map((s) => ({
                 ...s,
                 enabled: false,
               }));
               onTemplatesChange(newTemplates);
-              setHasUnsavedChanges(true);
+              try {
+                await onSave();
+                setHasUnsavedChanges(false);
+                setSaveMessage({
+                  type: "success",
+                  text: "Все стратегии остановлены и сохранены в БД"
+                });
+              } catch (error) {
+                setHasUnsavedChanges(true);
+                setSaveMessage({
+                  type: "error",
+                  text: error instanceof Error ? error.message : "Ошибка при сохранении изменений"
+                });
+              }
             }
           }}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-red-600/20 hover:bg-red-600/30 border border-red-600/50 rounded-lg text-red-300 font-medium transition-colors col-span-2 md:col-span-1 lg:col-span-1"
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-white font-medium transition-colors col-span-2 md:col-span-1 lg:col-span-1"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -51,7 +66,7 @@ export default function StrategyActionsPanel({
         </button>
 
         <button
-          onClick={() => {
+          onClick={async () => {
             if (selectedStrategies.size === 0) {
               alert("Выберите стратегии для запуска");
               return;
@@ -63,10 +78,23 @@ export default function StrategyActionsPanel({
               }
             });
             onTemplatesChange(newTemplates);
-            setHasUnsavedChanges(true);
+            try {
+              await onSave();
+              setHasUnsavedChanges(false);
+              setSaveMessage({
+                type: "success",
+                text: `${selectedStrategies.size} стратегий запущено и сохранено в БД`
+              });
+            } catch (error) {
+              setHasUnsavedChanges(true);
+              setSaveMessage({
+                type: "error",
+                text: error instanceof Error ? error.message : "Ошибка при сохранении изменений"
+              });
+            }
           }}
           disabled={selectedStrategies.size === 0}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-medium transition-colors col-span-2 md:col-span-1 lg:col-span-1"
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-medium transition-colors col-span-2 md:col-span-1 lg:col-span-1"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
@@ -76,8 +104,48 @@ export default function StrategyActionsPanel({
         </button>
 
         <button
+          onClick={async () => {
+            if (selectedStrategies.size === 0) {
+              alert("Выберите стратегии для остановки");
+              return;
+            }
+            if (confirm(`Остановить ${selectedStrategies.size} выбранную(ых) стратегию(и)?`)) {
+              const newTemplates = [...conditionalTemplates];
+              selectedStrategies.forEach((index) => {
+                if (newTemplates[index]) {
+                  newTemplates[index].enabled = false;
+                }
+              });
+              onTemplatesChange(newTemplates);
+              try {
+                await onSave();
+                setHasUnsavedChanges(false);
+                setSaveMessage({
+                  type: "success",
+                  text: `${selectedStrategies.size} стратегий остановлено и сохранено в БД`
+                });
+              } catch (error) {
+                setHasUnsavedChanges(true);
+                setSaveMessage({
+                  type: "error",
+                  text: error instanceof Error ? error.message : "Ошибка при сохранении изменений"
+                });
+              }
+            }
+          }}
+          disabled={selectedStrategies.size === 0}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-medium transition-colors col-span-2 md:col-span-1 lg:col-span-1"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+          </svg>
+          Стоп отмеченные {selectedStrategies.size > 0 && `(${selectedStrategies.size})`}
+        </button>
+
+        <button
           onClick={onAddStrategy}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-yellow-600/20 hover:bg-yellow-600/30 border border-yellow-600/50 rounded-lg text-yellow-300 font-medium transition-colors col-span-2 md:col-span-1 lg:col-span-1"
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-white font-medium transition-colors col-span-2 md:col-span-1 lg:col-span-1"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -119,8 +187,12 @@ export default function StrategyActionsPanel({
             }
           }}
           disabled={saving || selectedStrategyIndex === null}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-medium transition-colors col-span-2 md:col-span-1 lg:col-span-1"
-          title={selectedStrategyIndex === null ? "Выберите стратегию для сохранения" : "Сохранить изменения в выбранной стратегии"}
+          className={`w-full flex items-center justify-center gap-2 px-4 py-3 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-medium transition-all col-span-2 md:col-span-1 lg:col-span-1 ${
+            hasUnsavedChanges
+              ? "bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 shadow-lg shadow-emerald-500/50 animate-pulse"
+              : "bg-zinc-700 hover:bg-zinc-600"
+          }`}
+          title={selectedStrategyIndex === null ? "Выберите стратегию для сохранения" : hasUnsavedChanges ? "⚠️ Есть несохраненные изменения!" : "Сохранить изменения в выбранной стратегии"}
         >
           {saving ? (
             <>
@@ -138,6 +210,24 @@ export default function StrategyActionsPanel({
               Сохранить
             </>
           )}
+        </button>
+
+        <button
+          onClick={() => {
+            if (selectedStrategyIndex === null) {
+              alert("Выберите стратегию для удаления");
+              return;
+            }
+            onDeleteStrategy(selectedStrategyIndex);
+          }}
+          disabled={selectedStrategyIndex === null}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-medium transition-colors col-span-2 md:col-span-1 lg:col-span-1"
+          title={selectedStrategyIndex === null ? "Выберите стратегию для удаления" : "Удалить выбранную стратегию"}
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+          Удалить стратегию
         </button>
 
         <button

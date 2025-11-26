@@ -22,9 +22,17 @@ export default function ChartSettings({
       const spotPairs = getPairsForExchange(exchange, "spot");
       const futuresPairs = getPairsForExchange(exchange, "futures");
       
-      for (const pair of [...spotPairs, ...futuresPairs]) {
-        const market = spotPairs.includes(pair) ? "spot" : "futures";
-        const currencyKey = `${exchange}_${market}_${pair}`;
+      // Проверяем spot отдельно
+      for (const pair of spotPairs) {
+        const currencyKey = `${exchange}_spot_${pair}`;
+        if (chartSettings[currencyKey] !== true) {
+          return false;
+        }
+      }
+      
+      // Проверяем futures отдельно
+      for (const pair of futuresPairs) {
+        const currencyKey = `${exchange}_futures_${pair}`;
         if (chartSettings[currencyKey] !== true) {
           return false;
         }
@@ -40,12 +48,17 @@ export default function ChartSettings({
     
     const exchanges = ["binance", "bybit", "bitget", "gate", "hyperliquid"];
     exchanges.forEach((exchange) => {
+      // Обрабатываем spot отдельно
       const spotPairs = getPairsForExchange(exchange, "spot");
-      const futuresPairs = getPairsForExchange(exchange, "futures");
+      spotPairs.forEach((pair) => {
+        const currencyKey = `${exchange}_spot_${pair}`;
+        newSettings[currencyKey] = !allEnabled;
+      });
       
-      [...spotPairs, ...futuresPairs].forEach((pair) => {
-        const market = spotPairs.includes(pair) ? "spot" : "futures";
-        const currencyKey = `${exchange}_${market}_${pair}`;
+      // Обрабатываем futures отдельно
+      const futuresPairs = getPairsForExchange(exchange, "futures");
+      futuresPairs.forEach((pair) => {
+        const currencyKey = `${exchange}_futures_${pair}`;
         newSettings[currencyKey] = !allEnabled;
       });
     });

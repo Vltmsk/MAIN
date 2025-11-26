@@ -8,6 +8,9 @@ interface MessageFormatSettingsProps {
   onTemplateChange: (template: string) => void;
   onTimezoneChange: (timezone: string) => void;
   isUserEditingRef?: React.MutableRefObject<boolean>;
+  onSave: () => Promise<void>;
+  saving?: boolean;
+  setSaveMessage?: (message: { type: "success" | "error"; text: string } | null) => void;
 }
 
 export default function MessageFormatSettings({
@@ -16,6 +19,9 @@ export default function MessageFormatSettings({
   onTemplateChange,
   onTimezoneChange,
   isUserEditingRef,
+  onSave,
+  saving = false,
+  setSaveMessage,
 }: MessageFormatSettingsProps) {
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
@@ -34,6 +40,30 @@ export default function MessageFormatSettings({
         onTimezoneChange={onTimezoneChange}
         isUserEditingRef={isUserEditingRef}
       />
+      {/* Кнопка сохранения */}
+      <div className="mt-6">
+        <button
+          onClick={async () => {
+            try {
+              await onSave();
+            } catch (error) {
+              // Ошибка будет обработана в onSave, но на всякий случай показываем уведомление
+              if (setSaveMessage) {
+                setSaveMessage({
+                  type: "error",
+                  text: error instanceof Error ? error.message : "Ошибка при сохранении формата сообщений"
+                });
+              } else {
+                console.error("Ошибка при сохранении формата сообщений:", error);
+              }
+            }
+          }}
+          disabled={saving}
+          className="w-full px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-medium rounded-lg smooth-transition ripple hover-glow shadow-emerald disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {saving ? "Сохранение..." : "Сохранить формат сообщений"}
+        </button>
+      </div>
     </div>
   );
 }

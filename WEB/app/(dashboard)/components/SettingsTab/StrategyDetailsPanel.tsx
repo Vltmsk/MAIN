@@ -37,7 +37,7 @@ const Tooltip = ({ text, children }: { text: string; children: React.ReactNode }
 
   return (
     <div className="relative inline-block">
-      <div onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+      <div onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} className="inline-flex items-center gap-1">
         {children}
       </div>
       {show && position && (
@@ -67,7 +67,8 @@ export default function StrategyDetailsPanel({
   generateTemplateDescription,
   onUnsavedChanges,
 }: StrategyDetailsPanelProps) {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(["main", "filters", "conditions", "template"]));
+  // Для новых стратегий (без имени) скрываем секцию "template", для остальных тоже скрываем по умолчанию
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(["main", "filters", "conditions"]));
 
   // Обновление описания при изменении условий
   useEffect(() => {
@@ -350,7 +351,7 @@ export default function StrategyDetailsPanel({
                 <p className="text-xs text-zinc-500 mt-1.5">
                   {strategy.useGlobalFilters !== false
                     ? "Стратегия будет использовать фильтры из ваших глобальных настроек прострела для дельты, объёма и тени."
-                    : "Укажите значения для дельты, объёма и тени в условиях стратегии ниже. Эти поля обязательны для работы стратегии."}
+                    : "Укажите значения для дельты, объёма и тени в базовых фильтрах ниже. Эти поля обязательны для работы стратегии."}
                 </p>
               </div>
             </label>
@@ -362,12 +363,12 @@ export default function StrategyDetailsPanel({
               className={`p-4 rounded-lg transition-colors ${
                 strategyValidationErrors?.hasError
                   ? "bg-red-900/20 border-2 border-red-600/70"
-                  : "bg-amber-900/20 border border-amber-700/50"
+                  : "bg-zinc-900/50 border border-zinc-700"
               }`}
             >
               <div className="flex items-center gap-2 mb-3">
                 <svg
-                  className={`w-5 h-5 ${strategyValidationErrors?.hasError ? "text-red-400" : "text-amber-400"}`}
+                  className={`w-5 h-5 ${strategyValidationErrors?.hasError ? "text-red-400" : "text-zinc-400"}`}
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -375,7 +376,7 @@ export default function StrategyDetailsPanel({
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
                 <h3
-                  className={`text-sm font-semibold ${strategyValidationErrors?.hasError ? "text-red-300" : "text-amber-300"}`}
+                  className={`text-sm font-semibold ${strategyValidationErrors?.hasError ? "text-red-300" : "text-zinc-300"}`}
                 >
                   Базовые фильтры (обязательны)
                 </h3>
@@ -386,7 +387,7 @@ export default function StrategyDetailsPanel({
                   <p className="text-xs text-red-300/90">{strategyValidationErrors.message}</p>
                 </div>
               )}
-              <p className="text-xs text-amber-200/80 mb-4">
+              <p className="text-xs text-zinc-400 mb-4">
                 Для работы стратегии необходимо указать значения для дельты, объёма и тени. Эти фильтры будут использоваться вместо глобальных настроек.
               </p>
 
@@ -397,7 +398,7 @@ export default function StrategyDetailsPanel({
                     className={`block text-xs font-medium mb-2 ${
                       strategyValidationErrors?.missingFields?.includes("Дельта")
                         ? "text-red-300"
-                        : "text-amber-200"
+                        : "text-zinc-300"
                     }`}
                   >
                     Дельта (%) <span className="text-red-400">*</span>
@@ -436,7 +437,7 @@ export default function StrategyDetailsPanel({
                     className={`w-full px-3 py-2.5 bg-zinc-800 rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
                       strategyValidationErrors?.missingFields?.includes("Дельта")
                         ? "border-2 border-red-500 focus:ring-red-500 focus:border-red-500"
-                        : "border-2 border-amber-600/50 focus:ring-amber-500 focus:border-amber-500"
+                        : "border border-zinc-600 focus:ring-emerald-500 focus:border-emerald-500"
                     }`}
                     placeholder="0.3"
                   />
@@ -445,7 +446,7 @@ export default function StrategyDetailsPanel({
                       className={`text-[11px] mt-1 cursor-help ${
                         strategyValidationErrors?.missingFields?.includes("Дельта")
                           ? "text-red-300/70"
-                          : "text-amber-300/70"
+                          : "text-zinc-400"
                       }`}
                     >
                       Минимальная дельта стрелы (от 0.01% до 100%)
@@ -459,7 +460,7 @@ export default function StrategyDetailsPanel({
                     className={`block text-xs font-medium mb-2 ${
                       strategyValidationErrors?.missingFields?.includes("Объём")
                         ? "text-red-300"
-                        : "text-amber-200"
+                        : "text-zinc-300"
                     }`}
                   >
                     Объём (USDT) <span className="text-red-400">*</span>
@@ -495,7 +496,7 @@ export default function StrategyDetailsPanel({
                     className={`w-full px-3 py-2.5 bg-zinc-800 rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
                       strategyValidationErrors?.missingFields?.includes("Объём")
                         ? "border-2 border-red-500 focus:ring-red-500 focus:border-red-500"
-                        : "border-2 border-amber-600/50 focus:ring-amber-500 focus:border-amber-500"
+                        : "border border-zinc-600 focus:ring-emerald-500 focus:border-emerald-500"
                     }`}
                     placeholder="1000000"
                   />
@@ -504,7 +505,7 @@ export default function StrategyDetailsPanel({
                       className={`text-[11px] mt-1 cursor-help ${
                         strategyValidationErrors?.missingFields?.includes("Объём")
                           ? "text-red-300/70"
-                          : "text-amber-300/70"
+                          : "text-zinc-400"
                       }`}
                     >
                       Минимальный объём стрелы (от 1 USDT)
@@ -518,131 +519,58 @@ export default function StrategyDetailsPanel({
                     className={`block text-xs font-medium mb-2 ${
                       strategyValidationErrors?.missingFields?.includes("Тень")
                         ? "text-red-300"
-                        : "text-amber-200"
+                        : "text-zinc-300"
                     }`}
                   >
                     Тень (%) <span className="text-red-400">*</span>
                   </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[11px] mb-1 text-amber-300/70">От</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        max="100"
-                        value={
-                          strategy.conditions.find((c) => c.type === "wick_pct")?.valueMin !== undefined
-                            ? strategy.conditions.find((c) => c.type === "wick_pct")?.valueMin
-                            : ""
-                        }
-                        onChange={(e) => {
-                          const val = e.target.value === "" ? undefined : parseFloat(e.target.value);
-                          const updatedConditions = [...strategy.conditions];
-                          const wickIndex = updatedConditions.findIndex((c) => c.type === "wick_pct");
-                          
-                          if (wickIndex >= 0) {
-                            updatedConditions[wickIndex] = {
-                              ...updatedConditions[wickIndex],
-                              valueMin: val !== undefined && !isNaN(val) ? Math.max(0, Math.min(100, val)) : undefined,
-                            };
-                          } else {
-                            updatedConditions.unshift({
-                              type: "wick_pct",
-                              valueMin: val !== undefined && !isNaN(val) ? Math.max(0, Math.min(100, val)) : undefined,
-                              valueMax: null,
-                            });
-                          }
-                          
-                          handleStrategyUpdate({ conditions: updatedConditions });
-                        }}
-                        className={`w-full px-3 py-2 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 ${
-                          strategyValidationErrors?.missingFields?.includes("Тень")
-                            ? "bg-zinc-800 border-2 border-red-500 focus:ring-red-500 focus:border-red-500"
-                            : "bg-zinc-800 border-2 border-amber-600/50 focus:ring-amber-500 focus:border-amber-500"
-                        }`}
-                        placeholder="0"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] mb-1 text-amber-300/70">До</label>
-                      <input
-                        type="text"
-                        value={
-                          strategy.conditions.find((c) => c.type === "wick_pct")?.valueMax === null ||
-                          strategy.conditions.find((c) => c.type === "wick_pct")?.valueMax === undefined
-                            ? "∞"
-                            : String(strategy.conditions.find((c) => c.type === "wick_pct")?.valueMax ?? "")
-                        }
-                        onChange={(e) => {
-                          const updatedConditions = [...strategy.conditions];
-                          const wickIndex = updatedConditions.findIndex((c) => c.type === "wick_pct");
-                          
-                          if (e.target.value === "∞" || e.target.value === "" || e.target.value.trim() === "") {
-                            if (wickIndex >= 0) {
-                              updatedConditions[wickIndex] = {
-                                ...updatedConditions[wickIndex],
-                                valueMax: null,
-                              };
-                            } else {
-                              updatedConditions.unshift({
-                                type: "wick_pct",
-                                valueMin: 0,
-                                valueMax: null,
-                              });
-                            }
-                          } else {
-                            const numValue = parseFloat(e.target.value);
-                            if (!isNaN(numValue)) {
-                              if (wickIndex >= 0) {
-                                updatedConditions[wickIndex] = {
-                                  ...updatedConditions[wickIndex],
-                                  valueMax: Math.max(0, Math.min(100, numValue)),
-                                };
-                              } else {
-                                updatedConditions.unshift({
-                                  type: "wick_pct",
-                                  valueMin: 0,
-                                  valueMax: Math.max(0, Math.min(100, numValue)),
-                                });
-                              }
-                            }
-                          }
-                          
-                          handleStrategyUpdate({ conditions: updatedConditions });
-                        }}
-                        onBlur={(e) => {
-                          if (e.target.value === "" || e.target.value.trim() === "") {
-                            const updatedConditions = [...strategy.conditions];
-                            const wickIndex = updatedConditions.findIndex((c) => c.type === "wick_pct");
-                            if (wickIndex >= 0) {
-                              updatedConditions[wickIndex] = {
-                                ...updatedConditions[wickIndex],
-                                valueMax: null,
-                              };
-                              handleStrategyUpdate({ conditions: updatedConditions });
-                            }
-                          }
-                        }}
-                        placeholder="∞"
-                        className={`w-full px-3 py-2 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 ${
-                          strategyValidationErrors?.missingFields?.includes("Тень")
-                            ? "bg-zinc-800 border-2 border-red-500 focus:ring-red-500 focus:border-red-500"
-                            : "bg-zinc-800 border-2 border-amber-600/50 focus:ring-amber-500 focus:border-amber-500"
-                        }`}
-                        title="Введите число от 0 до 100 или оставьте ∞ для бесконечности"
-                      />
-                    </div>
-                  </div>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="100"
+                    value={
+                      strategy.conditions.find((c) => c.type === "wick_pct")?.valueMin !== undefined
+                        ? strategy.conditions.find((c) => c.type === "wick_pct")?.valueMin
+                        : ""
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value === "" ? undefined : parseFloat(e.target.value);
+                      const updatedConditions = [...strategy.conditions];
+                      const wickIndex = updatedConditions.findIndex((c) => c.type === "wick_pct");
+                      
+                      if (wickIndex >= 0) {
+                        updatedConditions[wickIndex] = {
+                          ...updatedConditions[wickIndex],
+                          valueMin: val !== undefined && !isNaN(val) ? Math.max(0, Math.min(100, val)) : undefined,
+                          valueMax: null,
+                        };
+                      } else {
+                        updatedConditions.unshift({
+                          type: "wick_pct",
+                          valueMin: val !== undefined && !isNaN(val) ? Math.max(0, Math.min(100, val)) : undefined,
+                          valueMax: null,
+                        });
+                      }
+                      
+                      handleStrategyUpdate({ conditions: updatedConditions });
+                    }}
+                    className={`w-full px-3 py-2.5 rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                      strategyValidationErrors?.missingFields?.includes("Тень")
+                        ? "bg-zinc-800 border-2 border-red-500 focus:ring-red-500 focus:border-red-500"
+                        : "bg-zinc-800 border border-zinc-600 focus:ring-emerald-500 focus:border-emerald-500"
+                    }`}
+                    placeholder="0"
+                  />
                   <Tooltip text="Минимальная тень свечи в процентах. Определяет минимальный процент тени (верхней или нижней части свечи) для фильтрации стрел.">
                     <p
                       className={`text-[11px] mt-1 cursor-help ${
                         strategyValidationErrors?.missingFields?.includes("Тень")
                           ? "text-red-300/70"
-                          : "text-amber-300/70"
+                          : "text-zinc-400"
                       }`}
                     >
-                      Диапазон тени свечи (от 0% до 100%)
+                      Минимальная тень свечи (от 0% до 100%)
                     </p>
                   </Tooltip>
                 </div>
@@ -676,17 +604,15 @@ export default function StrategyDetailsPanel({
           <>
 
           <p className="text-xs text-zinc-500 mb-4">
-            Можно добавить несколько строк с разными параметрами (объём, дельта, серия и т.д.).
+            Можно добавить несколько строк с разными параметрами (серия, символ, биржа и т.д.).
           </p>
 
           <div className="space-y-3 mb-4">
             {strategy.conditions
               .map((condition, actualIndex) => {
-                // Пропускаем базовые фильтры, если useGlobalFilters = false (они показываются в секции фильтров)
-                if (strategy.useGlobalFilters === false) {
-                  if (condition.type === "delta" || condition.type === "volume" || condition.type === "wick_pct") {
-                    return null;
-                  }
+                // Пропускаем базовые фильтры (объём, дельта, тень) - они всегда показываются только в секции фильтров
+                if (condition.type === "delta" || condition.type === "volume" || condition.type === "wick_pct") {
+                  return null;
                 }
 
                 const handleConditionChange = (updates: Partial<typeof condition>) => {
@@ -714,9 +640,6 @@ export default function StrategyDetailsPanel({
                             if (newType === "series") {
                               newCondition.count = 2;
                               newCondition.timeWindowSeconds = 300;
-                            } else if (newType === "delta" || newType === "wick_pct") {
-                              newCondition.valueMin = 0;
-                              newCondition.valueMax = null;
                             } else if (newType === "symbol") {
                               newCondition.symbol = "";
                             } else if (newType === "exchange_market") {
@@ -731,9 +654,6 @@ export default function StrategyDetailsPanel({
                           }}
                           className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                         >
-                          <option value="volume">Объём (USDT)</option>
-                          <option value="delta">Дельта (%)</option>
-                          <option value="wick_pct">Тень свечи (%)</option>
                           <option value="series">Серия стрел</option>
                           <option value="symbol">Символ (монета)</option>
                           <option value="exchange_market">Биржа и тип рынка</option>
@@ -777,23 +697,6 @@ export default function StrategyDetailsPanel({
                         </>
                       )}
 
-                      {condition.type === "delta" && (
-                        <div className="flex-1">
-                          <label className="block text-xs text-zinc-400 mb-1">Дельта от (%)</label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0"
-                            value={condition.valueMin !== undefined ? condition.valueMin : condition.value || ""}
-                            onChange={(e) => {
-                              const val = e.target.value === "" ? 0 : parseFloat(e.target.value);
-                              handleConditionChange({ valueMin: isNaN(val) ? 0 : val, valueMax: null });
-                            }}
-                            className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                            placeholder="0"
-                          />
-                        </div>
-                      )}
 
                       {condition.type === "symbol" && (
                         <div className="flex-1">
@@ -808,54 +711,6 @@ export default function StrategyDetailsPanel({
                         </div>
                       )}
 
-                      {condition.type === "wick_pct" && (
-                        <div className="flex-1">
-                          <label className="block text-xs text-zinc-400 mb-2">Диапазон (%)</label>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="block text-xs text-zinc-500 mb-1">От</label>
-                              <input
-                                type="number"
-                                step="0.1"
-                                min="0"
-                                max="100"
-                                value={condition.valueMin !== undefined ? condition.valueMin : ""}
-                                onChange={(e) => {
-                                  const val = e.target.value === "" ? 0 : parseFloat(e.target.value);
-                                  handleConditionChange({ valueMin: isNaN(val) ? 0 : Math.max(0, Math.min(100, val)) });
-                                }}
-                                className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                placeholder="0"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs text-zinc-500 mb-1">До</label>
-                              <input
-                                type="text"
-                                value={condition.valueMax === null || condition.valueMax === undefined ? "∞" : String(condition.valueMax)}
-                                onChange={(e) => {
-                                  if (e.target.value === "∞" || e.target.value === "" || e.target.value.trim() === "") {
-                                    handleConditionChange({ valueMax: null });
-                                  } else {
-                                    const numValue = parseFloat(e.target.value);
-                                    if (!isNaN(numValue)) {
-                                      handleConditionChange({ valueMax: Math.max(0, Math.min(100, numValue)) });
-                                    }
-                                  }
-                                }}
-                                onBlur={(e) => {
-                                  if (e.target.value === "" || e.target.value.trim() === "") {
-                                    handleConditionChange({ valueMax: null });
-                                  }
-                                }}
-                                placeholder="∞"
-                                className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                title="Введите число от 0 до 100 или оставьте ∞ для бесконечности"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
 
                       {condition.type === "exchange_market" && (
                         <div className="flex-1">
@@ -893,7 +748,7 @@ export default function StrategyDetailsPanel({
                         </div>
                       )}
 
-                      {(condition.type === "volume" || !["series", "delta", "symbol", "wick_pct", "exchange_market", "direction"].includes(condition.type)) && (
+                      {(!["series", "symbol", "exchange_market", "direction"].includes(condition.type)) && (
                         <div className="w-full md:w-auto md:min-w-[220px]">
                           <label className="block text-xs text-zinc-400 mb-1">Значение (≥)</label>
                           <input
@@ -911,10 +766,7 @@ export default function StrategyDetailsPanel({
                       )}
 
                       {strategy.conditions.filter((c) => {
-                        if (strategy.useGlobalFilters === false) {
-                          return c.type !== "delta" && c.type !== "volume" && c.type !== "wick_pct";
-                        }
-                        return true;
+                        return c.type !== "delta" && c.type !== "volume" && c.type !== "wick_pct";
                       }).length > 1 && condition && (
                         <button
                           onClick={handleConditionDelete}
@@ -935,8 +787,9 @@ export default function StrategyDetailsPanel({
             onClick={() => {
               const updatedConditions = [...strategy.conditions];
               updatedConditions.push({
-                type: "volume",
-                value: 0,
+                type: "series",
+                count: 2,
+                timeWindowSeconds: 300,
               });
               handleStrategyUpdate({ conditions: updatedConditions });
             }}

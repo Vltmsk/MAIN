@@ -220,9 +220,9 @@ async def _send_chart_async(
             )
             if timer:
                 timer.end("tg.send")
-                # Отправляем метрики пользователю сразу после сигнала
+                # Отправляем метрики пользователю в фоне (не блокируем отправку основного сообщения)
                 if timer.has_metrics():
-                    await _send_performance_metrics_to_user(timer, candle, token, chat_id)
+                    asyncio.create_task(_send_performance_metrics_to_user(timer, candle, token, chat_id))
             
             if success:
                 logger.info(
@@ -321,9 +321,9 @@ async def _send_text_message_async(
         )
         if timer:
             timer.end("tg.send")
-            # Отправляем метрики пользователю сразу после сигнала
+            # Отправляем метрики пользователю в фоне (не блокируем отправку основного сообщения)
             if timer.has_metrics():
-                await _send_performance_metrics_to_user(timer, candle, tg_token, target_chat_id)
+                asyncio.create_task(_send_performance_metrics_to_user(timer, candle, tg_token, target_chat_id))
         if msg_success:
             logger.info(
                 f"Уведомление отправлено пользователю {user_name} "
@@ -372,7 +372,17 @@ async def on_candle(candle: Candle) -> None:
             return
     
     metrics.inc_candle(candle.exchange, candle.market)
-    # Не логируем каждую свечу - только статистика
+    # Логируем каждую 1000-ю свечу для проверки работы
+    try:
+        stats = metrics.get_stats()
+        exchange_stats = stats.get("by_exchange", {}).get(candle.exchange, {})
+        market_stats = exchange_stats.get(candle.market, {})
+        candle_count = market_stats.get("candles", 0)
+        if candle_count > 0 and candle_count % 1000 == 0:
+            logger.debug(f"Получена свеча #{candle_count}: {candle.exchange} {candle.market} {candle.symbol}")
+    except Exception as e:
+        # Не критично, просто пропускаем логирование
+        pass
     
     # Детект стрел для всех пользователей (параллельно, асинхронно)
     try:
@@ -401,6 +411,10 @@ async def on_candle(candle: Candle) -> None:
                 timer: Optional[PerformanceTimer] = None
                 if enable_metrics:
                     timer = PerformanceTimer(user_name)
+                    # Добавляем время проверки условий пользователя из результата детектирования
+                    user_check_duration_ms = spike_info.get("user_check_duration_ms")
+                    if user_check_duration_ms is not None:
+                        timer.metrics["user.check_duration"] = user_check_duration_ms
                 
                 # Получаем информацию о пользователе для отправки уведомления
                 if timer:
@@ -522,6 +536,14 @@ async def on_candle(candle: Candle) -> None:
                     except (ValueError, TypeError) as e:
                         logger.debug(f"Ошибка обработки настроек для пользователя {user_name}: {e}")
                 
+                # Проверяем наличие токена и chat_id перед отправкой
+                # Для системного пользователя "Stats" не логируем предупреждения, так как он используется только для статистики
+                if user_name.lower() != "stats":
+                    if not tg_token:
+                        logger.warning(f"⚠️ Пользователь {user_name} не настроил Telegram Bot Token - сообщение не будет отправлено")
+                    if not chat_id:
+                        logger.warning(f"⚠️ Пользователь {user_name} не настроил Telegram Chat ID - сообщение не будет отправлено")
+                
                 if tg_token and chat_id:
                     try:
                         # Формируем сообщения в зависимости от способа детектирования
@@ -553,6 +575,8 @@ async def on_candle(candle: Candle) -> None:
                                     messages.extend(strategy_messages)
                         else:
                             # Используем дефолтный шаблон (messageTemplate)
+                            # ВАЖНО: conditional_templates должны использоваться даже при детекте через обычные настройки
+                            # Это позволяет пользователям использовать условные шаблоны для фильтрации сообщений
                             if timer:
                                 timer.start("format.message")
                             messages = await telegram_notifier.format_spike_messages(
@@ -561,7 +585,7 @@ async def on_candle(candle: Candle) -> None:
                                 wick_pct=wick_pct,
                                 volume_usdt=volume_usdt,
                                 template=message_template,
-                                conditional_templates=None,  # Не используем условные шаблоны, так как это обычный прострел
+                                conditional_templates=conditional_templates,  # Используем условные шаблоны, если они есть
                                 user_id=user_id,
                                 token=tg_token,
                                 timezone=user_timezone,
@@ -569,6 +593,11 @@ async def on_candle(candle: Candle) -> None:
                             )
                             if timer:
                                 timer.end("format.message")
+                            
+                            # Логируем количество сформированных сообщений для диагностики
+                            logger.debug(f"Сформировано {len(messages)} сообщений для {user_name} ({candle.exchange} {candle.market} {candle.symbol})")
+                            if not messages:
+                                logger.warning(f"⚠️ ПУСТОЙ СПИСОК СООБЩЕНИЙ для {user_name} ({candle.exchange} {candle.market} {candle.symbol}): message_template={message_template is not None}, conditional_templates={conditional_templates is not None if conditional_templates else None}")
                         
                         # Если график включен, отправляем график с текстом как подписью
                         if should_send_chart:
@@ -596,6 +625,8 @@ async def on_candle(candle: Candle) -> None:
                                     ))
                         else:
                             # Если график не включен, отправляем только текстовые сообщения
+                            if not messages:
+                                logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: список сообщений пустой для {user_name} ({candle.exchange} {candle.market} {candle.symbol}) - сообщение не будет отправлено!")
                             for msg_info in messages:
                                 message_text = msg_info.get("message", "")
                                 target_chat_id = msg_info.get("chatId") or chat_id

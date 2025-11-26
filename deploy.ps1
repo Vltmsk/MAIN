@@ -73,9 +73,8 @@ try {
     
     # First do hard reset for full synchronization
     Write-Log "Synchronizing working directory with remote repository..."
-    $resetOutput = git reset --hard origin/$currentBranch 2>&1 | ForEach-Object {
+    git reset --hard origin/$currentBranch 2>&1 | ForEach-Object {
         Write-Log $_
-        $_
     }
     
     if ($LASTEXITCODE -ne 0) {

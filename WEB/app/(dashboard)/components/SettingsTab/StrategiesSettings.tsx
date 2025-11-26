@@ -34,11 +34,11 @@ export default function StrategiesSettings({
   messageTemplate,
   generateTemplateDescription,
   setSaveMessage,
+  onUnsavedChangesChange,
 }: StrategiesSettingsProps) {
   // Состояния для управления интерфейсом
   const [selectedStrategyIndex, setSelectedStrategyIndex] = useState<number | null>(null);
   const [selectedStrategies, setSelectedStrategies] = useState<Set<number>>(new Set());
-  const [filterText, setFilterText] = useState<string>("");
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false);
 
   // Функция для работы с шаблонами (используется для вставки placeholder в старый код, если он еще используется)
@@ -160,6 +160,44 @@ export default function StrategiesSettings({
     setSelectedStrategies((prev) => new Set(prev).add(newIndex));
   };
 
+  const handleDeleteStrategy = (index: number) => {
+    const strategy = conditionalTemplates[index];
+    const strategyName = strategy.name || `Стратегия #${index + 1}`;
+    
+    const confirmMessage = `Вы действительно хотите удалить стратегию "${strategyName}"?\n\nЭто действие нельзя отменить.`;
+    
+    if (confirm(confirmMessage)) {
+      const newTemplates = conditionalTemplates.filter((_, i) => i !== index);
+      onTemplatesChange(newTemplates);
+      
+      // Обновляем индексы выбранных стратегий
+      const newSelectedStrategies = new Set<number>();
+      selectedStrategies.forEach((selectedIndex) => {
+        if (selectedIndex < index) {
+          newSelectedStrategies.add(selectedIndex);
+        } else if (selectedIndex > index) {
+          newSelectedStrategies.add(selectedIndex - 1);
+        }
+        // Если selectedIndex === index, то эта стратегия удалена, не добавляем её
+      });
+      setSelectedStrategies(newSelectedStrategies);
+      
+      // Если удаляемая стратегия была выбрана, сбрасываем выбор
+      if (selectedStrategyIndex === index) {
+        setSelectedStrategyIndex(null);
+      } else if (selectedStrategyIndex !== null && selectedStrategyIndex > index) {
+        // Если выбранная стратегия была после удаляемой, уменьшаем её индекс
+        setSelectedStrategyIndex(selectedStrategyIndex - 1);
+      }
+      
+      setHasUnsavedChanges(true);
+      setSaveMessage({
+        type: "success",
+        text: `Стратегия "${strategyName}" удалена. Не забудьте сохранить изменения.`
+      });
+    }
+  };
+
   return (
     <div className="h-[calc(100vh-200px)] flex flex-col gap-4">
       {/* Верхняя часть: левая и центральная панели (на планшетах и десктопе) */}
@@ -170,16 +208,8 @@ export default function StrategiesSettings({
             strategies={conditionalTemplates}
             selectedStrategyIndex={selectedStrategyIndex}
             selectedStrategies={selectedStrategies}
-            filterText={filterText}
             onStrategySelect={handleStrategySelect}
             onStrategyToggle={handleStrategyToggle}
-            onFilterChange={setFilterText}
-            onStrategyCommentChange={(index, comment) => {
-              const newTemplates = [...conditionalTemplates];
-              newTemplates[index] = { ...newTemplates[index], comment };
-              onTemplatesChange(newTemplates);
-              setHasUnsavedChanges(true);
-            }}
             generateTemplateDescription={generateTemplateDescription}
           />
         </div>
@@ -246,6 +276,7 @@ export default function StrategiesSettings({
             onTemplatesChange={onTemplatesChange}
             onSave={onSave}
             onAddStrategy={handleAddStrategy}
+            onDeleteStrategy={handleDeleteStrategy}
             onClose={() => {
               setSelectedStrategyIndex(null);
               setHasUnsavedChanges(false);
@@ -267,6 +298,7 @@ export default function StrategiesSettings({
           onTemplatesChange={onTemplatesChange}
           onSave={onSave}
           onAddStrategy={handleAddStrategy}
+          onDeleteStrategy={handleDeleteStrategy}
           onClose={() => {
             setSelectedStrategyIndex(null);
             setHasUnsavedChanges(false);

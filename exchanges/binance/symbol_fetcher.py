@@ -8,10 +8,10 @@ from typing import List
 
 # Котируемые активы для Spot
 SPOT_QUOTE_ASSETS = {
-    "BTC", "ETH", "USDT", "BNB", "AUD", "TUSD", "BRL", "GBP",
-    "USDC", "TRX", "EUR", "BIDR", "DOGE", "TRY", "FDUSD", "AEUR",
+    "BTC", "ETH", "USDT", "BNB", "USD", "TUSD", "BRL",
+    "USDC", "TRX", "EUR", "DOGE", "TRY", "FDUSD",
 }
-# Котируемые активы для Futures USDⓈ-M
+# Котируемые активы для Futures USDⓈ-M5
 FAPI_QUOTE_ASSETS = {"USDT", "USDC", "BTC"}
 
 SPOT_EXCHANGE_INFO = "https://api.binance.com/api/v3/exchangeInfo"

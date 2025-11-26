@@ -303,7 +303,7 @@ class TelegramNotifier:
         Поддерживаемые типы условий:
         - "volume": проверка объёма (value >= condition.value)
         - "delta": проверка дельты (valueMin <= delta <= valueMax)
-        - "wick_pct": проверка тени (valueMin <= wick_pct <= valueMax)
+        - "wick_pct": проверка тени (wick_pct >= valueMin)
         - "series": проверка серии стрел (count >= condition.count за timeWindowSeconds)
         - "symbol": проверка символа (с нормализацией)
         - "exchange_market": проверка биржи и рынка
@@ -419,19 +419,14 @@ class TelegramNotifier:
                 # Сравниваем нормализованные символы
                 return candle_symbol_normalized == condition_symbol_normalized
             elif cond_type == "wick_pct":
-                # Проверка условия по тени свечи (диапазон)
+                # Проверка условия по тени свечи (только от)
                 value_min = condition.get("valueMin")
-                value_max = condition.get("valueMax")
                 
                 if value_min is None:
                     return False
                 
                 # Проверяем минимальное значение
                 if wick_pct < value_min:
-                    return False
-                
-                # Проверяем максимальное значение, если оно указано (не None)
-                if value_max is not None and wick_pct > value_max:
                     return False
                 
                 return True
@@ -596,12 +591,16 @@ class TelegramNotifier:
             return matched_templates
         
         # Если не найдено подходящих условных шаблонов, возвращаем дефолтный
-        if default_template:
+        # ВАЖНО: Если default_template пустой или None, возвращаем пустой список
+        # Дефолтный шаблон будет создан в format_spike_messages, если messages пустой
+        if default_template and default_template.strip():
             return [{
                 "template": default_template,
                 "chatId": default_chat_id
             }]
         
+        # Если default_template пустой, возвращаем пустой список
+        # format_spike_messages создаст дефолтный шаблон, если messages пустой
         return []
     
     @staticmethod
@@ -734,7 +733,9 @@ class TelegramNotifier:
         
         # Если нет подходящих шаблонов, используем дефолтный
         if not messages:
-            default_message = f"""
+            # Проверяем, что default_chat_id не пустой и не None
+            if default_chat_id and default_chat_id.strip():
+                default_message = f"""
 🚨 <b>НАЙДЕНА СТРЕЛА!</b> {direction_emoji}
 
 <b>{candle.exchange.upper()} | {market_text}</b>
@@ -746,11 +747,13 @@ class TelegramNotifier:
 • Тень: <b>{wick_formatted}</b>
 
 ⏰ <b>{time_str}</b>
-            """.strip()
-            messages.append({
-                "message": default_message,
-                "chatId": default_chat_id
-            })
+                """.strip()
+                messages.append({
+                    "message": default_message,
+                    "chatId": default_chat_id
+                })
+            else:
+                logger.warning(f"Не удалось создать дефолтное сообщение: default_chat_id не указан или пустой для {candle.exchange} {candle.market} {candle.symbol}")
         
         return messages
     
