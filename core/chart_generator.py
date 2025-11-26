@@ -8,7 +8,7 @@ import ssl
 import certifi
 import sys
 import os
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple, Any, Literal, TypedDict
 from io import BytesIO
 import matplotlib
 matplotlib.use('Agg')  # Используем backend без GUI
@@ -21,9 +21,107 @@ from core.symbol_utils import get_symbol_with_pair
 
 logger = get_logger(__name__)
 
+# Структура тика для тикового графика
+class Tick(TypedDict):
+    id: int
+    ts: int          # timestamp в миллисекундах
+    price: float
+    qty: float
+    side: Literal["buy", "sell"]
+
 # Кэш для графиков: {cache_key: (image_bytes, timestamp)}
 _chart_cache: Dict[str, Tuple[bytes, float]] = {}
 CACHE_TTL = 600  # 10 минут
+
+
+async def _fetch_latest_aggtrades_binance_spot(symbol: str, limit: int = 1000) -> List[dict]:
+    """
+    Получить сырые aggTrades со спота Binance (последние limit сделок).
+    Никаких startTime/fromId - только последние aggTrades.
+    
+    Args:
+        symbol: Символ торговой пары (например, BTCUSDT)
+        limit: Максимальное количество сделок (до 1000)
+        
+    Returns:
+        Список словарей с aggTrades
+    """
+    url = "https://api.binance.com/api/v3/aggTrades"
+    params = {"symbol": symbol.upper(), "limit": limit}
+    
+    connector = _create_ssl_connector()
+    try:
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    logger.warning(f"Ошибка получения aggTrades Binance Spot: HTTP {response.status}")
+                    return []
+    except ssl.SSLError as e:
+        _log_ssl_error("binance", url, e)
+        return []
+    except Exception as e:
+        logger.warning(f"Ошибка получения aggTrades Binance Spot: {e}")
+        return []
+
+
+async def _fetch_latest_aggtrades_binance_futures(symbol: str, limit: int = 1000) -> List[dict]:
+    """
+    То же самое, но для Binance Futures USDT-M.
+    
+    Args:
+        symbol: Символ торговой пары (например, BTCUSDT)
+        limit: Максимальное количество сделок (до 1000)
+        
+    Returns:
+        Список словарей с aggTrades
+    """
+    url = "https://fapi.binance.com/fapi/v1/aggTrades"
+    params = {"symbol": symbol.upper(), "limit": limit}
+    
+    connector = _create_ssl_connector()
+    try:
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    logger.warning(f"Ошибка получения aggTrades Binance Futures: HTTP {response.status}")
+                    return []
+    except ssl.SSLError as e:
+        _log_ssl_error("binance", url, e)
+        return []
+    except Exception as e:
+        logger.warning(f"Ошибка получения aggTrades Binance Futures: {e}")
+        return []
+
+
+def _aggtrades_to_ticks(aggtrades: List[dict]) -> List[Tick]:
+    """
+    Конвертация списка aggTrades в список тиков (Tick).
+    Предполагаем, что aggtrades уже отсортированы Binance по времени (oldest -> newest).
+    
+    Args:
+        aggtrades: Список словарей с aggTrades от Binance
+        
+    Returns:
+        Список тиков
+    """
+    ticks: List[Tick] = []
+    for a in aggtrades:
+        tick: Tick = {
+            "id": int(a["a"]),
+            "ts": int(a["T"]),
+            "price": float(a["p"]),
+            "qty": float(a["q"]),
+            "side": "sell" if a["m"] else "buy",  # m==True -> buyer is maker -> агрессор продавец -> SELL
+        }
+        ticks.append(tick)
+    
+    # На всякий случай сортируем по ts (Binance уже возвращает в правильном порядке)
+    ticks.sort(key=lambda t: t["ts"])
+    return ticks
 
 
 def _create_ssl_connector() -> aiohttp.TCPConnector:
@@ -120,369 +218,55 @@ class ChartGenerator:
         logger.debug(f"График сохранен в кэш: {cache_key}")
     
     @staticmethod
-    async def _fetch_trades_binance(symbol: str, market: str, start_time: int, end_time: int) -> List[Dict]:
+    async def _fetch_ticks_binance(symbol: str, market: str) -> List[Tick]:
         """
-        Получает историю сделок с Binance через REST API
+        Получает последние тики с Binance через REST API aggTrades (последние 1000 сделок).
+        Согласно chart.md: запрашиваем последние 1000 aggTrades без startTime/endTime.
         
         Args:
             symbol: Символ торговой пары (например, BTCUSDT)
             market: Тип рынка (spot/linear)
-            start_time: Начальное время в миллисекундах
-            end_time: Конечное время в миллисекундах
             
         Returns:
-            Список сделок (максимум 1000 сделок)
-        
-        Примечание:
-            Функция использует endpoint aggTrades (агрегированные сделки) вместо обычных trades,
-            так как он позволяет запрашивать данные за определённый период времени.
-            Данные преобразуются из формата aggTrades в стандартный формат сделок.
+            Список тиков (Tick)
         """
         try:
-            # Для Binance нужно использовать разные endpoints для spot и futures
+            # Получаем последние aggTrades (без времени)
             if market == "spot":
-                url = "https://api.binance.com/api/v3/trades"
+                raw_aggtrades = await _fetch_latest_aggtrades_binance_spot(symbol, limit=1000)
             else:  # linear/futures
-                url = "https://fapi.binance.com/fapi/v1/trades"
+                raw_aggtrades = await _fetch_latest_aggtrades_binance_futures(symbol, limit=1000)
             
-            # Binance возвращает последние 1000 сделок, но мы можем запросить по времени
-            # Используем агрегированные сделки (aggTrades) для получения данных за период
-            if market == "spot":
-                url = "https://api.binance.com/api/v3/aggTrades"
-            else:
-                url = "https://fapi.binance.com/fapi/v1/aggTrades"
+            if not raw_aggtrades:
+                return []
             
-            params = {
-                "symbol": symbol,
-                "startTime": start_time,
-                "endTime": end_time,
-                "limit": 1000
-            }
+            # Конвертируем aggTrades в тики
+            ticks = _aggtrades_to_ticks(raw_aggtrades)
+            return ticks
             
-            connector = _create_ssl_connector()
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        # Преобразуем aggTrades в формат сделок
-                        trades = []
-                        for trade in data:
-                            # aggTrades содержит: a (agg trade id), p (price), q (quantity), f (first trade id), l (last trade id), T (timestamp), m (is buyer maker)
-                            price = float(trade.get("p", 0))
-                            quantity = float(trade.get("q", 0))
-                            timestamp = trade.get("T", 0)
-                            is_buyer_maker = trade.get("m", False)
-                            
-                            trades.append({
-                                "price": price,
-                                "quantity": quantity,
-                                "timestamp": timestamp,
-                                "is_buyer": not is_buyer_maker  # Если maker - продавец, то taker - покупатель
-                            })
-                        return trades
-                    else:
-                        logger.warning(f"Ошибка получения сделок Binance: HTTP {response.status}")
-                        return []
-        except ssl.SSLError as e:
-            _log_ssl_error("binance", url, e)
-            return []
         except Exception as e:
-            logger.warning(f"Ошибка получения сделок Binance: {e}")
+            logger.warning(f"Ошибка получения тиков Binance: {e}")
             return []
     
     @staticmethod
-    async def _fetch_trades_bybit(symbol: str, market: str, start_time: int, end_time: int) -> List[Dict]:
+    async def _fetch_ticks(exchange: str, symbol: str, market: str) -> List[Tick]:
         """
-        Получает историю сделок с Bybit через REST API
-        
-        Args:
-            symbol: Символ торговой пары
-            market: Тип рынка (spot/linear)
-            start_time: Начальное время в миллисекундах
-            end_time: Конечное время в миллисекундах
-            
-        Returns:
-            Список сделок
-        
-        Примечание:
-            Для spot и linear используется один и тот же URL "https://api.bybit.com/v5/market/recent-trade",
-            различие только в параметре "category" (spot или linear).
-            Символ может быть автоматически преобразован: если он не заканчивается на USDT или USDC,
-            к нему добавляется USDT.
-        """
-        try:
-            # Bybit V5 API
-            if market == "spot":
-                url = "https://api.bybit.com/v5/market/recent-trade"
-            else:  # linear
-                url = "https://api.bybit.com/v5/market/recent-trade"
-            
-            # Преобразуем символ для Bybit (нужно добавить USDT если его нет)
-            bybit_symbol = symbol
-            if not symbol.endswith("USDT") and not symbol.endswith("USDC"):
-                bybit_symbol = f"{symbol}USDT"
-            
-            params = {
-                "category": "spot" if market == "spot" else "linear",
-                "symbol": bybit_symbol,
-                "limit": 1000
-            }
-            
-            connector = _create_ssl_connector()
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        result = data.get("result", {})
-                        trades_list = result.get("list", [])
-                        
-                        trades = []
-                        for trade in trades_list:
-                            price = float(trade.get("price", 0))
-                            quantity = float(trade.get("size", 0))
-                            timestamp = int(trade.get("time", 0))
-                            side = trade.get("side", "").lower()
-                            
-                            # Фильтруем по времени
-                            if timestamp < start_time or timestamp > end_time:
-                                continue
-                            
-                            trades.append({
-                                "price": price,
-                                "quantity": quantity,
-                                "timestamp": timestamp,
-                                "is_buyer": side == "buy"
-                            })
-                        return trades
-                    else:
-                        logger.warning(f"Ошибка получения сделок Bybit: HTTP {response.status}")
-                        return []
-        except ssl.SSLError as e:
-            _log_ssl_error("bybit", url, e)
-            return []
-        except Exception as e:
-            logger.warning(f"Ошибка получения сделок Bybit: {e}")
-            return []
-    
-    @staticmethod
-    async def _fetch_trades_gate(symbol: str, market: str, start_time: int, end_time: int) -> List[Dict]:
-        """
-        Получает историю сделок с Gate.io через REST API
-        
-        Args:
-            symbol: Символ торговой пары
-            market: Тип рынка (spot/linear)
-            start_time: Начальное время в миллисекундах
-            end_time: Конечное время в миллисекундах
-            
-        Returns:
-            Список сделок
-        """
-        try:
-            # Gate.io API
-            if market == "spot":
-                url = "https://api.gateio.ws/api/v4/spot/trades"
-            else:  # linear
-                url = "https://api.gateio.ws/api/v4/futures/usdt/trades"
-            
-            # Преобразуем символ для Gate.io (формат: BTC_USDT)
-            gate_symbol = symbol.replace("USDT", "_USDT").replace("USDC", "_USDC")
-            
-            params = {
-                "currency_pair": gate_symbol,
-                "limit": 1000
-            }
-            
-            connector = _create_ssl_connector()
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        trades = []
-                        for trade in data:
-                            price = float(trade.get("price", 0))
-                            amount = float(trade.get("amount", 0))
-                            timestamp = int(trade.get("create_time", 0)) * 1000  # Gate.io возвращает секунды
-                            side = trade.get("side", "").lower()
-                            
-                            # Фильтруем по времени
-                            if timestamp < start_time or timestamp > end_time:
-                                continue
-                            
-                            trades.append({
-                                "price": price,
-                                "quantity": amount,
-                                "timestamp": timestamp,
-                                "is_buyer": side == "buy"
-                            })
-                        return trades
-                    else:
-                        logger.warning(f"Ошибка получения сделок Gate.io: HTTP {response.status}")
-                        return []
-        except ssl.SSLError as e:
-            _log_ssl_error("gate", url, e)
-            return []
-        except Exception as e:
-            logger.warning(f"Ошибка получения сделок Gate.io: {e}")
-            return []
-    
-    @staticmethod
-    async def _fetch_trades_bitget(symbol: str, market: str, start_time: int, end_time: int) -> List[Dict]:
-        """
-        Получает историю сделок с Bitget через REST API
-        
-        Args:
-            symbol: Символ торговой пары
-            market: Тип рынка (spot/linear)
-            start_time: Начальное время в миллисекундах
-            end_time: Конечное время в миллисекундах
-            
-        Returns:
-            Список сделок
-        """
-        try:
-            # Bitget API
-            if market == "spot":
-                url = "https://api.bitget.com/api/spot/v1/market/fills"
-            else:  # linear
-                url = "https://api.bitget.com/api/mix/v1/market/fills"
-            
-            # Преобразуем символ для Bitget
-            bitget_symbol = symbol
-            
-            params = {
-                "symbol": bitget_symbol,
-                "limit": 1000
-            }
-            
-            if market != "spot":
-                params["productType"] = "umcbl"  # USDT-M perpetual
-            
-            connector = _create_ssl_connector()
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        result = data.get("data", [])
-                        
-                        trades = []
-                        for trade in result:
-                            price = float(trade.get("price", 0))
-                            size = float(trade.get("size", 0))
-                            timestamp = int(trade.get("ts", 0))
-                            side = trade.get("side", "").lower()
-                            
-                            # Фильтруем по времени
-                            if timestamp < start_time or timestamp > end_time:
-                                continue
-                            
-                            trades.append({
-                                "price": price,
-                                "quantity": size,
-                                "timestamp": timestamp,
-                                "is_buyer": side == "buy"
-                            })
-                        return trades
-                    else:
-                        logger.warning(f"Ошибка получения сделок Bitget: HTTP {response.status}")
-                        return []
-        except ssl.SSLError as e:
-            _log_ssl_error("bitget", url, e)
-            return []
-        except Exception as e:
-            logger.warning(f"Ошибка получения сделок Bitget: {e}")
-            return []
-    
-    @staticmethod
-    async def _fetch_trades_hyperliquid(symbol: str, market: str, start_time: int, end_time: int) -> List[Dict]:
-        """
-        Получает историю сделок с Hyperliquid через REST API
-        
-        Args:
-            symbol: Символ торговой пары
-            market: Тип рынка (spot/linear)
-            start_time: Начальное время в миллисекундах
-            end_time: Конечное время в миллисекундах
-            
-        Returns:
-            Список сделок
-        """
-        try:
-            # Hyperliquid API
-            url = "https://api.hyperliquid.xyz/info"
-            
-            # Hyperliquid использует POST запросы
-            payload = {
-                "type": "trades",
-                "coin": symbol,
-                "n": 1000
-            }
-            
-            connector = _create_ssl_connector()
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        trades_list = data if isinstance(data, list) else []
-                        
-                        trades = []
-                        for trade in trades_list:
-                            price = float(trade.get("px", 0))
-                            size = float(trade.get("sz", 0))
-                            timestamp = int(trade.get("time", 0))
-                            side = trade.get("side", "").lower()
-                            
-                            # Фильтруем по времени
-                            if timestamp < start_time or timestamp > end_time:
-                                continue
-                            
-                            trades.append({
-                                "price": price,
-                                "quantity": size,
-                                "timestamp": timestamp,
-                                "is_buyer": side == "b"  # 'b' для buy, 's' для sell
-                            })
-                        return trades
-                    else:
-                        logger.warning(f"Ошибка получения сделок Hyperliquid: HTTP {response.status}")
-                        return []
-        except ssl.SSLError as e:
-            _log_ssl_error("hyperliquid", url, e)
-            return []
-        except Exception as e:
-            logger.warning(f"Ошибка получения сделок Hyperliquid: {e}")
-            return []
-    
-    @staticmethod
-    async def _fetch_trades(exchange: str, symbol: str, market: str, start_time: int, end_time: int) -> List[Dict]:
-        """
-        Получает историю сделок с биржи
+        Получает последние тики с биржи
         
         Args:
             exchange: Название биржи
             symbol: Символ торговой пары
             market: Тип рынка (spot/linear)
-            start_time: Начальное время в миллисекундах
-            end_time: Конечное время в миллисекундах
             
         Returns:
-            Список сделок
+            Список тиков (Tick) или пустой список для неподдерживаемых бирж
         """
         exchange_lower = exchange.lower()
         
         if exchange_lower == "binance":
-            return await ChartGenerator._fetch_trades_binance(symbol, market, start_time, end_time)
-        elif exchange_lower == "bybit":
-            return await ChartGenerator._fetch_trades_bybit(symbol, market, start_time, end_time)
-        elif exchange_lower == "gate":
-            return await ChartGenerator._fetch_trades_gate(symbol, market, start_time, end_time)
-        elif exchange_lower == "bitget":
-            return await ChartGenerator._fetch_trades_bitget(symbol, market, start_time, end_time)
-        elif exchange_lower == "hyperliquid":
-            return await ChartGenerator._fetch_trades_hyperliquid(symbol, market, start_time, end_time)
+            return await ChartGenerator._fetch_ticks_binance(symbol, market)
         else:
-            logger.warning(f"Неподдерживаемая биржа для получения сделок: {exchange}")
+            logger.warning(f"Графики поддерживаются только для Binance. Биржа {exchange} не поддерживается.")
             return []
     
     @staticmethod
@@ -498,7 +282,7 @@ class ChartGenerator:
         timer: Optional[Any] = None  # PerformanceTimer для замера времени
     ) -> Optional[bytes]:
         """
-        Генерирует тиковый график прострела
+        Генерирует тиковый график прострела для Binance
         
         Args:
             candle: Свеча с детектом
@@ -506,7 +290,7 @@ class ChartGenerator:
             volume_usdt: Объём в USDT
             wick_pct: Процент тени
             spike_ratio: Spike Ratio (опционально)
-            duration: Duration (опционально)
+            duration: Duration в миллисекундах (опционально)
             strategy: Strategy (опционально)
             score: Score (опционально)
             
@@ -514,6 +298,11 @@ class ChartGenerator:
             Байты PNG изображения или None при ошибке
         """
         try:
+            # Проверяем биржу - графики поддерживаются только для Binance
+            if candle.exchange.lower() != "binance":
+                logger.warning(f"Графики поддерживаются только для Binance. Биржа: {candle.exchange}")
+                return None
+            
             # Проверяем кэш
             cache_key = ChartGenerator._get_cache_key(
                 candle.exchange,
@@ -526,71 +315,51 @@ class ChartGenerator:
             if cached_chart:
                 return cached_chart
             
-            # Вычисляем период для запроса (60 минут до детекта включительно)
-            # candle.ts_ms - это начало секунды детекта, свеча содержит сделки от ts_ms до ts_ms + 999ms
-            # Запрашиваем сделки от (ts_ms - 60 минут) до (ts_ms + 1000ms), чтобы включить все сделки свечи
-            # end_time_ms = ts_ms + 1000 означает запрос до конца секунды детекта, а не до начала
-            detection_time_ms = candle.ts_ms
-            start_time_ms = detection_time_ms - (60 * 60 * 1000)  # 60 минут назад
-            end_time_ms = detection_time_ms + 1000  # До конца секунды детекта включительно (ts_ms + 1000ms)
-            
-            # Получаем историю сделок
+            # Получаем последние тики
             if timer:
                 timer.start("chart.fetch")
-            trades = await ChartGenerator._fetch_trades(
+            ticks = await ChartGenerator._fetch_ticks(
                 candle.exchange,
                 candle.symbol,
-                candle.market,
-                start_time_ms,
-                end_time_ms
+                candle.market
             )
             if timer:
                 timer.end("chart.fetch")
             
-            if not trades:
-                logger.warning(f"Не удалось получить сделки для графика: {candle.exchange} {candle.market} {candle.symbol}")
+            if not ticks:
+                logger.warning(f"Не удалось получить тики для графика: {candle.exchange} {candle.market} {candle.symbol}")
                 return None
             
-            # Фильтруем сделки: показываем все сделки до конца секунды детекта включительно
-            # candle.ts_ms - это начало секунды, свеча содержит сделки от ts_ms до ts_ms + 999ms
-            # Поэтому включаем все сделки до начала следующей секунды (ts_ms + 1000ms)
-            # Последние сделки на графике - это сама свеча детекта
+            # Фильтруем тики: показываем все тики до конца секунды детекта включительно
+            detection_time_ms = candle.ts_ms
             end_of_detection_second_ms = detection_time_ms + 1000  # Конец секунды детекта
-            trades = [t for t in trades if t["timestamp"] < end_of_detection_second_ms]
+            ticks = [t for t in ticks if t["ts"] < end_of_detection_second_ms]
             
-            if not trades:
-                logger.warning(f"Нет сделок до момента детекта для графика: {candle.exchange} {candle.market} {candle.symbol}")
+            if not ticks:
+                logger.warning(f"Нет тиков до момента детекта для графика: {candle.exchange} {candle.market} {candle.symbol}")
                 return None
             
-            # Сортируем сделки по времени
-            trades.sort(key=lambda t: t["timestamp"])
+            # Сортируем тики по времени (на всякий случай)
+            ticks.sort(key=lambda t: t["ts"])
             
             # Подготавливаем данные для графика
-            timestamps = [datetime.fromtimestamp(t["timestamp"] / 1000) for t in trades]
-            prices = [t["price"] for t in trades]
-            colors = ["green" if t["is_buyer"] else "red" for t in trades]
+            timestamps = [datetime.fromtimestamp(t["ts"] / 1000) for t in ticks]
+            prices = [t["price"] for t in ticks]
             
-            # Вычисляем базовую цену (цена первой сделки) для конвертации в проценты
-            # Ищем первую ненулевую цену из сделок
-            base_price = None
-            for price in prices:
-                if price > 0:
-                    base_price = price
-                    break
+            # Вычисляем базовую цену (цена первого тика) для конвертации в проценты
+            base_price = prices[0] if prices[0] > 0 else None
             
-            # Если все цены нулевые, используем значения из свечи
+            # Если базовая цена нулевая, используем значения из свечи
             if base_price is None or base_price == 0:
-                # Пробуем использовать close, open, high или low свечи
-                if candle.close > 0:
-                    base_price = candle.close
-                elif candle.open > 0:
+                if candle.open > 0:
                     base_price = candle.open
+                elif candle.close > 0:
+                    base_price = candle.close
                 elif candle.high > 0:
                     base_price = candle.high
                 elif candle.low > 0:
                     base_price = candle.low
                 else:
-                    # Если все значения нулевые, это ошибка данных
                     logger.error(f"Все цены нулевые для графика: {candle.exchange} {candle.market} {candle.symbol}")
                     return None
             
@@ -602,58 +371,58 @@ class ChartGenerator:
                 timer.start("chart.render")
             fig, ax = plt.subplots(figsize=(19.2, 10.8), dpi=100)  # 1920x1080 пикселей
             
-            # Рисуем scatter plot с точками сделок (в процентах)
-            ax.scatter(timestamps, price_percentages, c=colors, s=6, alpha=0.6)
-            
-            # Рисуем жёлтую линейку справа от прострела (от high до low свечи)
-            # Используем точное время свечи для определения позиции
-            detection_time = datetime.fromtimestamp(candle.ts_ms / 1000)
-            
-            # Находим позицию для жёлтой линейки - справа от последней сделки
-            if timestamps:
-                # Находим последнюю сделку, которая была до или в момент детекта
-                trades_before_detection = [t for t in timestamps if t <= detection_time]
-                
-                if trades_before_detection:
-                    # Берём последнюю сделку до детекта
-                    last_trade_time = max(trades_before_detection)
-                else:
-                    # Если нет сделок до детекта, берём первую сделку
-                    last_trade_time = min(timestamps)
-                
-                # Добавляем небольшой отступ вправо (примерно 2% от диапазона времени или минимум 10 секунд)
-                if len(timestamps) > 1:
-                    time_range = (max(timestamps) - min(timestamps)).total_seconds()
-                    # Используем меньший отступ, чтобы линейка была ближе к моменту детекта
-                    offset_seconds = max(time_range * 0.02, 10)  # Минимум 10 секунд
-                    marker_time = last_trade_time + timedelta(seconds=offset_seconds)
-                else:
-                    # Если только одна сделка, добавляем 10 секунд
-                    marker_time = last_trade_time + timedelta(seconds=10)
-                
-                # Преобразуем high и low свечи в проценты для жёлтой линии
-                candle_low_pct = ((candle.low - base_price) / base_price) * 100
-                candle_high_pct = ((candle.high - base_price) / base_price) * 100
-                
-                # Рисуем вертикальную линию от high до low свечи жёлтым цветом
+            # Рисуем тиковый график: линия с зелеными/красными сегментами
+            # Для каждого сегмента между тиками рисуем линию соответствующего цвета
+            for i in range(len(ticks) - 1):
+                color = "green" if ticks[i]["side"] == "buy" else "red"
                 ax.plot(
-                    [marker_time, marker_time],
-                    [candle_low_pct, candle_high_pct],
-                    color='yellow',
-                    linewidth=3,
-                    alpha=0.9,
-                    label='Момент детекта'
+                    [timestamps[i], timestamps[i + 1]],
+                    [price_percentages[i], price_percentages[i + 1]],
+                    color=color,
+                    linewidth=1.5,
+                    alpha=0.8
                 )
+            
+            # Находим пик для стрелки (максимальное значение процента)
+            if price_percentages:
+                max_pct_idx = max(range(len(price_percentages)), key=lambda i: price_percentages[i])
+                max_pct_time = timestamps[max_pct_idx]
+                max_pct_value = price_percentages[max_pct_idx]
+                
+                # Получаем текущие пределы оси Y
+                y_min, y_max = ax.get_ylim()
+                y_range = y_max - y_min
+                
+                # Добавляем стрелку вверх на пике, если пик выходит за пределы графика
+                # Стрелка должна указывать вверх от пика
+                arrow_length = y_range * 0.1  # 10% от диапазона Y
+                
+                # Если пик близко к верхней границе или выходит за нее, рисуем стрелку
+                if max_pct_value >= y_max * 0.8:  # Если пик в верхних 20% графика
+                    # Рисуем пунктирную стрелку вверх от пика
+                    ax.annotate('',
+                        xy=(max_pct_time, max_pct_value + arrow_length),  # Назначение: точка выше пика
+                        xytext=(max_pct_time, max_pct_value),  # Источник: пиковая точка
+                        arrowprops=dict(
+                            arrowstyle='->',
+                            color='green',
+                            lw=2.5,
+                            alpha=0.8,
+                            linestyle='--',
+                            connectionstyle='arc3'
+                        ),
+                        annotation_clip=False  # Позволяет рисовать стрелку за пределами графика
+                    )
             
             # Форматируем оси
             ax.set_xlabel('Время', fontsize=12)
             ax.set_ylabel('Процент изменения (%)', fontsize=12)
-            ax.grid(True, alpha=0.3)
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
             
-            # Форматируем время на оси X
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-            ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=5))
-            plt.xticks(rotation=45)
+            # Форматируем время на оси X (показываем минуты)
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=1))
+            plt.xticks(rotation=45, ha='right')
             
             # Получаем символ с торговой парой для заголовка
             symbol_with_pair = await get_symbol_with_pair(
@@ -662,29 +431,66 @@ class ChartGenerator:
                 candle.market
             )
             
-            # Формируем заголовок с метриками
-            market_text = "SPOT" if candle.market == "spot" else "FUTURES"
-            title_parts = [
-                f"{candle.exchange.upper()} | {market_text}",
-                f"Symbol: {symbol_with_pair}",
-                f"Δ: {delta:.2f}%",
-                f"Volume: {volume_usdt:,.0f} USDT",
-            ]
+            # Формируем заголовок в формате из изображения
+            # Формат: "Binance Futures | MONUSDT ↑ UP 2.40% (0.035370→0.036220)"
+            market_text = "Spot" if candle.market == "spot" else "Futures"
+            direction = "↑ UP" if delta > 0 else "↓ DOWN"
+            price_change_pct = abs(delta)
+            start_price = prices[0] if prices else base_price
+            end_price = prices[-1] if prices else base_price
+            
+            # Форматируем цены: убираем лишние нули в конце
+            def format_price(price: float) -> str:
+                # Для очень малых цен используем научную нотацию или больше знаков после запятой
+                if price == 0:
+                    return "0"
+                # Определяем количество значащих цифр
+                if price < 0.00000001:
+                    # Для очень малых цен используем научную нотацию
+                    return f"{price:.2e}"
+                elif price < 0.0001:
+                    # Для малых цен используем до 12 знаков после запятой
+                    price_str = f"{price:.12f}".rstrip("0").rstrip(".")
+                    return price_str
+                else:
+                    # Для обычных цен используем до 8 знаков после запятой
+                    price_str = f"{price:.8f}".rstrip("0").rstrip(".")
+                    return price_str
+            
+            start_price_str = format_price(start_price)
+            end_price_str = format_price(end_price)
+            
+            header_line1 = f"{candle.exchange.capitalize()} {market_text} | {symbol_with_pair} {direction} {price_change_pct:.2f}% ({start_price_str}→{end_price_str})"
+            
+            # Формируем вторую строку заголовка с метриками
+            # Формат: "Volume: $897K | Spike Ratio: 240.7x | Duration: 49ms | Strategy: Ultra Large Strike | Score: 104.03"
+            if volume_usdt < 1000:
+                volume_str = f"${volume_usdt:.0f}"
+            elif volume_usdt < 1_000_000:
+                volume_str = f"${volume_usdt/1000:.0f}K"
+            else:
+                volume_str = f"${volume_usdt/1_000_000:.2f}M"
+            
+            header_parts2 = [f"Volume: {volume_str}"]
             
             if spike_ratio is not None:
-                title_parts.append(f"Spike Ratio: {spike_ratio:.2f}")
+                header_parts2.append(f"Spike Ratio: {spike_ratio:.1f}x")
             if duration is not None:
-                title_parts.append(f"Duration: {duration:.2f}s")
+                # duration может быть в секундах или миллисекундах
+                if duration < 10:  # Если меньше 10, вероятно в секундах, конвертируем в мс
+                    duration_ms = duration * 1000
+                else:
+                    duration_ms = duration
+                header_parts2.append(f"Duration: {duration_ms:.0f}ms")
             if strategy:
-                title_parts.append(f"Strategy: {strategy}")
+                header_parts2.append(f"Strategy: {strategy}")
             if score is not None:
-                title_parts.append(f"Score: {score:.2f}")
+                header_parts2.append(f"Score: {score:.2f}")
             
-            title = " | ".join(title_parts)
-            ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
+            header_line2 = " | ".join(header_parts2)
             
-            # Добавляем легенду
-            ax.legend()
+            # Устанавливаем заголовок (две строки)
+            ax.set_title(f"{header_line1}\n{header_line2}", fontsize=12, fontweight='bold', pad=15, loc='left')
             
             # Сохраняем в буфер
             buf = BytesIO()
