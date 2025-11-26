@@ -23,6 +23,7 @@ export type ConditionalTemplate = {
   }>;
   template: string;
   chatId?: string;
+  comment?: string; // Дополнительный комментарий к стратегии
 };
 
 export interface SettingsTabProps {

@@ -327,6 +327,7 @@ export default function SettingsTab({ userLogin, activeSubTab: externalActiveSub
             extractTextFromEditor={extractTextFromEditor}
             messageTemplate={messageTemplate.messageTemplate}
             generateTemplateDescription={generateTemplateDescription}
+            setSaveMessage={settings.setSaveMessage}
           />
         )}
       </div>
