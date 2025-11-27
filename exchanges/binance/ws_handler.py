@@ -215,7 +215,7 @@ async def _ws_connection_worker(
                 await asyncio.sleep(rate_limit_delay)
                 continue
             
-            async with _session.ws_connect(url, heartbeat=20) as ws:
+            async with _session.ws_connect(url) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
                 was_connected = True  # Устанавливаем флаг успешного подключения
@@ -383,7 +383,7 @@ async def _ws_connection_worker_subscribe(
                 continue
             
             url = FAPI_WS_ENDPOINT_WS
-            async with _session.ws_connect(url, heartbeat=20) as ws:
+            async with _session.ws_connect(url) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
                 was_connected = True  # Устанавливаем флаг успешного подключения
