@@ -920,14 +920,14 @@ class TelegramNotifier:
         
         for attempt in range(1, max_retries + 1):
             # Формируем FormData внутри цикла, так как его нельзя переиспользовать
-        form_data = aiohttp.FormData()
-        form_data.add_field("chat_id", chat_id)
-        form_data.add_field("photo", photo_bytes, filename="chart.png", content_type="image/png")
-        if caption:
-            # Очищаем HTML от неподдерживаемых тегов перед отправкой
-            sanitized_caption = TelegramNotifier._sanitize_html(caption)
-            form_data.add_field("caption", sanitized_caption)
-            form_data.add_field("parse_mode", "HTML")
+            form_data = aiohttp.FormData()
+            form_data.add_field("chat_id", chat_id)
+            form_data.add_field("photo", photo_bytes, filename="chart.png", content_type="image/png")
+            if caption:
+                # Очищаем HTML от неподдерживаемых тегов перед отправкой
+                sanitized_caption = TelegramNotifier._sanitize_html(caption)
+                form_data.add_field("caption", sanitized_caption)
+                form_data.add_field("parse_mode", "HTML")
             
             try:
                 async with semaphore:
