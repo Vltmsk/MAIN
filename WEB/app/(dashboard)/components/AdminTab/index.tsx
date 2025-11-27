@@ -75,9 +75,6 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
         message={adminUsersHook.adminMsg}
       />
 
-      {/* Управление метриками производительности */}
-      <MetricsAdminTab isAdmin={isAdmin} />
-
       {/* Панель настроек выбранного пользователя */}
       {adminUsersHook.selectedUserSettings && (
         <UserSettingsEditor
@@ -89,11 +86,14 @@ export default function AdminTab({ userLogin, isAdmin, activeTab }: AdminTabProp
           pairSettings={adminUsersHook.adminPairSettings}
           onExchangeFiltersChange={adminUsersHook.setAdminExchangeFilters}
           onPairSettingsChange={adminUsersHook.setAdminPairSettings}
-          openPairs={adminUsersHook.adminOpenPairs}
-          onOpenPairsChange={adminUsersHook.setAdminOpenPairs}
+          expandedExchanges={adminUsersHook.adminExpandedExchanges}
+          onExpandedExchangesChange={adminUsersHook.setAdminExpandedExchanges}
           onUserSettingsChange={adminUsersHook.setSelectedUserSettings}
         />
       )}
+
+      {/* Управление метриками производительности */}
+      <MetricsAdminTab isAdmin={isAdmin} />
 
       {/* Блок Логов */}
       <ErrorLogsPanel

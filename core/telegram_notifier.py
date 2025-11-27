@@ -3,6 +3,7 @@
 """
 import asyncio
 import aiohttp
+import re
 from typing import Optional, Tuple, List, Dict, Any
 from core.candle_builder import Candle
 from core.logger import get_logger
@@ -42,7 +43,7 @@ def format_volume_compact(volume: float) -> str:
 # 3. Бот вернет JSON с полем "custom_emoji_id" - это и есть нужный ID
 # 4. Или используйте метод getCustomEmojiStickers через Bot API
 # 
-# Если ID не указаны, будут использоваться стандартные emoji (fallback: ⬆️/⬇️)
+# Если ID не указаны, будут использоваться стандартные emoji (fallback: 🟢/🔴)
 CUSTOM_EMOJI_UP_ID = "5285307907448014606"  # ID зеленой стрелы вверх из пака Strelk167
 CUSTOM_EMOJI_DOWN_ID = "5287552508896507917"  # ID красной стрелы вниз из пака Strelk167
 
@@ -150,11 +151,11 @@ class TelegramNotifier:
         Логика работы:
         1. Сначала пытается использовать кастомное emoji из пака Strelk167
         2. Если кастомное emoji недоступно (ID пустой или пак не установлен у получателя),
-           Telegram автоматически покажет fallback emoji (⬆️/⬇️)
+           Telegram автоматически покажет fallback emoji (🟢/🔴)
         
         Args:
             emoji_id: ID кастомного emoji из пака Strelk167
-            fallback_emoji: Стандартный emoji для fallback (⬆️ или ⬇️)
+            fallback_emoji: Стандартный emoji для fallback (🟢 или 🔴)
             
         Returns:
             Отформатированная строка с кастомным emoji (если доступно) или fallback
@@ -172,6 +173,59 @@ class TelegramNotifier:
         else:
             # Если ID не указан, сразу используем стандартный emoji
             return fallback_emoji
+    
+    @staticmethod
+    def _sanitize_html(message: str) -> str:
+        """
+        Очищает HTML от неподдерживаемых Telegram тегов
+        
+        Telegram поддерживает только ограниченный набор HTML-тегов:
+        - <b>, <strong> - жирный
+        - <i>, <em> - курсив
+        - <u> - подчеркивание
+        - <s>, <strike>, <del> - зачеркивание
+        - <code> - моноширинный
+        - <pre> - предформатированный текст
+        - <a> - ссылка
+        - <tg-spoiler> или <span class="tg-spoiler"> - спойлер
+        
+        Args:
+            message: Исходное сообщение с HTML
+            
+        Returns:
+            Очищенное сообщение с только поддерживаемыми тегами
+        """
+        if not message:
+            return message
+        
+        # Сначала заменяем валидные <span class="tg-spoiler"> на <tg-spoiler> для единообразия
+        message = re.sub(
+            r'<span\s+class=["\']tg-spoiler["\']\s*>(.*?)</span>',
+            r'<tg-spoiler>\1</tg-spoiler>',
+            message,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+        
+        # Теперь удаляем все оставшиеся <span> теги (оставляем только содержимое)
+        # Все валидные спойлеры уже заменены на <tg-spoiler>, поэтому остальные span можно безопасно удалить
+        message = re.sub(
+            r'<span(?:\s+[^>]*)?>(.*?)</span>',
+            r'\1',
+            message,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+        
+        # Удаляем другие неподдерживаемые теги (div, p, br можно оставить, но лучше удалить для безопасности)
+        # Удаляем <div> теги (оставляем содержимое)
+        message = re.sub(r'<div(?:\s+[^>]*)?>(.*?)</div>', r'\1', message, flags=re.IGNORECASE | re.DOTALL)
+        
+        # Удаляем <p> теги, заменяем на перенос строки
+        message = re.sub(r'<p(?:\s+[^>]*)?>(.*?)</p>', r'\1\n', message, flags=re.IGNORECASE | re.DOTALL)
+        
+        # Удаляем одиночные <br> и <br/> (Telegram не поддерживает, используем \n)
+        message = re.sub(r'<br\s*/?>', '\n', message, flags=re.IGNORECASE)
+        
+        return message
     
     @staticmethod
     async def send_message(
@@ -200,11 +254,14 @@ class TelegramNotifier:
             logger.warning(error_msg)
             return False, error_msg
         
+        # Очищаем HTML от неподдерживаемых тегов перед отправкой
+        sanitized_message = TelegramNotifier._sanitize_html(message)
+        
         url = TelegramNotifier.TELEGRAM_API_URL.format(token=token)
         
         payload = {
             "chat_id": chat_id,
-            "text": message,
+            "text": sanitized_message,
             "parse_mode": "HTML"  # Для поддержки HTML разметки
         }
         
@@ -672,15 +729,15 @@ class TelegramNotifier:
         direction_text = "ВЫРОС" if is_up else "УПАЛ"
         
         # Используем кастомные emoji из пака Strelk167 (https://t.me/addemoji/Strelk167)
-        # Сначала пытаемся использовать кастомные эмодзи, если не получится - используем стандартные ⬆️/⬇️
+        # Сначала пытаемся использовать кастомные эмодзи, если не получится - используем стандартные 🟢/🔴
         # Получаем ID кастомных emoji из констант
         if is_up:
             emoji_id = CUSTOM_EMOJI_UP_ID
         else:
             emoji_id = CUSTOM_EMOJI_DOWN_ID
         
-        # Форматируем emoji: сначала кастомные из пака, если недоступны - стандартные Telegram эмодзи ⬆️/⬇️
-        fallback_emoji = "⬆️" if is_up else "⬇️"
+        # Форматируем emoji: сначала кастомные из пака, если недоступны - стандартные Telegram эмодзи 🟢/🔴
+        fallback_emoji = "🟢" if is_up else "🔴"
         direction_emoji = TelegramNotifier._format_custom_emoji(emoji_id, fallback_emoji)
         
         # Форматируем числа
@@ -863,12 +920,14 @@ class TelegramNotifier:
         
         for attempt in range(1, max_retries + 1):
             # Формируем FormData внутри цикла, так как его нельзя переиспользовать
-            form_data = aiohttp.FormData()
-            form_data.add_field("chat_id", chat_id)
-            form_data.add_field("photo", photo_bytes, filename="chart.png", content_type="image/png")
-            if caption:
-                form_data.add_field("caption", caption)
-                form_data.add_field("parse_mode", "HTML")
+        form_data = aiohttp.FormData()
+        form_data.add_field("chat_id", chat_id)
+        form_data.add_field("photo", photo_bytes, filename="chart.png", content_type="image/png")
+        if caption:
+            # Очищаем HTML от неподдерживаемых тегов перед отправкой
+            sanitized_caption = TelegramNotifier._sanitize_html(caption)
+            form_data.add_field("caption", sanitized_caption)
+            form_data.add_field("parse_mode", "HTML")
             
             try:
                 async with semaphore:

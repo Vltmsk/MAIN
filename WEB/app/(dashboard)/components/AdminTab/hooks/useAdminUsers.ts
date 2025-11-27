@@ -13,14 +13,19 @@ export function useAdminUsers() {
 
   // Состояния для редактирования настроек бирж в админ панели
   const [adminExchangeFilters, setAdminExchangeFilters] = useState<Record<string, boolean>>({
-    binance: true,
-    bybit: true,
-    bitget: true,
-    gate: true,
-    hyperliquid: true,
+    binance_spot: true,
+    binance_futures: true,
+    bybit_spot: true,
+    bybit_futures: true,
+    bitget_spot: true,
+    bitget_futures: true,
+    gate_spot: true,
+    gate_futures: true,
+    hyperliquid_spot: true,
+    hyperliquid_futures: true,
   });
   const [adminPairSettings, setAdminPairSettings] = useState<Record<string, { enabled: boolean; delta: string; volume: string; shadow: string }>>({});
-  const [adminOpenPairs, setAdminOpenPairs] = useState<Record<string, boolean>>({});
+  const [adminExpandedExchanges, setAdminExpandedExchanges] = useState<Record<string, boolean>>({});
 
   // Загрузка пользователей
   const fetchAdminUsers = useCallback(async () => {
@@ -104,23 +109,46 @@ export function useAdminUsers() {
           const options = JSON.parse(optionsJson);
 
           // Загружаем фильтры по биржам
+          // Поддерживаем как старый формат (binance: true), так и новый (binance_spot: true, binance_futures: true)
+          const newFilters: Record<string, boolean> = {
+            binance_spot: true,
+            binance_futures: true,
+            bybit_spot: true,
+            bybit_futures: true,
+            bitget_spot: true,
+            bitget_futures: true,
+            gate_spot: true,
+            gate_futures: true,
+            hyperliquid_spot: true,
+            hyperliquid_futures: true,
+          };
+
           if (options.exchanges && typeof options.exchanges === "object") {
-            setAdminExchangeFilters({
-              binance: options.exchanges.binance !== false && options.exchanges.binance !== undefined ? options.exchanges.binance : true,
-              bybit: options.exchanges.bybit !== false && options.exchanges.bybit !== undefined ? options.exchanges.bybit : true,
-              bitget: options.exchanges.bitget !== false && options.exchanges.bitget !== undefined ? options.exchanges.bitget : true,
-              gate: options.exchanges.gate !== false && options.exchanges.gate !== undefined ? options.exchanges.gate : true,
-              hyperliquid: options.exchanges.hyperliquid !== false && options.exchanges.hyperliquid !== undefined ? options.exchanges.hyperliquid : true,
-            });
-          } else {
-            setAdminExchangeFilters({
-              binance: true,
-              bybit: true,
-              bitget: true,
-              gate: true,
-              hyperliquid: true,
-            });
+            // Проверяем, есть ли новый формат (binance_spot, binance_futures и т.д.)
+            const hasNewFormat = Object.keys(options.exchanges).some(key => key.includes("_spot") || key.includes("_futures"));
+            
+            if (hasNewFormat) {
+              // Новый формат - используем напрямую
+              ["binance", "bybit", "bitget", "gate", "hyperliquid"].forEach((exchange) => {
+                ["spot", "futures"].forEach((market) => {
+                  const key = `${exchange}_${market}`;
+                  newFilters[key] = options.exchanges[key] !== false && options.exchanges[key] !== undefined 
+                    ? options.exchanges[key] 
+                    : true;
+                });
+              });
+            } else {
+              // Старый формат - конвертируем в новый
+              ["binance", "bybit", "bitget", "gate", "hyperliquid"].forEach((exchange) => {
+                const exchangeValue = options.exchanges[exchange];
+                const isEnabled = exchangeValue !== false && exchangeValue !== undefined ? exchangeValue : true;
+                newFilters[`${exchange}_spot`] = isEnabled;
+                newFilters[`${exchange}_futures`] = isEnabled;
+              });
+            }
           }
+          
+          setAdminExchangeFilters(newFilters);
 
           // Загружаем настройки пар
           if (options.pairSettings) {
@@ -138,7 +166,12 @@ export function useAdminUsers() {
               }
             });
             setAdminPairSettings(migratedPairSettings);
+          } else {
+            setAdminPairSettings({});
           }
+
+          // Сбрасываем состояние раскрытия секций при загрузке нового пользователя
+          setAdminExpandedExchanges({});
         } catch (e) {
           console.error("Ошибка парсинга options_json при загрузке:", e);
         }
@@ -254,7 +287,20 @@ export function useAdminUsers() {
         options = {};
       }
 
-      options.exchanges = adminExchangeFilters;
+      // Конвертируем новый формат фильтров (binance_spot, binance_futures) обратно в старый формат (binance)
+      // для совместимости с бэкендом. Биржа считается включенной, если включен хотя бы один из рынков
+      const legacyExchanges: Record<string, boolean> = {};
+      ["binance", "bybit", "bitget", "gate", "hyperliquid"].forEach((exchange) => {
+        const spotKey = `${exchange}_spot`;
+        const futuresKey = `${exchange}_futures`;
+        legacyExchanges[exchange] = adminExchangeFilters[spotKey] || adminExchangeFilters[futuresKey] || false;
+      });
+      
+      // Сохраняем оба формата для совместимости
+      options.exchanges = {
+        ...legacyExchanges,
+        ...adminExchangeFilters, // Сохраняем и новый формат
+      };
       options.pairSettings = adminPairSettings;
 
       const optionsJson = JSON.stringify(options);
@@ -300,14 +346,14 @@ export function useAdminUsers() {
     deletingGlobalStats,
     adminExchangeFilters,
     adminPairSettings,
-    adminOpenPairs,
+    adminExpandedExchanges,
     // Сеттеры
     setAdminForm,
     setAdminMsg,
     setSelectedUserSettings,
     setAdminExchangeFilters,
     setAdminPairSettings,
-    setAdminOpenPairs,
+    setAdminExpandedExchanges,
     // Функции
     fetchAdminUsers,
     createAdminUser,

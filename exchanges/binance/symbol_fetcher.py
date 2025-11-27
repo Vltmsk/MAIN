@@ -9,7 +9,7 @@ from typing import List
 # Котируемые активы для Spot
 SPOT_QUOTE_ASSETS = {
     "BTC", "ETH", "USDT", "BNB", "USD", "TUSD", "BRL",
-    "USDC", "TRX", "EUR", "DOGE", "TRY", "FDUSD",
+    "USDC", "TRX", "EUR", "DOGE", "FDUSD",
 }
 # Котируемые активы для Futures USDⓈ-M5
 FAPI_QUOTE_ASSETS = {"USDT", "USDC", "BTC"}

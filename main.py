@@ -165,7 +165,9 @@ async def _send_chart_async(
     timer: Optional[PerformanceTimer] = None,
 ) -> None:
     """
-    Асинхронно отправляет график прострела пользователю с текстом как подписью
+    Асинхронно отправляет график прострела пользователю с текстом как подписью.
+    Генерация графика происходит параллельно, после завершения отправляется вместе с текстом.
+    При ошибке генерации графика отправляется только текст.
     
     Args:
         candle: Свеча с детектом
@@ -185,8 +187,8 @@ async def _send_chart_async(
         )
         from core.chart_generator import chart_generator
         
-        # Генерируем график
-        logger.debug(f"Генерация графика для {user_name} ({candle.exchange} {candle.symbol})...")
+        # Генерируем график параллельно (не блокируем основной поток детектора)
+        logger.debug(f"Запуск генерации графика для {user_name} ({candle.exchange} {candle.symbol})...")
         # Передаём таймер для замера времени генерации графика
         chart_bytes = await chart_generator.generate_chart(
             candle=candle,
@@ -196,6 +198,7 @@ async def _send_chart_async(
             timer=timer
         )
         
+        # Если график успешно сгенерирован - отправляем график с текстом вместе
         if chart_bytes:
             logger.debug(
                 f"График сгенерирован для {user_name} "
@@ -265,18 +268,18 @@ async def _send_chart_async(
                     timer=timer,
                 )
         else:
-            # Fallback: отправляем текстовое сообщение при ошибке генерации графика
+            # Если график не сгенерирован (ошибка) - отправляем только текст без графика
             logger.warning(
                 f"Не удалось сгенерировать график для пользователя {user_name} "
-                f"({candle.exchange} {candle.market} {candle.symbol})"
+                f"({candle.exchange} {candle.market} {candle.symbol}), отправляем только текст"
             )
             # Обрезаем текст, если он превышает лимит Telegram (4096 символов)
             # Telegram API ограничивает длину текстового сообщения до 4096 символов
             fallback_message_text = message_text
             if len(fallback_message_text) > 4096:
                 fallback_message_text = fallback_message_text[:4093] + "..."
-                logger.debug(f"Текст fallback сообщения обрезан до 4096 символов для {user_name}")
-            # Отправляем текстовое сообщение как fallback
+                logger.debug(f"Текст сообщения обрезан до 4096 символов для {user_name}")
+            # Отправляем только текстовое сообщение (без графика)
             await _send_text_message_async(
                 candle=candle,
                 tg_token=token,
@@ -602,16 +605,20 @@ async def on_candle(candle: Candle) -> None:
                         # Если график включен, отправляем график с текстом как подписью
                         if should_send_chart:
                             # Для каждого сообщения отправляем график с текстом
+                            # ВАЖНО: Генерация графика происходит параллельно после детекта и не блокирует
+                            # обработку других свечей. Текст и график отправляются вместе после завершения генерации.
+                            # При ошибке генерации графика отправляется только текст.
                             for msg_info in messages:
                                 message_text = msg_info.get("message", "")
                                 target_chat_id = msg_info.get("chatId") or chat_id
                                 
                                 if target_chat_id:
                                     logger.info(
-                                        f"Запуск отправки графика с текстом для {user_name} "
+                                        f"Запуск параллельной генерации графика с текстом для {user_name} "
                                         f"({candle.exchange} {candle.market} {candle.symbol})"
                                     )
-                                    # Запускаем отправку графика с текстом в фоне (не блокируем основной поток)
+                                    # Запускаем генерацию графика и отправку параллельно (не блокируем основной поток детектора)
+                                    # Генерация графика происходит внутри функции, после завершения отправляется вместе с текстом
                                     asyncio.create_task(_send_chart_async(
                                         candle=candle,
                                         delta=delta,

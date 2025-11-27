@@ -10,7 +10,7 @@
  */
 export const getPairsForExchange = (exchange: string, market: "spot" | "futures"): string[] => {
   if (exchange === "binance" && market === "spot") {
-    return ["BTC", "ETH", "USDT", "BNB", "AUD", "TUSD", "BRL", "GBP", "USDC", "TRX", "EUR", "BIDR", "DOGE", "TRY", "FDUSD", "AEUR"];
+    return ["BTC", "ETH", "USDT", "BNB", "AUD", "TUSD", "BRL", "GBP", "USDC", "TRX", "EUR", "BIDR", "DOGE", "FDUSD", "AEUR"];
   }
   if (exchange === "binance" && market === "futures") {
     return ["USDT", "USDC", "BTC"];
@@ -40,5 +40,30 @@ export const getPairsForExchange = (exchange: string, market: "spot" | "futures"
     return ["USDC"];
   }
   return [];
+};
+
+/**
+ * Получает базовую валюту для биржи и рынка (если только одна пара)
+ * @param exchange - название биржи
+ * @param market - тип рынка
+ * @returns название валюты или null, если пар несколько
+ */
+export const getQuoteCurrencyForExchange = (exchange: string, market: "spot" | "futures"): string | null => {
+  const pairs = getPairsForExchange(exchange, market);
+  if (pairs.length === 1) {
+    return pairs[0];
+  }
+  return null;
+};
+
+/**
+ * Определяет, нужно ли показывать все пары сразу в таблице
+ * @param exchange - название биржи
+ * @param market - тип рынка
+ * @returns true, если нужно показывать все пары в таблице
+ */
+export const shouldShowPairsImmediately = (exchange: string, market: "spot" | "futures"): boolean => {
+  return (exchange === "binance" && (market === "spot" || market === "futures")) ||
+         (exchange === "bybit" && market === "spot");
 };
 

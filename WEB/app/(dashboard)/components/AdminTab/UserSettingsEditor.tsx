@@ -12,8 +12,8 @@ interface UserSettingsEditorProps {
   pairSettings: Record<string, { enabled: boolean; delta: string; volume: string; shadow: string }>;
   onExchangeFiltersChange: (filters: Record<string, boolean>) => void;
   onPairSettingsChange: (settings: Record<string, { enabled: boolean; delta: string; volume: string; shadow: string }>) => void;
-  openPairs: Record<string, boolean>;
-  onOpenPairsChange: (openPairs: Record<string, boolean>) => void;
+  expandedExchanges: Record<string, boolean>;
+  onExpandedExchangesChange: (expanded: Record<string, boolean>) => void;
   onUserSettingsChange: (settings: AdminUserSettings) => void;
 }
 
@@ -26,8 +26,8 @@ export default function UserSettingsEditor({
   pairSettings,
   onExchangeFiltersChange,
   onPairSettingsChange,
-  openPairs,
-  onOpenPairsChange,
+  expandedExchanges,
+  onExpandedExchangesChange,
   onUserSettingsChange,
 }: UserSettingsEditorProps) {
   return (
@@ -97,44 +97,9 @@ export default function UserSettingsEditor({
             pairSettings={pairSettings}
             onExchangeFiltersChange={onExchangeFiltersChange}
             onPairSettingsChange={onPairSettingsChange}
-            openPairs={openPairs}
-            onOpenPairsChange={onOpenPairsChange}
+            expandedExchanges={expandedExchanges}
+            onExpandedExchangesChange={onExpandedExchangesChange}
           />
-        </div>
-
-        {/* Чёрный список */}
-        <div className="border-t border-zinc-700 pt-4">
-          <h3 className="text-lg font-semibold text-white mb-3">Чёрный список</h3>
-          {(() => {
-            try {
-              const options = userSettings.options_json ? JSON.parse(userSettings.options_json) : {};
-              const blacklist = options.blacklist || [];
-              return blacklist.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {blacklist.map((symbol: string) => (
-                    <span key={symbol} className="px-3 py-1 bg-red-900/30 text-red-400 rounded-lg text-sm">
-                      {symbol}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-zinc-500 text-sm">Чёрный список пуст</p>
-              );
-            } catch (e) {
-              return <p className="text-zinc-500 text-sm">Ошибка парсинга настроек</p>;
-            }
-          })()}
-        </div>
-
-        {/* Кнопка сохранения */}
-        <div className="border-t border-zinc-700 pt-4 mt-4">
-          <button
-            onClick={onSave}
-            disabled={loading}
-            className="w-full px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
-          >
-            {loading ? "Сохранение..." : "Сохранить изменения"}
-          </button>
         </div>
       </div>
     </div>

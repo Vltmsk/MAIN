@@ -34,19 +34,19 @@ _chart_cache: Dict[str, Tuple[bytes, float]] = {}
 CACHE_TTL = 600  # 10 минут
 
 
-async def _fetch_latest_aggtrades_binance_spot(symbol: str, limit: int = 1000) -> List[dict]:
+async def _fetch_latest_trades_binance_spot(symbol: str, limit: int = 1000) -> List[dict]:
     """
-    Получить сырые aggTrades со спота Binance (последние limit сделок).
-    Никаких startTime/fromId - только последние aggTrades.
+    Получить последние trades со спота Binance (последние limit сделок).
+    Использует GET /api/v3/trades (limit максимум: 1000, request weight: 10 за запрос).
     
     Args:
         symbol: Символ торговой пары (например, BTCUSDT)
         limit: Максимальное количество сделок (до 1000)
         
     Returns:
-        Список словарей с aggTrades
+        Список словарей с trades
     """
-    url = "https://api.binance.com/api/v3/aggTrades"
+    url = "https://api.binance.com/api/v3/trades"
     params = {"symbol": symbol.upper(), "limit": limit}
     
     connector = _create_ssl_connector()
@@ -56,28 +56,29 @@ async def _fetch_latest_aggtrades_binance_spot(symbol: str, limit: int = 1000) -
                 if response.status == 200:
                     return await response.json()
                 else:
-                    logger.warning(f"Ошибка получения aggTrades Binance Spot: HTTP {response.status}")
+                    logger.warning(f"Ошибка получения trades Binance Spot: HTTP {response.status}")
                     return []
     except ssl.SSLError as e:
         _log_ssl_error("binance", url, e)
         return []
     except Exception as e:
-        logger.warning(f"Ошибка получения aggTrades Binance Spot: {e}")
+        logger.warning(f"Ошибка получения trades Binance Spot: {e}")
         return []
 
 
-async def _fetch_latest_aggtrades_binance_futures(symbol: str, limit: int = 1000) -> List[dict]:
+async def _fetch_latest_trades_binance_futures(symbol: str, limit: int = 1000) -> List[dict]:
     """
-    То же самое, но для Binance Futures USDT-M.
+    Получить последние trades с Binance Futures USDT-M.
+    Использует GET /fapi/v1/trades (limit максимум: 1000, request weight: 5 за запрос).
     
     Args:
         symbol: Символ торговой пары (например, BTCUSDT)
         limit: Максимальное количество сделок (до 1000)
         
     Returns:
-        Список словарей с aggTrades
+        Список словарей с trades
     """
-    url = "https://fapi.binance.com/fapi/v1/aggTrades"
+    url = "https://fapi.binance.com/fapi/v1/trades"
     params = {"symbol": symbol.upper(), "limit": limit}
     
     connector = _create_ssl_connector()
@@ -87,35 +88,42 @@ async def _fetch_latest_aggtrades_binance_futures(symbol: str, limit: int = 1000
                 if response.status == 200:
                     return await response.json()
                 else:
-                    logger.warning(f"Ошибка получения aggTrades Binance Futures: HTTP {response.status}")
+                    logger.warning(f"Ошибка получения trades Binance Futures: HTTP {response.status}")
                     return []
     except ssl.SSLError as e:
         _log_ssl_error("binance", url, e)
         return []
     except Exception as e:
-        logger.warning(f"Ошибка получения aggTrades Binance Futures: {e}")
+        logger.warning(f"Ошибка получения trades Binance Futures: {e}")
         return []
 
 
-def _aggtrades_to_ticks(aggtrades: List[dict]) -> List[Tick]:
+def _trades_to_ticks(trades: List[dict]) -> List[Tick]:
     """
-    Конвертация списка aggTrades в список тиков (Tick).
-    Предполагаем, что aggtrades уже отсортированы Binance по времени (oldest -> newest).
+    Конвертация списка trades в список тиков (Tick).
+    Предполагаем, что trades уже отсортированы Binance по времени (oldest -> newest).
+    
+    Формат trades API:
+    - SPOT: id, price, qty, time, isBuyerMaker, isBestMatch
+    - Futures: id, price, qty, time, isBuyerMaker
     
     Args:
-        aggtrades: Список словарей с aggTrades от Binance
+        trades: Список словарей с trades от Binance
         
     Returns:
         Список тиков
     """
     ticks: List[Tick] = []
-    for a in aggtrades:
+    for t in trades:
+        # Формат trades: id, price, qty, time (в миллисекундах), isBuyerMaker
+        # isBuyerMaker=True означает, что покупатель был мейкером, т.е. агрессор - продавец (SELL)
+        # isBuyerMaker=False означает, что продавец был мейкером, т.е. агрессор - покупатель (BUY)
         tick: Tick = {
-            "id": int(a["a"]),
-            "ts": int(a["T"]),
-            "price": float(a["p"]),
-            "qty": float(a["q"]),
-            "side": "sell" if a["m"] else "buy",  # m==True -> buyer is maker -> агрессор продавец -> SELL
+            "id": int(t["id"]),
+            "ts": int(t["time"]),
+            "price": float(t["price"]),
+            "qty": float(t["qty"]),
+            "side": "sell" if t["isBuyerMaker"] else "buy",
         }
         ticks.append(tick)
     
@@ -220,8 +228,13 @@ class ChartGenerator:
     @staticmethod
     async def _fetch_ticks_binance(symbol: str, market: str) -> List[Tick]:
         """
-        Получает последние тики с Binance через REST API aggTrades (последние 1000 сделок).
-        Согласно chart.md: запрашиваем последние 1000 aggTrades без startTime/endTime.
+        Получает последние тики с Binance через REST API trades (последние 1000 сделок).
+        Использует trades API вместо aggTrades для построения тикового графика.
+        
+        Лимиты:
+        - SPOT: GET /api/v3/trades - limit 1000, weight 10 за запрос
+        - Futures: GET /fapi/v1/trades - limit 1000, weight 5 за запрос
+        - Общий IP-лимит для SPOT: ~6000 weight/мин
         
         Args:
             symbol: Символ торговой пары (например, BTCUSDT)
@@ -231,17 +244,17 @@ class ChartGenerator:
             Список тиков (Tick)
         """
         try:
-            # Получаем последние aggTrades (без времени)
+            # Получаем последние trades (без времени)
             if market == "spot":
-                raw_aggtrades = await _fetch_latest_aggtrades_binance_spot(symbol, limit=1000)
+                raw_trades = await _fetch_latest_trades_binance_spot(symbol, limit=1000)
             else:  # linear/futures
-                raw_aggtrades = await _fetch_latest_aggtrades_binance_futures(symbol, limit=1000)
+                raw_trades = await _fetch_latest_trades_binance_futures(symbol, limit=1000)
             
-            if not raw_aggtrades:
+            if not raw_trades:
                 return []
             
-            # Конвертируем aggTrades в тики
-            ticks = _aggtrades_to_ticks(raw_aggtrades)
+            # Конвертируем trades в тики
+            ticks = _trades_to_ticks(raw_trades)
             return ticks
             
         except Exception as e:
@@ -330,15 +343,7 @@ class ChartGenerator:
                 logger.warning(f"Не удалось получить тики для графика: {candle.exchange} {candle.market} {candle.symbol}")
                 return None
             
-            # Фильтруем тики: показываем все тики до конца секунды детекта включительно
-            detection_time_ms = candle.ts_ms
-            end_of_detection_second_ms = detection_time_ms + 1000  # Конец секунды детекта
-            ticks = [t for t in ticks if t["ts"] < end_of_detection_second_ms]
-            
-            if not ticks:
-                logger.warning(f"Нет тиков до момента детекта для графика: {candle.exchange} {candle.market} {candle.symbol}")
-                return None
-            
+            # НЕ фильтруем тики - показываем все полученные трейды (до 1000)
             # Сортируем тики по времени (на всякий случай)
             ticks.sort(key=lambda t: t["ts"])
             
@@ -346,22 +351,19 @@ class ChartGenerator:
             timestamps = [datetime.fromtimestamp(t["ts"] / 1000) for t in ticks]
             prices = [t["price"] for t in ticks]
             
-            # Вычисляем базовую цену (цена первого тика) для конвертации в проценты
-            base_price = prices[0] if prices[0] > 0 else None
-            
-            # Если базовая цена нулевая, используем значения из свечи
-            if base_price is None or base_price == 0:
-                if candle.open > 0:
-                    base_price = candle.open
-                elif candle.close > 0:
-                    base_price = candle.close
-                elif candle.high > 0:
-                    base_price = candle.high
-                elif candle.low > 0:
-                    base_price = candle.low
-                else:
-                    logger.error(f"Все цены нулевые для графика: {candle.exchange} {candle.market} {candle.symbol}")
-                    return None
+            # Базовая цена - это цена в момент детекта (candle.open), чтобы начало стрелы было на 0%
+            # Используем цену открытия свечи как базовую для расчёта процентов
+            if candle.open > 0:
+                base_price = candle.open
+            elif candle.close > 0:
+                base_price = candle.close
+            elif candle.high > 0:
+                base_price = candle.high
+            elif candle.low > 0:
+                base_price = candle.low
+            else:
+                logger.error(f"Все цены нулевые для графика: {candle.exchange} {candle.market} {candle.symbol}")
+                return None
             
             # Преобразуем цены в проценты изменения относительно базовой цены
             price_percentages = [((price - base_price) / base_price) * 100 for price in prices]
@@ -371,48 +373,54 @@ class ChartGenerator:
                 timer.start("chart.render")
             fig, ax = plt.subplots(figsize=(19.2, 10.8), dpi=100)  # 1920x1080 пикселей
             
-            # Рисуем тиковый график: линия с зелеными/красными сегментами
-            # Для каждого сегмента между тиками рисуем линию соответствующего цвета
-            for i in range(len(ticks) - 1):
-                color = "green" if ticks[i]["side"] == "buy" else "red"
-                ax.plot(
-                    [timestamps[i], timestamps[i + 1]],
-                    [price_percentages[i], price_percentages[i + 1]],
-                    color=color,
-                    linewidth=1.5,
-                    alpha=0.8
+            # Рисуем тиковый график: каждая сделка (тик) отображается как отдельная точка
+            # Разделяем тики на покупки и продажи для правильной визуализации
+            buy_timestamps = []
+            buy_prices = []
+            sell_timestamps = []
+            sell_prices = []
+            
+            for i, tick in enumerate(ticks):
+                if tick["side"] == "buy":
+                    buy_timestamps.append(timestamps[i])
+                    buy_prices.append(price_percentages[i])
+                else:  # sell
+                    sell_timestamps.append(timestamps[i])
+                    sell_prices.append(price_percentages[i])
+            
+            # Рисуем точки покупок (зелёные)
+            if buy_timestamps:
+                ax.scatter(
+                    buy_timestamps,
+                    buy_prices,
+                    color="green",
+                    s=15,  # размер точки (увеличен для лучшей видимости)
+                    alpha=0.8,
+                    label="Buy" if len(buy_timestamps) > 0 else None
                 )
             
-            # Находим пик для стрелки (максимальное значение процента)
-            if price_percentages:
-                max_pct_idx = max(range(len(price_percentages)), key=lambda i: price_percentages[i])
-                max_pct_time = timestamps[max_pct_idx]
-                max_pct_value = price_percentages[max_pct_idx]
-                
-                # Получаем текущие пределы оси Y
-                y_min, y_max = ax.get_ylim()
-                y_range = y_max - y_min
-                
-                # Добавляем стрелку вверх на пике, если пик выходит за пределы графика
-                # Стрелка должна указывать вверх от пика
-                arrow_length = y_range * 0.1  # 10% от диапазона Y
-                
-                # Если пик близко к верхней границе или выходит за нее, рисуем стрелку
-                if max_pct_value >= y_max * 0.8:  # Если пик в верхних 20% графика
-                    # Рисуем пунктирную стрелку вверх от пика
-                    ax.annotate('',
-                        xy=(max_pct_time, max_pct_value + arrow_length),  # Назначение: точка выше пика
-                        xytext=(max_pct_time, max_pct_value),  # Источник: пиковая точка
-                        arrowprops=dict(
-                            arrowstyle='->',
-                            color='green',
-                            lw=2.5,
-                            alpha=0.8,
-                            linestyle='--',
-                            connectionstyle='arc3'
-                        ),
-                        annotation_clip=False  # Позволяет рисовать стрелку за пределами графика
-                    )
+            # Рисуем точки продаж (красные)
+            if sell_timestamps:
+                ax.scatter(
+                    sell_timestamps,
+                    sell_prices,
+                    color="red",
+                    s=15,  # размер точки (увеличен для лучшей видимости)
+                    alpha=0.8,
+                    label="Sell" if len(sell_timestamps) > 0 else None
+                )
+            
+            # Для лучшей визуализации также рисуем тонкие линии между тиками,
+            # чтобы видеть последовательность сделок во времени
+            if len(ticks) > 1:
+                ax.plot(
+                    timestamps,
+                    price_percentages,
+                    color="gray",
+                    linewidth=0.5,
+                    alpha=0.15,  # Полупрозрачная линия
+                    linestyle="-"
+                )
             
             # Форматируем оси
             ax.set_xlabel('Время', fontsize=12)

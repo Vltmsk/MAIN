@@ -45,6 +45,7 @@ export default function SpikesSettings({
   } | null>(null);
   const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
+  const [isShadowInfoExpanded, setIsShadowInfoExpanded] = useState<boolean>(false);
 
   const handleExchangeToggle = (exchange: string, market: "spot" | "futures", enabled: boolean) => {
     const sectionKey = `${exchange}_${market}`;
@@ -302,6 +303,48 @@ export default function SpikesSettings({
           </div>
           <p className="text-sm text-zinc-400 mb-6">Выберите биржи для мониторинга и настройте параметры детектирования для каждой биржи отдельно (Spot и Futures). Можно включить/выключить биржи и настроить минимальные значения дельты, объёма и тени свечи.</p>
           
+          {/* Информационный блок о тени свечи - сворачиваемый */}
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg mb-6 overflow-hidden">
+            <button
+              onClick={() => setIsShadowInfoExpanded(!isShadowInfoExpanded)}
+              className="w-full flex items-center justify-between p-4 hover:bg-blue-500/5 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <h3 className="text-sm font-semibold text-blue-300">Что такое тень свечи?</h3>
+              </div>
+              <svg
+                className={`w-5 h-5 text-blue-400 transition-transform ${isShadowInfoExpanded ? "rotate-180" : ""}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {isShadowInfoExpanded && (
+              <div className="px-4 pb-4 animate-fade-in">
+                <div className="space-y-3">
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    <strong className="text-blue-200">Тень свечи</strong> — это часть свечи, которая выходит за пределы тела (разница между ценой открытия и закрытия). 
+                    Тень показывает максимальные отклонения цены вверх (верхняя тень) и вниз (нижняя тень) в течение периода свечи.
+                  </p>
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    <strong className="text-blue-200">Процент тени</strong> вычисляется как доля теней от общего диапазона свечи (от минимума до максимума). 
+                    Например, если тень составляет 50%, это означает, что половина диапазона свечи приходится на тени, а половина — на тело.
+                  </p>
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    <strong className="text-blue-200">Зачем это нужно:</strong> Фильтр по тени свечи помогает отсеивать прострелы с маленькими тенями, 
+                    которые могут быть менее значимыми. Свечи с большими тенями часто указывают на сильные движения цены и откаты, 
+                    что делает их более интересными для торговли.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+          
           <div className="space-y-2">
             {exchangeMarketCombinations.map(({exchange, market}) => {
               const sectionKey = `${exchange}_${market}`;
@@ -372,7 +415,15 @@ export default function SpikesSettings({
                                   <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Включено</th>
                                   <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Дельта %</th>
                                   <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Объём USDT</th>
-                                  <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">Тень %</th>
+                                  <th className="text-left py-2 px-3 text-xs font-semibold text-zinc-300">
+                                    <div className="flex items-center gap-1">
+                                      Тень %
+                                      <svg className="w-3.5 h-3.5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <title>Процент тени свечи. Тень — это часть свечи, выходящая за пределы тела (разница между открытием и закрытием). Фильтр помогает отсеивать прострелы с маленькими тенями, которые могут быть менее значимыми.</title>
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                      </svg>
+                                    </div>
+                                  </th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -566,7 +617,15 @@ export default function SpikesSettings({
                                     />
                                   </div>
                                   <div>
-                                    <label className="block text-xs text-zinc-400 mb-1">Тень %</label>
+                                    <label className="block text-xs text-zinc-400 mb-1">
+                                      <div className="flex items-center gap-1">
+                                        Тень %
+                                        <svg className="w-3.5 h-3.5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <title>Процент тени свечи. Тень — это часть свечи, выходящая за пределы тела (разница между открытием и закрытием). Фильтр помогает отсеивать прострелы с маленькими тенями, которые могут быть менее значимыми.</title>
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                      </div>
+                                    </label>
                                     <input
                                       type="number"
                                       min="0"
@@ -650,7 +709,13 @@ export default function SpikesSettings({
                         Объём, USDT
                       </th>
                       <th className="px-3 md:px-4 py-2 md:py-3 text-right font-semibold text-zinc-300 text-xs md:text-sm">
-                        Тень %
+                        <div className="flex items-center justify-end gap-1">
+                          Тень %
+                          <svg className="w-3.5 h-3.5 text-zinc-400 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <title>Процент тени свечи. Тень — это часть свечи, выходящая за пределы тела (разница между открытием и закрытием). Фильтр помогает отсеивать прострелы с маленькими тенями, которые могут быть менее значимыми.</title>
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </div>
                       </th>
                     </tr>
                   </thead>
