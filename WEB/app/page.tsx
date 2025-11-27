@@ -47,8 +47,19 @@ export default function Home() {
 
       const detectTimezone = () => {
         try {
+          // Получаем системную временную зону из операционной системы пользователя
+          // Intl.DateTimeFormat().resolvedOptions() читает настройки времени из ОС
           const resolved = Intl.DateTimeFormat().resolvedOptions();
-          const timezone = resolved.timeZone || "UTC";
+          let timezone = resolved.timeZone;
+          
+          // Если не удалось получить через Intl API, используем fallback через смещение
+          if (!timezone || timezone === "UTC") {
+            const offsetMinutes = -new Date().getTimezoneOffset();
+            const offsetHours = offsetMinutes / 60;
+            // Приблизительное определение временной зоны по смещению
+            timezone = `Etc/GMT${offsetHours >= 0 ? '-' : '+'}${Math.abs(offsetHours)}`;
+          }
+          
           const offsetMinutes = -new Date().getTimezoneOffset(); // Приводим к привычному знаку: положительное значение = впереди UTC
           const absoluteMinutes = Math.abs(offsetMinutes);
           const hours = Math.floor(absoluteMinutes / 60);
@@ -58,13 +69,13 @@ export default function Home() {
           const locale = typeof navigator !== "undefined" ? navigator.language : undefined;
 
           return {
-            timezone,
+            timezone: timezone || "UTC",
             timezone_offset_minutes: offsetMinutes,
             timezone_offset_formatted: `UTC${formattedOffset}`,
             timezone_client_locale: locale,
           };
         } catch (tzError) {
-          console.warn("Не удалось автоматически определить временную зону, используем UTC по умолчанию:", tzError);
+          console.warn("Не удалось автоматически определить системную временную зону, используем UTC по умолчанию:", tzError);
           return {
             timezone: "UTC",
             timezone_offset_minutes: 0,

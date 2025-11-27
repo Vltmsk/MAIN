@@ -353,13 +353,26 @@ export function useSettings({
           setChartSettings(chartSettingsMap);
           
           // Загрузка временной зоны
+          // Используем системное время операционной системы пользователя
           if (options.timezone && typeof options.timezone === "string") {
             setTimezone(options.timezone);
           } else {
             try {
-              const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-              setTimezone(browserTimezone || "UTC");
+              // Intl.DateTimeFormat().resolvedOptions().timeZone получает временную зону из ОС
+              // Это системная настройка времени компьютера пользователя
+              const systemTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+              if (systemTimezone) {
+                setTimezone(systemTimezone);
+              } else {
+                // Fallback: определяем по смещению времени
+                const offsetMinutes = -new Date().getTimezoneOffset();
+                const offsetHours = offsetMinutes / 60;
+                // Пытаемся определить временную зону по смещению (приблизительно)
+                const offsetTimezone = `Etc/GMT${offsetHours >= 0 ? '-' : '+'}${Math.abs(offsetHours)}`;
+                setTimezone(offsetTimezone);
+              }
             } catch (e) {
+              console.warn("Не удалось определить системную временную зону, используем UTC:", e);
               setTimezone("UTC");
             }
           }
