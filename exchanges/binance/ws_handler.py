@@ -9,6 +9,8 @@ from typing import Awaitable, Callable, List
 import aiohttp
 import json
 import socket
+import time
+from collections import deque
 from config import AppConfig
 from core.candle_builder import Candle, CandleBuilder
 from core.logger import get_logger
@@ -27,12 +29,18 @@ STREAMS_PER_CONNECTION = 150
 # Время планового переподключения (23 часа в секундах)
 SCHEDULED_RECONNECT_INTERVAL = 23 * 60 * 60  # 82800 секунд
 
+# Лимиты переподключений
+MAX_CONNECTION_ATTEMPTS_PER_WINDOW = 300  # Максимум попыток подключения
+CONNECTION_WINDOW_SECONDS = 5 * 60  # Окно времени в секундах (5 минут)
+
 # Глобальные переменные
 _builder: CandleBuilder | None = None
 _tasks: List[asyncio.Task] = []
 _spot_tasks: List[asyncio.Task] = []  # Отдельное отслеживание spot задач
 _linear_tasks: List[asyncio.Task] = []  # Отдельное отслеживание linear задач
 _session: aiohttp.ClientSession | None = None
+# Счетчик попыток подключения с временными метками (для контроля лимита)
+_connection_attempts: deque = deque()
 _stats = {
     "spot": {
         "active_connections": 0,
@@ -58,6 +66,101 @@ def _parse_float(x) -> float:
         return float(x)
     except Exception:
         return 0.0
+
+
+async def _check_connection_rate_limit() -> float:
+    """
+    Проверяет лимит попыток подключения и возвращает необходимую задержку.
+    
+    Returns:
+        Задержка в секундах перед следующим подключением (0 если лимит не превышен)
+    """
+    global _connection_attempts
+    
+    current_time = time.time()
+    
+    # Удаляем старые записи (старше окна времени)
+    while _connection_attempts and current_time - _connection_attempts[0] > CONNECTION_WINDOW_SECONDS:
+        _connection_attempts.popleft()
+    
+    # ВСЕГДА добавляем текущую попытку для корректного отслеживания и естественного восстановления
+    _connection_attempts.append(current_time)
+    
+    # Проверяем лимит ПОСЛЕ добавления попытки
+    if len(_connection_attempts) > MAX_CONNECTION_ATTEMPTS_PER_WINDOW:
+        # Лимит превышен, вычисляем задержку
+        oldest_attempt = _connection_attempts[0]
+        time_until_window_reset = CONNECTION_WINDOW_SECONDS - (current_time - oldest_attempt)
+        # Добавляем небольшую задержку сверх времени до сброса окна
+        delay = max(time_until_window_reset + 1, 10)
+        logger.warning(
+            f"Binance: превышен лимит подключений ({MAX_CONNECTION_ATTEMPTS_PER_WINDOW} за {CONNECTION_WINDOW_SECONDS}с). "
+            f"Ожидание {delay:.1f}с перед следующим подключением"
+        )
+        return delay
+    
+    # Лимит не превышен
+    return 0.0
+
+
+def _validate_streams(streams: List[str], market: str) -> List[str]:
+    """
+    Валидация стримов перед подпиской.
+    Проверяет формат и исключает невалидные стримы.
+    
+    Args:
+        streams: Список стримов для валидации
+        market: Рынок (spot или linear)
+        
+    Returns:
+        Отфильтрованный список валидных стримов
+    """
+    valid_streams = []
+    invalid_count = 0
+    
+    for stream in streams:
+        if not isinstance(stream, str) or not stream:
+            invalid_count += 1
+            logger.warning(f"Binance {market}: пропущен пустой или невалидный стрим: {stream}")
+            continue
+        
+        # Проверяем формат для Spot
+        if market == "spot":
+            if not stream.endswith("@kline_1s"):
+                invalid_count += 1
+                logger.warning(f"Binance {market}: невалидный формат стрима (ожидается @kline_1s): {stream}")
+                continue
+            # Проверяем, что символ не пустой
+            symbol_part = stream.replace("@kline_1s", "")
+            if not symbol_part:
+                invalid_count += 1
+                logger.warning(f"Binance {market}: пустой символ в стриме: {stream}")
+                continue
+        
+        # Проверяем формат для Linear
+        elif market == "linear":
+            if not stream.endswith("@continuousKline_1s"):
+                invalid_count += 1
+                logger.warning(f"Binance {market}: невалидный формат стрима (ожидается @continuousKline_1s): {stream}")
+                continue
+            # Проверяем наличие _perpetual
+            if "_perpetual@continuousKline_1s" not in stream:
+                invalid_count += 1
+                logger.warning(f"Binance {market}: невалидный формат стрима (ожидается _perpetual): {stream}")
+                continue
+            # Проверяем, что символ не пустой
+            symbol_part = stream.replace("_perpetual@continuousKline_1s", "")
+            if not symbol_part:
+                invalid_count += 1
+                logger.warning(f"Binance {market}: пустой символ в стриме: {stream}")
+                continue
+        
+        valid_streams.append(stream)
+    
+    if invalid_count > 0:
+        logger.warning(f"Binance {market}: исключено {invalid_count} невалидных стримов из {len(streams)}")
+    
+    return valid_streams
 
 
 async def _ws_connection_worker(
@@ -106,7 +209,13 @@ async def _ws_connection_worker(
                 await asyncio.sleep(5)
                 continue
             
-            async with _session.ws_connect(url, heartbeat=25) as ws:
+            # Проверяем лимит попыток подключения
+            rate_limit_delay = await _check_connection_rate_limit()
+            if rate_limit_delay > 0:
+                await asyncio.sleep(rate_limit_delay)
+                continue
+            
+            async with _session.ws_connect(url, heartbeat=20) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
                 was_connected = True  # Устанавливаем флаг успешного подключения
@@ -123,6 +232,41 @@ async def _ws_connection_worker(
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             try:
                                 payload = json.loads(msg.data)
+                                
+                                # Проверяем наличие ошибок в payload (Binance может отправлять ошибки в JSON)
+                                if isinstance(payload, dict):
+                                    # Проверяем наличие поля error
+                                    if "error" in payload:
+                                        error_info = payload.get("error", {})
+                                        error_msg = error_info.get("msg", "Unknown error") if isinstance(error_info, dict) else str(error_info)
+                                        error_code = error_info.get("code", "Unknown") if isinstance(error_info, dict) else "Unknown"
+                                        logger.error(f"Binance {market}: ошибка от сервера (code: {error_code}): {error_msg}")
+                                        logger.error(f"Binance {market}: полный ответ: {json.dumps(payload)}")
+                                        await on_error({
+                                            "exchange": "binance",
+                                            "market": market,
+                                            "connection_id": f"streams-{len(streams)}",
+                                            "type": "server_error",
+                                            "error": error_msg,
+                                            "code": error_code,
+                                        })
+                                        # Переподключаемся при ошибке от сервера
+                                        break
+                                    # Проверяем наличие кода ошибки (если есть code и он не 200)
+                                    if "code" in payload and payload.get("code") != 200:
+                                        error_msg = payload.get("msg", f"Error code: {payload.get('code')}")
+                                        logger.error(f"Binance {market}: ошибка от сервера (code: {payload.get('code')}): {error_msg}")
+                                        await on_error({
+                                            "exchange": "binance",
+                                            "market": market,
+                                            "connection_id": f"streams-{len(streams)}",
+                                            "type": "server_error",
+                                            "error": error_msg,
+                                            "code": payload.get("code"),
+                                        })
+                                        # Переподключаемся при ошибке от сервера
+                                        break
+                                
                                 await _handle_kline_message(payload, market, on_candle)
                             except Exception as e:
                                 logger.error(f"Ошибка обработки сообщения Binance {market}: {e}")
@@ -232,8 +376,14 @@ async def _ws_connection_worker_subscribe(
                 await asyncio.sleep(5)
                 continue
             
+            # Проверяем лимит попыток подключения
+            rate_limit_delay = await _check_connection_rate_limit()
+            if rate_limit_delay > 0:
+                await asyncio.sleep(rate_limit_delay)
+                continue
+            
             url = FAPI_WS_ENDPOINT_WS
-            async with _session.ws_connect(url, heartbeat=25) as ws:
+            async with _session.ws_connect(url, heartbeat=20) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
                 was_connected = True  # Устанавливаем флаг успешного подключения
@@ -295,10 +445,26 @@ async def _ws_connection_worker_subscribe(
                                         # Проверяем наличие ошибки (если есть ключ "error" - это ошибка)
                                         if "error" in payload:
                                             # Ошибка подписки
-                                            error_msg = payload.get("error", {}).get("msg", "Unknown error")
-                                            error_code = payload.get("error", {}).get("code", "Unknown")
+                                            error_info = payload.get("error", {})
+                                            error_msg = error_info.get("msg", "Unknown error") if isinstance(error_info, dict) else str(error_info)
+                                            error_code = error_info.get("code", "Unknown") if isinstance(error_info, dict) else "Unknown"
+                                            
+                                            # Извлекаем информацию о проблемных стримах из ответа или используем весь список
+                                            problematic_streams = streams
+                                            if isinstance(error_info, dict) and "params" in error_info:
+                                                problematic_streams = error_info.get("params", streams)
+                                            elif isinstance(payload, dict) and "params" in payload:
+                                                problematic_streams = payload.get("params", streams)
+                                            
+                                            # Логируем проблемные символы
                                             logger.error(f"Binance {market}: ошибка подписки (code: {error_code}): {error_msg}")
+                                            logger.error(f"Binance {market}: количество проблемных стримов: {len(problematic_streams)}")
+                                            if len(problematic_streams) <= 10:
+                                                logger.error(f"Binance {market}: проблемные стримы: {problematic_streams}")
+                                            else:
+                                                logger.error(f"Binance {market}: первые 10 проблемных стримов: {problematic_streams[:10]}")
                                             logger.error(f"Binance {market}: полный ответ: {json.dumps(payload)}")
+                                            
                                             await on_error({
                                                 "exchange": "binance",
                                                 "market": market,
@@ -306,6 +472,8 @@ async def _ws_connection_worker_subscribe(
                                                 "type": "subscribe_error",
                                                 "error": error_msg,
                                                 "code": error_code,
+                                                "problematic_streams": problematic_streams[:20],  # Ограничиваем для логирования
+                                                "streams_count": len(problematic_streams),
                                             })
                                             # Отменяем задачу таймаута перед выходом
                                             if not timeout_task.done():
@@ -384,8 +552,19 @@ async def _ws_connection_worker_subscribe(
                                 pass
                         
                         # Если вышли из цикла без подтверждения и без данных - переподключаемся
+                        # Примечание: если timeout_triggered = True, переподключение уже залогировано в блоке CLOSE
                         if not subscription_confirmed and not first_data_received and not timeout_triggered:
                             logger.warning(f"Binance {market}: подписка не подтверждена и данных не получено, переподключение...")
+                            # Логируем переподключение, если соединение было установлено
+                            if was_connected and not connection_state.get("is_scheduled_reconnect", False):
+                                _stats[market]["reconnects"] += 1
+                                await on_error({
+                                    "exchange": "binance",
+                                    "market": market,
+                                    "connection_id": f"ws-subscribe-{len(streams)}",
+                                    "type": "reconnect",
+                                    "reason": "subscription_not_confirmed",
+                                })
                             continue
                     finally:
                         # Отменяем задачу планового переподключения, если соединение закрылось раньше
@@ -567,6 +746,21 @@ async def _handle_kline_message(payload: dict, market: str, on_candle: Callable[
         "q": "1000.5"  # volume (quote asset)
     }
     """
+    # Проверяем наличие ошибок в payload перед обработкой
+    if isinstance(payload, dict):
+        # Проверяем наличие поля error
+        if "error" in payload:
+            error_info = payload.get("error", {})
+            error_msg = error_info.get("msg", "Unknown error") if isinstance(error_info, dict) else str(error_info)
+            error_code = error_info.get("code", "Unknown") if isinstance(error_info, dict) else "Unknown"
+            logger.warning(f"Binance {market}: ошибка в сообщении kline (code: {error_code}): {error_msg}")
+            return
+        # Проверяем наличие кода ошибки (если есть code и он не 200)
+        if "code" in payload and payload.get("code") != 200:
+            error_msg = payload.get("msg", f"Error code: {payload.get('code')}")
+            logger.warning(f"Binance {market}: ошибка в сообщении kline (code: {payload.get('code')}): {error_msg}")
+            return
+    
     # Проверяем, что это сообщение от kline стрима (spot или futures)
     stream = payload.get("stream", "")
     if not stream.endswith("@kline_1s"):
@@ -690,9 +884,11 @@ async def start(
         
         # Строим streams для SPOT: "btcusdt@kline_1s"
         spot_streams = [f"{sym.lower()}@kline_1s" for sym in spot_symbols]
+        # Валидируем стримы перед подпиской
+        spot_streams = _validate_streams(spot_streams, "spot")
         spot_chunks = _chunk_list(spot_streams, STREAMS_PER_CONNECTION)
         
-        logger.info(f"Binance spot: запущено {len(spot_chunks)} соединений для {len(spot_symbols)} символов")
+        logger.info(f"Binance spot: запущено {len(spot_chunks)} соединений для {len(spot_streams)} валидных стримов (из {len(spot_symbols)} символов)")
         
         for chunk in spot_chunks:
             url = f"{SPOT_WS_ENDPOINT}?streams={'/'.join(chunk)}"
@@ -712,9 +908,11 @@ async def start(
         
         # Строим streams для LINEAR: "btcusdt_perpetual@continuousKline_1s" (как в официальной документации Binance для continuous kline)
         linear_streams = [f"{sym.lower()}_perpetual@continuousKline_1s" for sym in linear_symbols]
+        # Валидируем стримы перед подпиской
+        linear_streams = _validate_streams(linear_streams, "linear")
         linear_chunks = _chunk_list(linear_streams, STREAMS_PER_CONNECTION)
         
-        logger.info(f"Binance linear: запущено {len(linear_chunks)} соединений для {len(linear_symbols)} символов")
+        logger.info(f"Binance linear: запущено {len(linear_chunks)} соединений для {len(linear_streams)} валидных стримов (из {len(linear_symbols)} символов)")
         
         for i, chunk in enumerate(linear_chunks):
             task = asyncio.create_task(_ws_connection_worker_subscribe(
@@ -740,7 +938,7 @@ async def start(
 
 async def stop(tasks: List[asyncio.Task]) -> None:
     """Останавливает все WebSocket соединения и очищает ресурсы."""
-    global _tasks, _spot_tasks, _linear_tasks, _builder, _session
+    global _tasks, _spot_tasks, _linear_tasks, _builder, _session, _connection_attempts
     
     for t in tasks:
         t.cancel()
@@ -760,6 +958,7 @@ async def stop(tasks: List[asyncio.Task]) -> None:
     _session = None
     _spot_tasks = []
     _linear_tasks = []
+    _connection_attempts.clear()
     
     logger.info("Все соединения Binance остановлены")
 

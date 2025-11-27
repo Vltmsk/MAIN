@@ -29,6 +29,7 @@ export default function MessageTemplateEditor({
       "[[Дельта стрелы]]": "Дельта стрелы",
       "[[Направление]]": "Направление",
       "[[Биржа и тип рынка]]": "Биржа и тип рынка",
+      "[[Биржа и тип рынка (коротко)]]": "Биржа и тип рынка (коротко)",
       "[[Торговая пара]]": "Торговая пара",
       "[[Объём стрелы]]": "Объём стрелы",
       "[[Тень свечи]]": "Тень свечи",
@@ -82,6 +83,7 @@ export default function MessageTemplateEditor({
       "[[Дельта стрелы]]": "Дельта стрелы",
       "[[Направление]]": "Направление",
       "[[Биржа и тип рынка]]": "Биржа и тип рынка",
+      "[[Биржа и тип рынка (коротко)]]": "Биржа и тип рынка (коротко)",
       "[[Торговая пара]]": "Торговая пара",
       "[[Объём стрелы]]": "Объём стрелы",
       "[[Тень свечи]]": "Тень свечи",
@@ -122,30 +124,32 @@ export default function MessageTemplateEditor({
       {/* Список доступных вставок */}
       <div className="mb-4">
         <h3 className="text-sm font-medium text-zinc-300 mb-3">Доступные вставки:</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          {Object.entries(placeholderMap).map(([friendly, technical]) => {
-            const labels: Record<string, string> = {
-              "[[Дельта стрелы]]": "Дельта стрелы",
-              "[[Направление]]": "Направление",
-              "[[Биржа и тип рынка]]": "Биржа и тип рынка",
-              "[[Торговая пара]]": "Торговая пара",
-              "[[Объём стрелы]]": "Объём стрелы",
-              "[[Тень свечи]]": "Тень свечи",
-              "[[Время детекта]]": "Время детекта",
-              "[[Временная метка]]": "Временная метка",
-            };
-            const label = labels[friendly] || friendly;
-            return (
-              <button
-                key={friendly}
-                onClick={() => insertPlaceholder(friendly)}
-                className="text-left px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border-2 border-zinc-600 hover:border-emerald-500 rounded-lg transition-all cursor-pointer text-sm"
-                type="button"
-              >
-                {label}
-              </button>
-            );
-          })}
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+          {[
+            { friendly: "[[Дельта стрелы]]", label: "Дельта стрелы", desc: "Например: 5.23%" },
+            { friendly: "[[Направление]]", label: "Направление", desc: "Эмодзи зелёный круг 🟢 или красный круг 🔴" },
+            { friendly: "[[Биржа и тип рынка]]", label: "Биржа и тип рынка", desc: "BINANCE | SPOT" },
+            { friendly: "[[Биржа и тип рынка (коротко)]]", label: "Биржа и тип рынка (коротко)", desc: "Bin_S, Byb_F и т.д." },
+            { friendly: "[[Торговая пара]]", label: "Торговая пара", desc: "Например: BTC-USDT" },
+            { friendly: "[[Объём стрелы]]", label: "Объём стрелы", desc: "Объём в USDT" },
+            { friendly: "[[Тень свечи]]", label: "Тень свечи", desc: "Процент тени свечи" },
+            { friendly: "[[Время детекта]]", label: "Время детекта", desc: "Дата и время (DD.MM.YY HH:MM:SS)" },
+          ].map((placeholder) => (
+            <button
+              key={placeholder.friendly}
+              type="button"
+              onClick={() => insertPlaceholder(placeholder.friendly)}
+              className="text-left px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border-2 border-zinc-600 hover:border-emerald-500 rounded-lg transition-all cursor-pointer group shadow-sm hover:shadow-md"
+              title={placeholder.desc}
+            >
+              <div className="text-xs font-medium text-white group-hover:text-emerald-300 mb-0.5">
+                {placeholder.label}
+              </div>
+              <div className="text-[11px] text-zinc-500 group-hover:text-zinc-400">
+                {placeholder.desc}
+              </div>
+            </button>
+          ))}
         </div>
       </div>
 

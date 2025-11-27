@@ -718,11 +718,11 @@ class TelegramNotifier:
                 dt_local = dt_utc
             
             # Форматируем время
-            time_str = dt_local.strftime("%Y-%m-%d %H:%M:%S")
+            time_str = dt_local.strftime("%d.%m.%y %H:%M:%S")
         except Exception as e:
             logger.debug(f"Ошибка при форматировании времени: {e}, используем UTC")
             # Не логируем в БД - это не критичная ошибка, есть fallback
-            time_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            time_str = datetime.fromtimestamp(timestamp).strftime("%d.%m.%y %H:%M:%S")
         
         # Определяем направление стрелы с использованием кастомных emoji
         is_up = candle.close > candle.open
@@ -757,6 +757,20 @@ class TelegramNotifier:
         # Тип рынка
         market_text = "SPOT" if candle.market == "spot" else "FUTURES"
         
+        # Сокращения бирж для короткой версии
+        exchange_short_map = {
+            "binance": "Bin",
+            "bybit": "Byb",
+            "bitget": "Bit",
+            "gate": "Gate",
+            "hyperliquid": "Hyper",
+        }
+        exchange_short = exchange_short_map.get(candle.exchange.lower(), candle.exchange.upper()[:4])
+        
+        # Сокращение типа рынка для короткой версии
+        market_short = "_S" if candle.market == "spot" else "_F"
+        exchange_market_short = f"{exchange_short}{market_short}"
+        
         # Получаем символ с торговой парой для плейсхолдеров (например, "BTC-USDT")
         from core.symbol_utils import get_symbol_with_pair
         symbol_with_pair = await get_symbol_with_pair(
@@ -772,7 +786,8 @@ class TelegramNotifier:
             ("{wick_formatted}", wick_formatted),
             ("{timestamp}", str(candle.ts_ms)),
             ("{direction}", direction_emoji),  # Используем emoji (кастомное или fallback)
-            ("{exchange_market}", f"{candle.exchange.upper()} | {market_text}"),  # Объединенная вставка
+            ("{exchange_market}", f"{candle.exchange.upper()} | {market_text}"),  # Объединенная вставка (длинная)
+            ("{exchange_market_short}", exchange_market_short),  # Короткая версия (например, "Bin_S", "Byb_F")
             ("{exchange}", candle.exchange.upper()),  # Оставляем для обратной совместимости
             ("{symbol}", symbol_with_pair),  # Используем символ с торговой парой (например, "BTC-USDT")
             ("{market}", market_text),  # Оставляем для обратной совместимости

@@ -6,6 +6,7 @@ export const placeholderMap: Record<string, string> = {
   "[[Дельта стрелы]]": "{delta_formatted}",
   "[[Направление]]": "{direction}",
   "[[Биржа и тип рынка]]": "{exchange_market}",
+  "[[Биржа и тип рынка (коротко)]]": "{exchange_market_short}",
   "[[Торговая пара]]": "{symbol}",
   "[[Объём стрелы]]": "{volume_formatted}",
   "[[Тень свечи]]": "{wick_formatted}",

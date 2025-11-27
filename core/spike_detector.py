@@ -19,7 +19,8 @@ class SpikeDetector:
         """Инициализация детектора"""
         self._users_cache: Optional[List[Dict]] = None
         self._cache_timestamp = 0.0
-        self._cache_ttl = 2.5  # Кэш пользователей на 2.5 секунды для более быстрого обновления настроек
+        self._cache_ttl = 30.0  # Кэш пользователей на 30 секунд для оптимизации производительности
+        self._last_cached_users_count = 0  # Количество пользователей в последнем кэше (для логирования изменений)
         
         # Трекер серий стрел: {user_id: {exchange_market_symbol: [{"ts_ms": int, "timestamp": float, "delta": float, "volume_usdt": float, "wick_pct": float, "direction": str, "detected_by_spike_settings": bool, "detected_by_strategy": bool}]}}
         # Хранит временные метки и параметры последних стрел для каждой пары exchange+market+symbol для каждого пользователя
@@ -62,11 +63,17 @@ class SpikeDetector:
                 # Нет запущенного event loop, можем использовать asyncio.run()
                 users = asyncio.run(db.get_all_users())
             
-            # Логируем при обновлении кэша (каждое обновление)
-            logger.info(f"Обновлен кэш пользователей: загружено {len(users)} пользователей")
-            if users:
-                user_names = [u.get("user", "Unknown") for u in users[:5]]  # Первые 5 для логирования
-                logger.debug(f"Загруженные пользователи (первые 5): {', '.join(user_names)}")
+            # Логируем только при изменении количества пользователей или при первом обновлении
+            users_count = len(users)
+            if users_count != self._last_cached_users_count or self._users_cache is None:
+                logger.info(f"Обновлен кэш пользователей: загружено {users_count} пользователей")
+                if users:
+                    user_names = [u.get("user", "Unknown") for u in users[:5]]  # Первые 5 для логирования
+                    logger.debug(f"Загруженные пользователи (первые 5): {', '.join(user_names)}")
+                self._last_cached_users_count = users_count
+            else:
+                # Логируем на уровне DEBUG, если количество не изменилось
+                logger.debug(f"Обновлен кэш пользователей: загружено {users_count} пользователей (без изменений)")
             
             self._users_cache = users
             self._cache_timestamp = current_time
@@ -1291,6 +1298,7 @@ class SpikeDetector:
         """Сбрасывает кэш пользователей"""
         self._users_cache = None
         self._cache_timestamp = 0.0
+        self._last_cached_users_count = 0
     
     def _cleanup_old_data(self):
         """

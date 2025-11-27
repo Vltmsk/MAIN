@@ -1101,15 +1101,15 @@ async def _save_statistics_to_db():
 
 
 async def print_statistics():
-    """Вывод статистики работы каждые 30 секунд, независимо от состояния бирж."""
+    """Вывод статистики работы каждые 5 минут, независимо от состояния бирж."""
     try:
         # Первый вывод статистики через 5 секунд после запуска
         await asyncio.sleep(5)
         _print_exchange_statistics()
         
-        # Затем каждые 30 секунд - выводим статистику всегда
+        # Затем каждые 5 минут (300 секунд) - выводим статистику всегда
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(300)
             _print_exchange_statistics()
     except asyncio.CancelledError:
         logger.debug("Задача статистики отменена")
@@ -1119,7 +1119,7 @@ async def print_statistics():
         # Даже при ошибке продолжаем выводить статистику
         while True:
             try:
-                await asyncio.sleep(30)
+                await asyncio.sleep(300)
                 _print_exchange_statistics()
             except asyncio.CancelledError:
                 raise
