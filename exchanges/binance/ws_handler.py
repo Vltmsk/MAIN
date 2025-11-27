@@ -401,11 +401,13 @@ async def _ws_connection_worker_subscribe(
                     logger.info(f"Binance {market}: отправлена подписка на {len(streams)} стримов")
                     logger.debug(f"Binance {market}: примеры стримов: {streams[:3] if len(streams) > 0 else 'нет'}")
                     
-                    # Ждём подтверждения подписки (максимум 30 секунд)
+                    # Ждём подтверждения подписки (максимум 60 секунд)
+                    # При большом количестве стримов (100+) Binance может обрабатывать подписку с задержкой
                     subscription_confirmed = False
-                    subscription_timeout = 30.0
+                    subscription_timeout = 60.0  # Увеличено с 30 до 60 секунд для больших подписок
                     first_data_received = False
                     timeout_triggered = False
+                    messages_received = 0  # Счётчик полученных сообщений для отладки
                     
                     # Создаём задачу для планового переподключения через 23 часа
                     scheduled_reconnect_task = asyncio.create_task(
@@ -418,7 +420,10 @@ async def _ws_connection_worker_subscribe(
                         await asyncio.sleep(subscription_timeout)
                         if not subscription_confirmed and not first_data_received:
                             timeout_triggered = True
-                            logger.warning(f"Binance {market}: таймаут подтверждения подписки без данных ({subscription_timeout}с), переподключение...")
+                            logger.warning(
+                                f"Binance {market}: таймаут подтверждения подписки без данных "
+                                f"({subscription_timeout}с, получено сообщений: {messages_received}), переподключение..."
+                            )
                             if not ws.closed:
                                 await ws.close()
                     
@@ -435,10 +440,14 @@ async def _ws_connection_worker_subscribe(
                             if msg.type == aiohttp.WSMsgType.TEXT:
                                 try:
                                     payload = json.loads(msg.data)
+                                    messages_received += 1
                                     
-                                    # Логируем первое сообщение для отладки
-                                    if not subscription_confirmed and not first_data_received:
-                                        logger.debug(f"Binance {market}: первое сообщение после подписки: {json.dumps(payload)[:200]}")
+                                    # Логируем первые несколько сообщений для отладки
+                                    if messages_received <= 3:
+                                        logger.debug(
+                                            f"Binance {market}: сообщение #{messages_received} после подписки: "
+                                            f"{json.dumps(payload)[:300]}"
+                                        )
                                     
                                     # Проверяем ответ на подписку (только если ещё не подтверждена)
                                     if not subscription_confirmed and payload.get("id") == 1:
@@ -554,7 +563,10 @@ async def _ws_connection_worker_subscribe(
                         # Если вышли из цикла без подтверждения и без данных - переподключаемся
                         # Примечание: если timeout_triggered = True, переподключение уже залогировано в блоке CLOSE
                         if not subscription_confirmed and not first_data_received and not timeout_triggered:
-                            logger.warning(f"Binance {market}: подписка не подтверждена и данных не получено, переподключение...")
+                            logger.warning(
+                                f"Binance {market}: подписка не подтверждена и данных не получено "
+                                f"(получено сообщений: {messages_received}), переподключение..."
+                            )
                             # Логируем переподключение, если соединение было установлено
                             if was_connected and not connection_state.get("is_scheduled_reconnect", False):
                                 _stats[market]["reconnects"] += 1
