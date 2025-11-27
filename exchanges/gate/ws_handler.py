@@ -96,7 +96,10 @@ async def _ws_connection_worker(
     
     while True:
         reconnect_attempt += 1
-        is_reconnect = reconnect_attempt > 1
+        # Переподключение считается, если:
+        # 1. Это не первая попытка (reconnect_attempt > 1), ИЛИ
+        # 2. Это первая попытка, но соединение было установлено ранее (was_connected = True)
+        is_reconnect = reconnect_attempt > 1 or was_connected
         
         try:
             if is_reconnect:

@@ -112,7 +112,12 @@ async def _ws_batch_worker(
         was_reconnecting = False
         
         try:
-            if reconnect_attempt > 1:
+            # Переподключение считается, если:
+            # 1. Это не первая попытка (reconnect_attempt > 1), ИЛИ
+            # 2. Это первая попытка, но соединение было установлено ранее (was_connected = True)
+            is_reconnect = reconnect_attempt > 1 or was_connected
+            
+            if is_reconnect:
                 was_reconnecting = True
                 # Очищаем словарь при реконнекте, чтобы получить первое сообщение для каждого символа
                 # Это необходимо, так как биржа отправляет исторические данные при реконнекте

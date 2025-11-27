@@ -237,7 +237,12 @@ async def _ws_connection_worker(
         reconnect_attempt += 1
         
         try:
-            if reconnect_attempt > 1:
+            # Переподключение считается, если:
+            # 1. Это не первая попытка (reconnect_attempt > 1), ИЛИ
+            # 2. Это первая попытка, но соединение было установлено ранее (was_connected = True)
+            is_reconnect = reconnect_attempt > 1 or was_connected
+            
+            if is_reconnect:
                 delay = min(2 ** min(reconnect_attempt - 1, 5), MAX_RECONNECT_DELAY)
                 _stats[market]["reconnects"] += 1
                 await on_error({
