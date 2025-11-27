@@ -3,8 +3,25 @@
 """
 import asyncio
 import json
+import sys
+import os
 from pathlib import Path
-from database import Database
+
+# Настройка кодировки для Windows консоли
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Для старых версий Python
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+
+# Добавляем корневую директорию проекта в путь для импорта модулей
+script_dir = Path(__file__).parent
+project_root = script_dir.parent
+sys.path.insert(0, str(project_root))
+
+from BD.database import Database
 
 async def remove_try_pairs():
     """
@@ -69,18 +86,16 @@ async def remove_try_pairs():
                     pair_settings = options.get("pairSettings", {})
                     
                     # Ищем и удаляем пары с TRY для Binance Spot
-                    keys_to_remove = []
+                    keys_to_remove = set()
                     for key in pair_settings.keys():
-                        if key.startswith("binance_spot_") and key.endswith("_TRY"):
-                            keys_to_remove.append(key)
-                        # Также проверяем пары вида binance_spot_TRY
-                        if key == "binance_spot_TRY":
-                            keys_to_remove.append(key)
+                        if key.startswith("binance_spot_") and (key.endswith("_TRY") or key == "binance_spot_TRY"):
+                            keys_to_remove.add(key)
                     
                     if keys_to_remove:
                         for key in keys_to_remove:
-                            del pair_settings[key]
-                            print(f"  Удалена пара {key} для пользователя {username}")
+                            if key in pair_settings:
+                                del pair_settings[key]
+                                print(f"  Удалена пара {key} для пользователя {username}")
                         
                         options["pairSettings"] = pair_settings
                         new_options_json = json.dumps(options, ensure_ascii=False)
@@ -120,11 +135,13 @@ async def remove_try_pairs():
         print(f"Удалено {deleted_aliases} записей из symbol_aliases")
         
         await conn.commit()
-        print("\n✅ Очистка завершена успешно!")
+        print("\n[OK] Очистка завершена успешно!")
         
     except Exception as e:
         await conn.rollback()
-        print(f"\n❌ Ошибка при очистке: {e}")
+        print(f"\n[ERROR] Ошибка при очистке: {e}")
+        import traceback
+        traceback.print_exc()
         raise
     finally:
         await conn.close()
