@@ -117,6 +117,43 @@ class ExchangeManager:
 exchange_manager = ExchangeManager()
 
 
+def setup_asyncio_exception_handler():
+    """
+    Настраивает обработчик исключений для asyncio event loop.
+    Перехватывает необработанные исключения в callback'ах и логирует их на уровне DEBUG.
+    Это необходимо для подавления ошибок типа ConnectionResetError при закрытии соединений в Windows.
+    """
+    def asyncio_exception_handler(loop, context):
+        """
+        Обработчик исключений для asyncio event loop.
+        Перехватывает необработанные исключения в callback'ах и логирует их на уровне DEBUG.
+        """
+        exception = context.get('exception')
+        message = context.get('message', '')
+        
+        # Игнорируем ConnectionResetError в callback'ах закрытия соединений
+        # Это типичная ситуация в Windows, когда удаленный хост закрывает соединение
+        if isinstance(exception, ConnectionResetError):
+            # Логируем только на уровне DEBUG, так как это не критичная ошибка
+            logger.debug(f"Игнорируем ConnectionResetError в asyncio callback: {message}")
+            return
+        
+        # Для остальных исключений логируем на уровне WARNING
+        if exception:
+            logger.warning(f"Необработанное исключение в asyncio callback: {message}", exc_info=exception)
+        else:
+            logger.warning(f"Необработанное событие в asyncio: {message}")
+    
+    # Устанавливаем обработчик исключений для текущего event loop
+    try:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(asyncio_exception_handler)
+        logger.debug("Обработчик исключений для asyncio event loop установлен")
+    except RuntimeError:
+        # Если loop еще не запущен, это нормально - обработчик установится позже
+        pass
+
+
 async def _send_performance_metrics_to_user(
     timer: PerformanceTimer, 
     candle: Candle,
@@ -1121,6 +1158,10 @@ async def main():
     """Главная функция."""
     # Настройка логирования с ротацией
     setup_root_logger(config.log_level, enable_file_logging=True)
+    
+    # Настройка обработчика исключений для asyncio event loop
+    # Это необходимо для перехвата ошибок в callback'ах (например, ConnectionResetError при закрытии соединений)
+    setup_asyncio_exception_handler()
     
     # Сохраняем время запуска main.py в файл для использования в api_server.py
     main_start_time = time.time()

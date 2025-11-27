@@ -1156,6 +1156,8 @@ async def get_user_spikes_by_symbol(
     try:
         from core.symbol_utils import normalize_symbol, denormalize_symbol, is_normalized
         
+        logger.info(f"Запрос сигналов по символу: user={user}, symbol={symbol}, exchange={exchange}, market={market}")
+        
         user_data = await db.get_user(user)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
@@ -1189,28 +1191,87 @@ async def get_user_spikes_by_symbol(
                 # Если биржа/рынок не указаны, пробуем нормализовать для первой найденной биржи
                 normalized_symbol = await normalize_symbol(symbol, "binance", "spot")
         
-        # Получаем все стрелы пользователя по символу (или вариантам символа)
-        # Пока используем простую фильтрацию по одному символу
-        # В будущем можно улучшить для поддержки множественных символов
-        all_alerts = []
-        for filter_sym in filter_symbols[:1]:  # Пока используем только первый вариант
-            alerts = await db.get_alerts(
-                exchange=exchange,
-                market=market,
-                symbol=filter_sym,
-                user_id=user_id,
-                ts_from=ts_from,
-                ts_to=ts_to
-            )
-            all_alerts.extend(alerts)
-        
-        # Удаляем дубликаты по id
-        seen_ids = set()
-        unique_alerts = []
-        for alert in all_alerts:
-            if alert["id"] not in seen_ids:
-                seen_ids.add(alert["id"])
+        # Получаем все стрелы пользователя по нормализованному символу
+        # Используем прямой SQL запрос, чтобы фильтровать по normalized_symbol
+        from pathlib import Path
+        # Путь к БД относительно api_server.py
+        db_path = Path(__file__).parent / "BD" / "detected_alerts.db"
+        conn = await aiosqlite.connect(str(db_path))
+        try:
+            conditions = []
+            params = []
+            
+            # Если user_id указан, используем JOIN с user_alerts
+            if user_id is not None:
+                join_clause = "INNER JOIN user_alerts ua ON a.id = ua.alert_id"
+                conditions.append("ua.user_id = ?")
+                params.append(user_id)
+            else:
+                join_clause = ""
+            
+            # Фильтруем по normalized_symbol
+            conditions.append("a.normalized_symbol = ?")
+            params.append(normalized_symbol.upper())
+            
+            # Условия для фильтрации по полям alerts
+            if exchange:
+                conditions.append("a.exchange = ?")
+                params.append(exchange)
+            if market:
+                conditions.append("a.market = ?")
+                params.append(market)
+            if ts_from is not None:
+                conditions.append("a.ts >= ?")
+                params.append(ts_from)
+            if ts_to is not None:
+                conditions.append("a.ts <= ?")
+                params.append(ts_to)
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            
+            # Формируем SELECT с JOIN
+            if user_id is not None:
+                select_clause = """
+                    SELECT a.id, a.ts, a.exchange, a.market, a.symbol, a.normalized_symbol, a.delta, 
+                           a.wick_pct, a.volume_usdt, a.meta, a.created_at,
+                           ua.user_id
+                    FROM alerts a
+                """
+            else:
+                select_clause = """
+                    SELECT a.id, a.ts, a.exchange, a.market, a.symbol, a.normalized_symbol, a.delta, 
+                           a.wick_pct, a.volume_usdt, a.meta, a.created_at,
+                           NULL as user_id
+                    FROM alerts a
+                """
+            
+            query = f"{select_clause} {join_clause} {where_clause} ORDER BY a.ts DESC"
+            
+            async with conn.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+            
+            # Конвертируем в список словарей
+            unique_alerts = []
+            for row in rows:
+                alert = {
+                    "id": row[0],
+                    "ts": row[1],
+                    "exchange": row[2],
+                    "market": row[3],
+                    "symbol": row[4],
+                    "normalized_symbol": row[5],
+                    "delta": row[6],
+                    "wick_pct": row[7],
+                    "volume_usdt": row[8],
+                    "meta": row[9],
+                    "created_at": row[10],
+                    "user_id": row[11] if len(row) > 11 else None
+                }
                 unique_alerts.append(alert)
+            
+            logger.info(f"Найдено сигналов для символа {normalized_symbol}: {len(unique_alerts)}")
+        finally:
+            await conn.close()
         
         # Используем оригинальный symbol для отображения (содержит полную информацию о паре)
         normalized_alerts = []
@@ -1222,6 +1283,8 @@ async def get_user_spikes_by_symbol(
         
         # Сортируем по времени (новые первыми)
         normalized_alerts = sorted(normalized_alerts, key=lambda x: x["ts"], reverse=True)
+        
+        logger.info(f"Возвращаем {len(normalized_alerts)} сигналов для символа {normalized_symbol}")
         
         return {
             "symbol": normalized_symbol,

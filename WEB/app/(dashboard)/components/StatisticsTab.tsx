@@ -46,6 +46,72 @@ const extractQuoteCurrency = (symbol: string): string => {
   return "";
 };
 
+// Извлечение базовой валюты из символа (например, BTCUSDT -> BTC, ETH_USDT -> ETH)
+const extractBaseCurrency = (symbol: string): string => {
+  if (!symbol) return "";
+  
+  const symbolUpper = symbol.toUpperCase();
+  
+  // Список известных котируемых валют (по длине, от самой длинной к короткой)
+  const quoteCurrencies = [
+    "USDC", "USDT", "FDUSD", "BIDR", "AEUR",
+    "BTC", "ETH", "BNB", "TUSD", "DOGE", "TRX",
+    "TRY", "EUR", "GBP", "AUD", "BRL"
+  ];
+  
+  // Сначала проверяем разделители (приоритет для символов с разделителями)
+  const separators = ["/", "_", "-"];
+  for (const sep of separators) {
+    if (symbolUpper.includes(sep)) {
+      const parts = symbolUpper.split(sep);
+      if (parts.length >= 2) {
+        const firstPart = parts[0];
+        const lastPart = parts[parts.length - 1];
+        // Проверяем, является ли последняя часть котируемой валютой
+        if (quoteCurrencies.includes(lastPart) && firstPart) {
+          return firstPart;
+        }
+      }
+    }
+  }
+  
+  // Если разделителей нет, ищем самую длинную котируемую валюту в конце символа
+  // Сортируем по длине (от самой длинной к короткой) для правильного определения
+  const sortedQuotes = [...quoteCurrencies].sort((a, b) => b.length - a.length);
+  for (const quote of sortedQuotes) {
+    if (symbolUpper.endsWith(quote)) {
+      const base = symbolUpper.slice(0, -quote.length);
+      if (base && base.length >= 2) {
+        return base;
+      }
+    }
+  }
+  
+  // Если не удалось извлечь, проверяем, не является ли весь символ базовой валютой
+  // (для случаев типа BTC, ETH без пары)
+  if (symbolUpper.length <= 10 && !quoteCurrencies.includes(symbolUpper)) {
+    return symbolUpper;
+  }
+  
+  return "";
+};
+
+// Форматирование символа в формат "BASE/QUOTE" (например, PORT3USDT -> PORT3/USDT)
+const formatSymbol = (symbol: string): string => {
+  if (!symbol) return "";
+  
+  const baseCurrency = extractBaseCurrency(symbol);
+  const quoteCurrency = extractQuoteCurrency(symbol);
+  
+  if (baseCurrency && quoteCurrency) {
+    return `${baseCurrency}/${quoteCurrency}`;
+  } else if (baseCurrency) {
+    return baseCurrency;
+  }
+  
+  return symbol;
+};
+
 // Форматирование объема в кратком виде (тысячи, миллионы)
 const formatVolumeCompact = (volume: number): string => {
   if (volume >= 1000000) {
@@ -98,6 +164,24 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
   const [symbolSpikesLoading, setSymbolSpikesLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
+  const [searchDelta, setSearchDelta] = useState<string>("");
+  const [searchVolume, setSearchVolume] = useState<string>("");
+  
+  // Функция фильтрации сигналов по базовой валюте
+  const filterSpikesByBaseCurrency = useCallback((spikes: any[], searchQuery: string): any[] => {
+    if (!searchQuery.trim()) {
+      return spikes;
+    }
+    
+    const searchUpper = searchQuery.trim().toUpperCase();
+    const filtered = spikes.filter((spike) => {
+      const baseCurrency = extractBaseCurrency(spike.symbol);
+      return baseCurrency === searchUpper || spike.symbol.toUpperCase().includes(searchUpper);
+    });
+    
+    // Возвращаем топ 10 (уже отсортированы по дельте/объёму)
+    return filtered.slice(0, 10);
+  }, []);
 
   // Функция загрузки статистики
   const fetchSpikesStats = useCallback(async (showLoading = true) => {
@@ -164,9 +248,27 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
-          setSymbolSpikes(data.spikes || []);
+          console.log("Данные по монете:", data); // Для отладки
+          // Проверяем структуру ответа - API возвращает {symbol, total_count, spikes}
+          const spikes = data.spikes || [];
+          if (Array.isArray(spikes) && spikes.length > 0) {
+            // Данные уже отсортированы по времени (новые первыми) в API
+            // Берем последние 10 сигналов
+            const lastSpikes = spikes.slice(0, 10);
+            setSymbolSpikes(lastSpikes);
+          } else {
+            console.log("Нет данных в ответе API. spikes:", spikes, "data:", data);
+            setSymbolSpikes([]);
+          }
         } else {
-          console.error("Ошибка загрузки деталей по монете:", res.status);
+          const errorText = await res.text().catch(() => "");
+          let errorData;
+          try {
+            errorData = JSON.parse(errorText);
+          } catch {
+            errorData = { detail: errorText || "Неизвестная ошибка" };
+          }
+          console.error("Ошибка загрузки деталей по монете:", res.status, errorData);
           setSymbolSpikes([]);
         }
       } catch (error) {
@@ -615,7 +717,7 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
             <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-8">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-white">
-                  Детали по монете: {selectedSymbol}
+                  Последние 10 сигналов по монете {selectedSymbol}
                 </h2>
                 <button
                   onClick={() => setSelectedSymbol(null)}
@@ -632,38 +734,45 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                   <table className="w-full">
                     <thead className="bg-zinc-800/50">
                       <tr>
-                        <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Дата и время</th>
-                        <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Биржа</th>
-                        <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Рынок</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Время</th>
                         <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Дельта %</th>
                         <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Объём USDT</th>
                         <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Тень %</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Торговая пара</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Биржа</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-zinc-300">Рынок</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {symbolSpikes.map((spike: any, idx: number) => (
-                        <tr key={idx} className="border-t border-zinc-800 hover:bg-zinc-800/30 transition-colors">
-                          <td className="px-4 py-3 text-zinc-300 text-sm">
-                            {new Date(spike.ts).toLocaleString('ru-RU', {
-                              year: 'numeric',
-                              month: '2-digit',
-                              day: '2-digit',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                              second: '2-digit'
-                            })}
-                          </td>
-                          <td className="px-4 py-3 text-zinc-300 capitalize">{spike.exchange}</td>
-                          <td className="px-4 py-3 text-zinc-300 capitalize">
-                            {spike.market === 'linear' ? 'Фьючерсы' : spike.market}
-                          </td>
-                          <td className={`px-4 py-3 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
-                          </td>
-                          <td className="px-4 py-3 text-zinc-300">${formatNumber(Math.round(spike.volume_usdt))}</td>
-                          <td className="px-4 py-3 text-zinc-300">{spike.wick_pct.toFixed(1)}%</td>
-                        </tr>
-                      ))}
+                      {symbolSpikes.map((spike: any, idx: number) => {
+                        const quoteCurrency = extractQuoteCurrency(spike.symbol);
+                        return (
+                          <tr key={idx} className="border-t border-zinc-800 hover:bg-zinc-800/30 transition-colors">
+                            <td className="px-4 py-3 text-zinc-300 text-sm">
+                              {new Date(spike.ts).toLocaleString('ru-RU', {
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit'
+                              })}
+                            </td>
+                            <td className={`px-4 py-3 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
+                            </td>
+                            <td className="px-4 py-3 text-zinc-300">${formatNumber(Math.round(spike.volume_usdt))}</td>
+                            <td className="px-4 py-3 text-zinc-300">{spike.wick_pct.toFixed(1)}%</td>
+                            <td className="px-4 py-3 text-white font-medium">
+                              {quoteCurrency || '-'}
+                            </td>
+                            <td className="px-4 py-3 text-zinc-300 capitalize">{spike.exchange}</td>
+                            <td className="px-4 py-3 text-zinc-300 capitalize">
+                              {spike.market === 'linear' ? 'Фьючерсы' : spike.market}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -677,12 +786,34 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
             {/* Топ 10 по дельте */}
             <div className="glass-strong border border-zinc-800 rounded-xl p-4 card-hover animate-fade-in">
-              <h2 className="text-lg font-semibold gradient-text mb-3">Топ 10 стрел по дельте</h2>
-              {spikesStats.top_by_delta && spikesStats.top_by_delta.length > 0 ? (
-                <div className="grid grid-cols-2 gap-2">
-                  {spikesStats.top_by_delta.map((spike: any, idx: number) => {
-                    const quoteCurrency = extractQuoteCurrency(spike.symbol);
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-lg font-semibold gradient-text">Топ 10 стрел по дельте</h2>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Поиск монеты..."
+                    value={searchDelta}
+                    onChange={(e) => setSearchDelta(e.target.value)}
+                    className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent w-32"
+                  />
+                  {searchDelta && (
+                    <button
+                      onClick={() => setSearchDelta("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white transition-colors"
+                      title="Очистить"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+              {spikesStats.top_by_delta && spikesStats.top_by_delta.length > 0 ? (() => {
+                const filteredSpikes = filterSpikesByBaseCurrency(spikesStats.top_by_delta, searchDelta);
+                return filteredSpikes.length > 0 ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    {filteredSpikes.map((spike: any, idx: number) => {
                     const volumeCompact = formatVolumeCompact(spike.volume_usdt || 0);
+                    const formattedSymbol = formatSymbol(spike.symbol);
                     return (
                       <div key={idx} className="p-2 rounded-lg glass hover:bg-zinc-800/50 smooth-transition">
                         <div className="flex items-center justify-between mb-1">
@@ -692,8 +823,7 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                           </div>
                         </div>
                         <div className="text-white font-medium text-sm mb-0.5 truncate">
-                          {spike.symbol}
-                          {quoteCurrency && <span className="text-zinc-400 ml-1">/{quoteCurrency}</span>}
+                          {formattedSymbol}
                         </div>
                         <div className="text-zinc-400 text-xs truncate mb-0.5">
                           {spike.exchange} • {spike.market === 'linear' ? 'Фьючерсы' : 'Спот'}
@@ -710,19 +840,46 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                       </div>
                     );
                   })}
-                </div>
-              ) : (
+                  </div>
+                ) : (
+                  <div className="text-zinc-500 text-center py-8 text-sm">
+                    {searchDelta ? "Монета не найдена" : "Нет данных за выбранный период"}
+                  </div>
+                );
+              })() : (
                 <div className="text-zinc-500 text-center py-8 text-sm">Нет данных за выбранный период</div>
               )}
             </div>
             
             {/* Топ 10 по объёму */}
             <div className="glass-strong border border-zinc-800 rounded-xl p-4 card-hover animate-fade-in">
-              <h2 className="text-lg font-semibold gradient-text mb-3">Топ 10 стрел по объёму</h2>
-              {spikesStats.top_by_volume && spikesStats.top_by_volume.length > 0 ? (
-                <div className="grid grid-cols-2 gap-2">
-                  {spikesStats.top_by_volume.map((spike: any, idx: number) => {
-                    const quoteCurrency = extractQuoteCurrency(spike.symbol);
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-lg font-semibold gradient-text">Топ 10 стрел по объёму</h2>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Поиск монеты..."
+                    value={searchVolume}
+                    onChange={(e) => setSearchVolume(e.target.value)}
+                    className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent w-32"
+                  />
+                  {searchVolume && (
+                    <button
+                      onClick={() => setSearchVolume("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white transition-colors"
+                      title="Очистить"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+              {spikesStats.top_by_volume && spikesStats.top_by_volume.length > 0 ? (() => {
+                const filteredSpikes = filterSpikesByBaseCurrency(spikesStats.top_by_volume, searchVolume);
+                return filteredSpikes.length > 0 ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    {filteredSpikes.map((spike: any, idx: number) => {
+                    const formattedSymbol = formatSymbol(spike.symbol);
                     return (
                       <div key={idx} className="p-2 rounded-lg glass hover:bg-zinc-800/50 smooth-transition">
                         <div className="flex items-center justify-between mb-1">
@@ -732,8 +889,7 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                           </div>
                         </div>
                         <div className="text-white font-medium text-sm mb-0.5 truncate">
-                          {spike.symbol}
-                          {quoteCurrency && <span className="text-zinc-400 ml-1">/{quoteCurrency}</span>}
+                          {formattedSymbol}
                         </div>
                         <div className="text-zinc-400 text-xs truncate mb-0.5">
                           {spike.exchange} • {spike.market === 'linear' ? 'Фьючерсы' : 'Спот'}
@@ -754,8 +910,13 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                       </div>
                     );
                   })}
-                </div>
-              ) : (
+                  </div>
+                ) : (
+                  <div className="text-zinc-500 text-center py-8 text-sm">
+                    {searchVolume ? "Монета не найдена" : "Нет данных за выбранный период"}
+                  </div>
+                );
+              })() : (
                 <div className="text-zinc-500 text-center py-8 text-sm">Нет данных за выбранный период</div>
               )}
             </div>
@@ -775,7 +936,6 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Биржа</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Рынок</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Символ</th>
-                      <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Пара</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Дельта %</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Объём USDT</th>
                       <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Тень %</th>
@@ -783,7 +943,7 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                   </thead>
                   <tbody>
                     {spikesStats.spikes.map((spike: any, idx: number) => {
-                      const quoteCurrency = extractQuoteCurrency(spike.symbol);
+                      const formattedSymbol = formatSymbol(spike.symbol);
                       return (
                         <tr key={idx} className="border-t border-zinc-800 hover:bg-zinc-800/30 transition-colors">
                           <td className="px-6 py-4 text-zinc-300 text-sm">
@@ -792,11 +952,7 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
                           <td className="px-6 py-4 text-zinc-300 capitalize">{spike.exchange}</td>
                           <td className="px-6 py-4 text-zinc-300 capitalize">{spike.market === 'linear' ? 'Фьючерсы' : spike.market}</td>
                           <td className="px-6 py-4 text-white font-medium">
-                            {spike.symbol}
-                            {quoteCurrency && <span className="text-zinc-400 ml-1">/{quoteCurrency}</span>}
-                          </td>
-                          <td className="px-6 py-4 text-white font-medium">
-                            {quoteCurrency || '-'}
+                            {formattedSymbol}
                           </td>
                           <td className={`px-6 py-4 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                             {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
