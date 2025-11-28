@@ -28,6 +28,10 @@ class Metrics:
         # Структура: candles_counter[(exchange, market)] = {"count": int, "start_time": float}
         self._candles_counter: Dict[tuple, Dict] = {}
         
+        # Время последней очистки старых счетчиков
+        self._last_cleanup_time = time.time()
+        self._cleanup_interval = 3600  # Очистка каждый час
+        
     def inc_candle(self, exchange: str, market: str = None):
         """
         Увеличить счётчик свечей.
@@ -141,8 +145,44 @@ class Metrics:
         candles_per_second = counter["count"] / elapsed_time
         return candles_per_second
     
+    def _cleanup_old_counters(self):
+        """
+        Периодическая очистка старых счетчиков для предотвращения утечки памяти.
+        Удаляет счетчики, которые не обновлялись более 2 часов.
+        """
+        current_time = time.time()
+        # Выполняем очистку не чаще чем раз в час
+        if current_time - self._last_cleanup_time < self._cleanup_interval:
+            return
+        
+        self._last_cleanup_time = current_time
+        max_age = 7200  # 2 часа
+        
+        # Очищаем ticks_counter
+        keys_to_remove = []
+        for key, counter in self._ticks_counter.items():
+            age = current_time - counter.get("start_time", 0)
+            if age > max_age:
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del self._ticks_counter[key]
+        
+        # Очищаем candles_counter
+        keys_to_remove = []
+        for key, counter in self._candles_counter.items():
+            age = current_time - counter.get("start_time", 0)
+            if age > max_age:
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del self._candles_counter[key]
+    
     def get_stats(self) -> Dict:
         """Получить текущую статистику."""
+        # Выполняем периодическую очистку перед получением статистики
+        self._cleanup_old_counters()
+        
         return {
             "total_candles": self.total_candles,
             "total_trades": self.total_trades,
@@ -156,4 +196,5 @@ class Metrics:
         self.total_trades = 0
         self._ticks_counter.clear()
         self._candles_counter.clear()
+        self._last_cleanup_time = time.time()
 

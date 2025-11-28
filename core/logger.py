@@ -15,6 +15,41 @@ _error_queue = asyncio.Queue()
 _queue_processor_started = False
 _queue_lock = Lock()
 
+# Глобальная блокировка для потокобезопасного логирования в консоль/файл
+_log_lock = Lock()
+
+
+class ThreadSafeStreamHandler(logging.StreamHandler):
+    """
+    Потокобезопасная версия StreamHandler.
+    Использует блокировку для предотвращения перемешивания вывода от разных потоков.
+    """
+    
+    def emit(self, record: logging.LogRecord) -> None:
+        """Потокобезопасный emit с блокировкой."""
+        try:
+            with _log_lock:
+                super().emit(record)
+        except Exception:
+            # Избегаем рекурсивного логирования при ошибках
+            self.handleError(record)
+
+
+class ThreadSafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """
+    Потокобезопасная версия RotatingFileHandler.
+    Использует блокировку для предотвращения перемешивания записи в файл.
+    """
+    
+    def emit(self, record: logging.LogRecord) -> None:
+        """Потокобезопасный emit с блокировкой."""
+        try:
+            with _log_lock:
+                super().emit(record)
+        except Exception:
+            # Избегаем рекурсивного логирования при ошибках
+            self.handleError(record)
+
 
 async def _process_error_queue():
     """
@@ -141,8 +176,18 @@ class DatabaseErrorHandler(logging.Handler):
 def _ensure_db_handler(logger: logging.Logger) -> None:
     """
     Добавляет DatabaseErrorHandler к указанному логгеру, если он ещё не добавлен.
+    Предотвращает дублирование handlers.
     """
+    # Проверяем наличие DB handler во всех handlers логгера и его родителей
     has_db_handler = any(isinstance(handler, DatabaseErrorHandler) for handler in logger.handlers)
+    
+    # Также проверяем root logger, чтобы избежать дублирования
+    root_logger = logging.getLogger()
+    if root_logger != logger:
+        has_db_handler = has_db_handler or any(
+            isinstance(handler, DatabaseErrorHandler) for handler in root_logger.handlers
+        )
+    
     if not has_db_handler:
         db_handler = DatabaseErrorHandler()
         db_handler.setLevel(logging.INFO)
@@ -160,37 +205,56 @@ def get_logger(name: str) -> logging.Logger:
         Настроенный логгер
     """
     logger = logging.getLogger(name)
-
-    # Если менеджмент уже настроен, просто убеждаемся, что handler для БД подключён
-    if logger.handlers:
-        _ensure_db_handler(logger)
-        return logger
-
+    
     # Проверяем root logger
     root_logger = logging.getLogger()
+    
+    # Если root logger настроен, используем его handlers через propagate
     if root_logger.handlers:
+        # Удаляем все локальные handlers, кроме DatabaseErrorHandler, чтобы избежать дублирования
+        handlers_to_remove = [
+            h for h in logger.handlers 
+            if not isinstance(h, DatabaseErrorHandler)
+        ]
+        for handler in handlers_to_remove:
+            logger.removeHandler(handler)
+        
+        # Устанавливаем propagate = True, чтобы использовать handlers root logger
+        logger.propagate = True
         logger.setLevel(logging.INFO)
+        # Проверяем, что DB handler добавлен только один раз
         _ensure_db_handler(logger)
         return logger
-
+    
     # Если root logger не настроен, настраиваем локально
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
-    _ensure_db_handler(logger)
-
+    # Но только если у логгера еще нет handlers
+    if not logger.handlers:
+        handler = ThreadSafeStreamHandler()  # Потокобезопасный handler
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False  # Не передаем в root logger, так как он не настроен
+        _ensure_db_handler(logger)
+    else:
+        # Если handlers уже есть, просто убеждаемся, что DB handler подключен
+        _ensure_db_handler(logger)
+    
     return logger
+
+
+# Глобальный флаг для отслеживания инициализации root logger
+_root_logger_initialized = False
+_root_logger_lock = Lock()
 
 
 def setup_root_logger(level: str = "INFO", enable_file_logging: bool = True):
     """
     Настройка корневого логгера с поддержкой ротации логов.
+    Защищено от множественных вызовов - инициализация происходит только один раз.
     
     Args:
         level: Уровень логирования (DEBUG, INFO, WARNING, ERROR)
@@ -199,6 +263,21 @@ def setup_root_logger(level: str = "INFO", enable_file_logging: bool = True):
             - maxBytes: 10 MB (10 * 1024 * 1024 байт)
             - backupCount: 5 файлов (хранится текущий файл + 5 архивных)
     """
+    global _root_logger_initialized
+    
+    # Защита от множественных вызовов
+    with _root_logger_lock:
+        if _root_logger_initialized:
+            # Логгер уже инициализирован, просто обновляем уровень
+            root_logger = logging.getLogger()
+            log_level = getattr(logging, level.upper(), logging.INFO)
+            root_logger.setLevel(log_level)
+            for handler in root_logger.handlers:
+                handler.setLevel(log_level)
+            return
+        
+        _root_logger_initialized = True
+    
     log_level = getattr(logging, level.upper(), logging.INFO)
 
     root_logger = logging.getLogger()
@@ -213,8 +292,8 @@ def setup_root_logger(level: str = "INFO", enable_file_logging: bool = True):
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # Console handler (всегда включен)
-    console_handler = logging.StreamHandler()
+    # Console handler (всегда включен) - потокобезопасный
+    console_handler = ThreadSafeStreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.setLevel(log_level)
     root_logger.addHandler(console_handler)
@@ -227,8 +306,8 @@ def setup_root_logger(level: str = "INFO", enable_file_logging: bool = True):
         
         log_file = log_dir / "app.log"
         
-        # RotatingFileHandler: максимум 10MB на файл, храним 5 файлов
-        file_handler = logging.handlers.RotatingFileHandler(
+        # RotatingFileHandler: максимум 10MB на файл, храним 5 файлов - потокобезопасный
+        file_handler = ThreadSafeRotatingFileHandler(
             log_file,
             maxBytes=10 * 1024 * 1024,  # 10 MB
             backupCount=5,

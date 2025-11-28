@@ -64,6 +64,10 @@ class TelegramNotifier:
     _rate_limit_semaphore: Optional[asyncio.Semaphore] = None
     _semaphore_lock: Optional[asyncio.Lock] = None
     
+    # Переиспользуемая HTTP-сессия для всех запросов
+    _http_session: Optional[aiohttp.ClientSession] = None
+    _session_lock: Optional[asyncio.Lock] = None
+    
     @classmethod
     async def _get_semaphore(cls) -> asyncio.Semaphore:
         """
@@ -85,6 +89,33 @@ class TelegramNotifier:
                     cls._rate_limit_semaphore = asyncio.Semaphore(30)
         
         return cls._rate_limit_semaphore
+    
+    @classmethod
+    async def _get_http_session(cls) -> aiohttp.ClientSession:
+        """
+        Получает или создаёт переиспользуемую HTTP-сессию для запросов к Telegram API.
+        Использует блокировку для потокобезопасной инициализации.
+        
+        Returns:
+            aiohttp.ClientSession: Переиспользуемая HTTP-сессия
+        """
+        # Двойная проверка с блокировкой для потокобезопасности
+        if cls._http_session is None or cls._http_session.closed:
+            if cls._session_lock is None:
+                cls._session_lock = asyncio.Lock()
+            
+            async with cls._session_lock:
+                # Проверяем ещё раз после получения блокировки
+                if cls._http_session is None or cls._http_session.closed:
+                    # Создаём сессию с настройками для оптимизации
+                    timeout = aiohttp.ClientTimeout(total=7, connect=5)
+                    connector = aiohttp.TCPConnector(limit=100, limit_per_host=30)
+                    cls._http_session = aiohttp.ClientSession(
+                        timeout=timeout,
+                        connector=connector
+                    )
+        
+        return cls._http_session
     
     @staticmethod
     async def _get_custom_emoji_id(token: str, emoji_name: str = "up") -> Optional[str]:
@@ -127,14 +158,14 @@ class TelegramNotifier:
         # Это требует, чтобы бот был добавлен в пак emoji
         try:
             url = TelegramNotifier.TELEGRAM_CUSTOM_EMOJI_API_URL.format(token=token)
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json={"custom_emoji_ids": []}, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data.get("ok") and data.get("result"):
-                            # Ищем нужный emoji в результате
-                            # Пока возвращаем None, так как нужно знать конкретные ID из пака
-                            pass
+            session = await TelegramNotifier._get_http_session()
+            async with session.post(url, json={"custom_emoji_ids": []}) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("ok") and data.get("result"):
+                        # Ищем нужный emoji в результате
+                        # Пока возвращаем None, так как нужно знать конкретные ID из пака
+                        pass
         except Exception as e:
             logger.debug(f"Не удалось получить emoji ID через Bot API: {e}")
             # Не логируем в БД - это не критичная ошибка
@@ -267,16 +298,15 @@ class TelegramNotifier:
         
         last_error_msg = ""
         semaphore = await TelegramNotifier._get_semaphore()
+        session = await TelegramNotifier._get_http_session()
         
         for attempt in range(1, max_retries + 1):
             try:
                 async with semaphore:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            url,
-                            json=payload,
-                            timeout=aiohttp.ClientTimeout(total=10),
-                        ) as response:
+                    async with session.post(
+                        url,
+                        json=payload,
+                    ) as response:
                             if response.status == 200:
                                 logger.info(f"Сообщение успешно отправлено в Telegram (chat_id: {chat_id})")
                                 return True, ""
@@ -932,6 +962,7 @@ class TelegramNotifier:
         
         last_error_msg = ""
         semaphore = await TelegramNotifier._get_semaphore()
+        session = await TelegramNotifier._get_http_session()
         
         for attempt in range(1, max_retries + 1):
             # Формируем FormData внутри цикла, так как его нельзя переиспользовать
@@ -946,12 +977,10 @@ class TelegramNotifier:
             
             try:
                 async with semaphore:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            url,
-                            data=form_data,
-                            timeout=aiohttp.ClientTimeout(total=30),
-                        ) as response:
+                    async with session.post(
+                        url,
+                        data=form_data,
+                    ) as response:
                             if response.status == 200:
                                 logger.info(f"Фото успешно отправлено в Telegram (chat_id: {chat_id})")
                                 return True, ""

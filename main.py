@@ -7,7 +7,7 @@ import json
 import time
 import aiosqlite
 import aiohttp
-from typing import Dict, List, Callable, Awaitable, Optional
+from typing import Dict, List, Callable, Awaitable, Optional, Any
 from core.candle_builder import CandleBuilder, Candle
 from core.logger import setup_root_logger, get_logger
 from core.metrics import Metrics
@@ -65,6 +65,8 @@ class ExchangeManager:
         self._all_tasks: List[asyncio.Task] = []
         self._reconnect_logged: Dict[str, float] = {}  # Для отслеживания дубликатов реконнектов: {key: timestamp}
         self._exchange_start_times: Dict[str, float] = {}  # Время старта биржи: {exchange: timestamp}
+        self._stats_task_started: bool = False  # Флаг запуска задачи статистики
+        self._db_stats_task_started: bool = False  # Флаг запуска задачи обновления статистики в БД
     
     def add_tasks(self, tasks: List[asyncio.Task]) -> None:
         """Добавляет задачи в список"""
@@ -111,6 +113,24 @@ class ExchangeManager:
         self._all_tasks.clear()
         self._reconnect_logged.clear()
         self._exchange_start_times.clear()
+        self._stats_task_started = False
+        self._db_stats_task_started = False
+    
+    def is_stats_task_started(self) -> bool:
+        """Проверяет, запущена ли задача статистики"""
+        return self._stats_task_started
+    
+    def set_stats_task_started(self, value: bool = True) -> None:
+        """Устанавливает флаг запуска задачи статистики"""
+        self._stats_task_started = value
+    
+    def is_db_stats_task_started(self) -> bool:
+        """Проверяет, запущена ли задача обновления статистики в БД"""
+        return self._db_stats_task_started
+    
+    def set_db_stats_task_started(self, value: bool = True) -> None:
+        """Устанавливает флаг запуска задачи обновления статистики в БД"""
+        self._db_stats_task_started = value
 
 
 # Глобальный экземпляр менеджера бирж
@@ -589,15 +609,18 @@ async def on_candle(candle: Candle) -> None:
                         # Формируем сообщения в зависимости от способа детектирования
                         if templates_to_use is not None:
                             # Используем шаблоны стратегий (приоритет)
-                            messages = []
-                            for strategy in templates_to_use:
+                            # Обрабатываем стратегии параллельно для ускорения
+                            async def format_strategy_message(strategy: Dict[str, Any]) -> List[Dict[str, Any]]:
+                                """Форматирует сообщение для одной стратегии"""
                                 strategy_template = strategy.get("template", "")
                                 strategy_chat_id = strategy.get("chatId") or chat_id
                                 
-                                if strategy_template:
-                                    # Форматируем сообщение из шаблона стратегии
-                                    if timer:
-                                        timer.start("format.message")
+                                if not strategy_template:
+                                    return []
+                                
+                                if timer:
+                                    timer.start("format.message")
+                                try:
                                     strategy_messages = await telegram_notifier.format_spike_messages(
                                         candle=candle,
                                         delta=delta,
@@ -610,9 +633,23 @@ async def on_candle(candle: Candle) -> None:
                                         timezone=user_timezone,
                                         default_chat_id=strategy_chat_id
                                     )
+                                    return strategy_messages
+                                finally:
                                     if timer:
                                         timer.end("format.message")
+                            
+                            # Параллельная обработка всех стратегий
+                            if timer:
+                                timer.start("format.message")
+                            try:
+                                strategy_tasks = [format_strategy_message(strategy) for strategy in templates_to_use]
+                                strategy_results = await asyncio.gather(*strategy_tasks)
+                                messages = []
+                                for strategy_messages in strategy_results:
                                     messages.extend(strategy_messages)
+                            finally:
+                                if timer:
+                                    timer.end("format.message")
                         else:
                             # Используем дефолтный шаблон (messageTemplate)
                             # ВАЖНО: conditional_templates должны использоваться даже при детекте через обычные настройки
@@ -1029,9 +1066,14 @@ def _calculate_batches_per_ws(exchange_name: str, market: str, active_symbols: i
     return None
 
 
+# Кэш импортированных модулей для оптимизации памяти
+_adapter_modules_cache: Dict[str, Any] = {}
+
+
 async def _save_statistics_to_db():
     """
     Собирает статистику со всех бирж и сохраняет в БД.
+    Оптимизировано: использует кэш модулей вместо повторного импорта.
     """
     try:
         metrics_stats = metrics.get_stats()
@@ -1040,7 +1082,12 @@ async def _save_statistics_to_db():
         for exchange_name in ADAPTERS.keys():
             try:
                 adapter_path = ADAPTERS[exchange_name]
-                adapter_module = importlib.import_module(adapter_path)
+                
+                # Кэшируем модули вместо повторного импорта
+                if adapter_path not in _adapter_modules_cache:
+                    _adapter_modules_cache[adapter_path] = importlib.import_module(adapter_path)
+                
+                adapter_module = _adapter_modules_cache[adapter_path]
                 
                 # Получаем данные по свечам
                 exchange_candles = metrics_stats.get("by_exchange", {}).get(exchange_name, {})
@@ -1196,6 +1243,18 @@ async def main():
         logger.error(f"Ошибка при инициализации БД нормализации: {e}", exc_info=True)
         # Продолжаем работу даже если БД нормализации не инициализирована
     
+    # Инициализируем основную БД
+    await db.initialize()
+    
+    # Очищаем таблицу активных символов при запуске (с чистого листа)
+    logger.info("Очистка таблицы active_symbols при запуске...")
+    try:
+        await db.clear_active_symbols()
+        logger.info("Таблица active_symbols очищена")
+    except Exception as e:
+        logger.error(f"Ошибка при очистке active_symbols: {e}", exc_info=True)
+        # Продолжаем работу, символы будут добавлены при запуске бирж
+    
     # Запускаем мониторинг здоровья системы
     await health_monitor.start_monitoring()
     
@@ -1229,17 +1288,25 @@ async def main():
     
     logger.info(f"Всего создано задач: {exchange_manager.get_tasks_count()}")
     
-    # Запускаем вывод статистики
-    logger.info("Запуск задачи вывода статистики...")
-    stats_task = asyncio.create_task(print_statistics())
-    exchange_manager.add_task(stats_task)
-    logger.info("Задача статистики запущена. Первый вывод через 5 секунд.")
+    # Запускаем вывод статистики (с защитой от множественных запусков)
+    if not exchange_manager.is_stats_task_started():
+        logger.info("Запуск задачи вывода статистики...")
+        stats_task = asyncio.create_task(print_statistics())
+        exchange_manager.add_task(stats_task)
+        exchange_manager.set_stats_task_started(True)
+        logger.info("Задача статистики запущена. Первый вывод через 5 секунд.")
+    else:
+        logger.warning("Задача статистики уже запущена, пропускаем повторный запуск.")
     
-    # Запускаем обновление статистики в БД
-    logger.info("Запуск задачи обновления статистики в БД...")
-    db_stats_task = asyncio.create_task(update_statistics_to_db())
-    exchange_manager.add_task(db_stats_task)
-    logger.info("Задача обновления статистики в БД запущена. Первое обновление через 5 секунд, затем каждые 15 секунд.")
+    # Запускаем обновление статистики в БД (с защитой от множественных запусков)
+    if not exchange_manager.is_db_stats_task_started():
+        logger.info("Запуск задачи обновления статистики в БД...")
+        db_stats_task = asyncio.create_task(update_statistics_to_db())
+        exchange_manager.add_task(db_stats_task)
+        exchange_manager.set_db_stats_task_started(True)
+        logger.info("Задача обновления статистики в БД запущена. Первое обновление через 5 секунд, затем каждые 15 секунд.")
+    else:
+        logger.warning("Задача обновления статистики в БД уже запущена, пропускаем повторный запуск.")
     
     # Ожидание
     try:

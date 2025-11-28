@@ -7,7 +7,7 @@ import asyncio
 import math
 import re
 import time
-from typing import Awaitable, Callable, List
+from typing import Awaitable, Callable, List, Dict
 from collections import deque
 import aiohttp
 import json
@@ -15,6 +15,7 @@ import socket
 from config import AppConfig
 from core.candle_builder import Candle, CandleBuilder
 from core.logger import get_logger
+from BD.database import db
 from .symbol_fetcher import fetch_symbols
 
 logger = get_logger(__name__)
@@ -36,6 +37,9 @@ PING_INTERVAL_SEC = 55
 RECONNECT_DELAY = 5
 MAX_RECONNECT_DELAY = 60
 
+# Периодическая проверка новых символов
+SYMBOL_CHECK_INTERVAL_SEC = 300  # 5 минут - интервал проверки новых символов
+
 # Пороги предупреждений (в процентах от лимита)
 WARNING_THRESHOLD = 0.8  # 80% от лимита
 
@@ -45,6 +49,8 @@ _tasks: List[asyncio.Task] = []
 _spot_tasks: List[asyncio.Task] = []
 _linear_tasks: List[asyncio.Task] = []
 _session: aiohttp.ClientSession | None = None
+# Хранилище изначально полученных символов для каждого рынка (для правильной проверки новых символов)
+# _initial_symbols больше не используется - символы хранятся в БД
 _stats = {
     "spot": {
         "active_connections": 0,
@@ -243,13 +249,90 @@ async def _ws_connection_worker(
             is_reconnect = reconnect_attempt > 1 or was_connected
             
             if is_reconnect:
-                delay = min(2 ** min(reconnect_attempt - 1, 5), MAX_RECONNECT_DELAY)
+                # Увеличиваем счётчик реконнектов при любом реконнекте (включая аномальные закрытия)
                 _stats[market]["reconnects"] += 1
+                logger.info(f"Hyperliquid {connection_id}: переподключение (счётчик: {_stats[market]['reconnects']})")
+                
+                # ВАЖНО: Обновляем список символов перед переподключением
+                # Это необходимо, так как биржа может делистировать символы
+                try:
+                    logger.info(f"Hyperliquid {connection_id}: обновление списка символов перед переподключением...")
+                    from .symbol_fetcher import fetch_symbols
+                    current_symbols = await fetch_symbols(market)
+                    current_symbols_set = set(current_symbols)
+                    
+                    # Фильтруем список символов, оставляя только те, которые есть на бирже
+                    original_count = len(symbols)
+                    original_symbols_set = set(symbols)
+                    symbols[:] = [s for s in symbols if s in current_symbols_set]
+                    removed_count = original_count - len(symbols)
+                    
+                    if removed_count > 0:
+                        removed_symbols = list(original_symbols_set - current_symbols_set)
+                        logger.warning(
+                            f"Hyperliquid {connection_id}: "
+                            f"обнаружен делистинг: удалено {removed_count} несуществующих символов из списка подписки: {', '.join(removed_symbols[:10])}"
+                            f"{' и еще ' + str(removed_count - 10) + ' символов' if removed_count > 10 else ''}"
+                        )
+                        logger.info(
+                            f"Hyperliquid {connection_id}: "
+                            f"переподключение из-за делистинга {removed_count} символов"
+                        )
+                    
+                    # Проверяем наличие новых символов (листинг)
+                    new_symbols = [s for s in current_symbols_set if s not in symbols]
+                    if new_symbols:
+                        logger.info(
+                            f"Hyperliquid {connection_id}: "
+                            f"обнаружен листинг: найдено {len(new_symbols)} новых символов: {', '.join(new_symbols[:10])}"
+                            f"{' и еще ' + str(len(new_symbols) - 10) + ' символов' if len(new_symbols) > 10 else ''}"
+                        )
+                        # Добавляем новые символы в список
+                        symbols.extend(new_symbols)
+                        logger.info(
+                            f"Hyperliquid {connection_id}: "
+                            f"переподключение из-за листинга {len(new_symbols)} символов (новые символы будут добавлены при подписке)"
+                        )
+                    
+                    # Если все символы были удалены, прекращаем работу
+                    if not symbols:
+                        logger.warning(
+                            f"Hyperliquid {connection_id}: "
+                            f"все символы были удалены, прекращаем работу соединения"
+                        )
+                        break
+                        
+                except Exception as e:
+                    logger.warning(
+                        f"Hyperliquid {connection_id}: "
+                        f"не удалось обновить список символов: {e}, используем текущий список"
+                    )
+                
+                delay = min(2 ** min(reconnect_attempt - 1, 5), MAX_RECONNECT_DELAY)
+                # Счётчик переподключений увеличивается при входе в новый блок async with
+                # (см. строку 336), чтобы избежать двойного подсчёта
+                
+                # Определяем причину переподключения
+                reconnect_reason = "normal"
+                try:
+                    current_symbols = await fetch_symbols(market)
+                    current_symbols_set = set(current_symbols)
+                    original_symbols_set = set(symbols)
+                    removed = original_symbols_set - current_symbols_set
+                    new = current_symbols_set - original_symbols_set
+                    if removed:
+                        reconnect_reason = "delisting"
+                    elif new:
+                        reconnect_reason = "listing"
+                except Exception:
+                    pass
+                
                 await on_error({
                     "exchange": "hyperliquid",
                     "market": market,
                     "connection_id": connection_id,
                     "type": "reconnect",
+                    "reason": reconnect_reason,
                 })
                 await asyncio.sleep(delay)
             
@@ -270,7 +353,9 @@ async def _ws_connection_worker(
                 # Подписываемся на сделки для каждого символа
                 # Hyperliquid использует формат: {"method": "subscribe", "subscription": {"type": "trades", "coin": "BTC"}}
                 subscription_errors = []
-                for symbol in symbols:
+                # Создаем snapshot списка для защиты от изменения во время итерации
+                symbols_snapshot = list(symbols)
+                for symbol in symbols_snapshot:
                     # Для перпов: coin = name из meta.universe (например "BTC", "ETH")
                     # Для спота: coin может быть "PURR/USDC" или "@index" (из spotMeta.universe)
                     # Используем оригинальный символ как есть
@@ -352,6 +437,87 @@ async def _ws_connection_worker(
                 
                 ping_task = asyncio.create_task(ping_loop())
                 
+                # Запускаем периодическую проверку новых символов
+                async def periodic_symbol_check():
+                    """Периодически проверяет новые символы и добавляет их в список подписки"""
+                    from .symbol_fetcher import fetch_symbols
+                    while True:
+                        try:
+                            await asyncio.sleep(SYMBOL_CHECK_INTERVAL_SEC)
+                            
+                            # Пропускаем проверку, если соединение не установлено или список пуст
+                            if not was_connected or not symbols or ws.closed:
+                                continue
+                            
+                            logger.debug(f"Hyperliquid {connection_id}: проверка новых символов...")
+                            
+                            # Получаем актуальный список символов с биржи
+                            current_symbols = await fetch_symbols(market)
+                            
+                            # Синхронизируем с БД и получаем новые/удаленные символы
+                            new_symbols, removed_symbols = await db.sync_active_symbols(
+                                exchange="hyperliquid",
+                                market=market,
+                                current_symbols=current_symbols
+                            )
+                            
+                            if new_symbols:
+                                logger.info(
+                                    f"Hyperliquid {connection_id}: "
+                                    f"обнаружено {len(new_symbols)} новых символов: {', '.join(new_symbols[:10])}"
+                                    f"{' и еще ' + str(len(new_symbols) - 10) + ' символов' if len(new_symbols) > 10 else ''}"
+                                )
+                                
+                                # Добавляем новые символы в список
+                                symbols.extend(new_symbols)
+                                
+                                # Подписываемся на новые символы без переподключения
+                                for symbol in new_symbols:
+                                    coin = symbol
+                                    
+                                    subscribe_msg = {
+                                        "method": "subscribe",
+                                        "subscription": {
+                                            "type": "trades",
+                                            "coin": coin
+                                        }
+                                    }
+                                    
+                                    try:
+                                        if ws.closed:
+                                            break
+                                        
+                                        # Проверяем rate limit перед отправкой сообщения
+                                        await _check_rate_limit()
+                                        
+                                        await ws.send_json(subscribe_msg)
+                                        await asyncio.sleep(0.05)  # Небольшая задержка между подписками
+                                    except Exception as e:
+                                        error_msg = str(e)
+                                        if "closing transport" not in error_msg.lower():
+                                            logger.warning(
+                                                f"Hyperliquid {connection_id}: "
+                                                f"ошибка при подписке на новый символ {symbol}: {e}"
+                                            )
+                                        
+                                        if ws.closed or "closing" in error_msg.lower():
+                                            break
+                                
+                                logger.info(
+                                    f"Hyperliquid {connection_id}: "
+                                    f"подписка на {len(new_symbols)} новых символов отправлена"
+                                )
+                                
+                        except asyncio.CancelledError:
+                            break
+                        except Exception as e:
+                            logger.warning(
+                                f"Hyperliquid {connection_id}: "
+                                f"ошибка при проверке новых символов: {e}"
+                            )
+                
+                symbol_check_task = asyncio.create_task(periodic_symbol_check())
+                
                 try:
                     # Читаем сообщения
                     async for msg in ws:
@@ -368,6 +534,59 @@ async def _ws_connection_worker(
                                 
                                 # Обрабатываем подтверждение подписки: {"channel": "subscriptionResponse", ...}
                                 if isinstance(data, dict) and data.get("channel") == "subscriptionResponse":
+                                    # Проверяем наличие ошибки в ответе на подписку
+                                    error = data.get("error")
+                                    if error:
+                                        error_msg = str(error)
+                                        logger.error(f"Hyperliquid {connection_id}: ошибка подписки: {error_msg}")
+                                        
+                                        # Если ошибка связана с несуществующими символами, удаляем их
+                                        if isinstance(error_msg, str) and any(phrase in error_msg.lower() for phrase in ["invalid", "not exist", "not found", "doesn't exist", "not available", "unknown"]):
+                                            # Пытаемся извлечь проблемный символ из ответа
+                                            problematic_symbols = []
+                                            subscription = data.get("subscription", {})
+                                            if isinstance(subscription, dict):
+                                                coin = subscription.get("coin")
+                                                if coin:
+                                                    problematic_symbols = [coin]
+                                            
+                                            # Если не удалось извлечь, проверяем последний подписанный символ
+                                            if not problematic_symbols and symbols:
+                                                problematic_symbols = [symbols[-1]]  # Берем последний подписанный символ
+                                            
+                                            # Удаляем проблемные символы
+                                            if problematic_symbols:
+                                                removed = []
+                                                for symbol in problematic_symbols:
+                                                    if symbol in symbols:
+                                                        symbols.remove(symbol)
+                                                        removed.append(symbol)
+                                                        logger.info(
+                                                            f"Hyperliquid {connection_id}: "
+                                                            f"символ {symbol} будет удален из списка подписки (не существует на бирже)"
+                                                        )
+                                                
+                                                if removed:
+                                                    logger.warning(
+                                                        f"Hyperliquid {connection_id}: "
+                                                        f"удалены символы из списка подписки: {', '.join(removed)}"
+                                                    )
+                                                    
+                                                    # Если все символы были удалены, прекращаем работу
+                                                    if not symbols:
+                                                        logger.warning(
+                                                            f"Hyperliquid {connection_id}: "
+                                                            f"все символы были удалены, прекращаем работу соединения"
+                                                        )
+                                                        break
+                                        
+                                        await on_error({
+                                            "exchange": "hyperliquid",
+                                            "market": market,
+                                            "connection_id": connection_id,
+                                            "type": "subscribe_error",
+                                            "error": error_msg,
+                                        })
                                     continue
                                 
                                 # Обрабатываем сделки
@@ -484,8 +703,15 @@ async def _ws_connection_worker(
                 
                 finally:
                     ping_task.cancel()
+                    if 'symbol_check_task' in locals():
+                        symbol_check_task.cancel()
                     try:
                         await ping_task
+                    except asyncio.CancelledError:
+                        pass
+                    try:
+                        if 'symbol_check_task' in locals():
+                            await symbol_check_task
                     except asyncio.CancelledError:
                         pass
                 
@@ -673,6 +899,15 @@ async def start(
         spot_symbols = []
         linear_symbols = []
     
+    # Сохраняем изначально полученные символы для правильной проверки новых символов
+    # Сохраняем символы в БД при запуске
+    if spot_symbols:
+        await db.upsert_active_symbols("hyperliquid", "spot", spot_symbols)
+        logger.info(f"Hyperliquid spot: сохранено {len(spot_symbols)} символов в БД")
+    if linear_symbols:
+        await db.upsert_active_symbols("hyperliquid", "linear", linear_symbols)
+        logger.info(f"Hyperliquid linear: сохранено {len(linear_symbols)} символов в БД")
+    
     _tasks = []
     _spot_tasks = []
     _linear_tasks = []
@@ -792,10 +1027,12 @@ async def start(
         # Создаём соединения для SPOT
         for i in range(0, len(spot_symbols), SPOT_SYMBOLS_PER_CONNECTION):
             chunk = spot_symbols[i:i + SPOT_SYMBOLS_PER_CONNECTION]
+            # Создаем изменяемый список для батча (чтобы можно было обновлять при реконнекте)
+            symbols_batch = list(chunk)
             connection_id = f"SPOT#{i // SPOT_SYMBOLS_PER_CONNECTION + 1}"
             
             task = asyncio.create_task(_ws_connection_worker(
-                symbols=chunk,
+                symbols=symbols_batch,
                 market="spot",
                 connection_id=connection_id,
                 on_candle=on_candle,
@@ -813,10 +1050,12 @@ async def start(
         # Создаём соединения для LINEAR
         for i in range(0, len(linear_symbols), LINEAR_SYMBOLS_PER_CONNECTION):
             chunk = linear_symbols[i:i + LINEAR_SYMBOLS_PER_CONNECTION]
+            # Создаем изменяемый список для батча (чтобы можно было обновлять при реконнекте)
+            symbols_batch = list(chunk)
             connection_id = f"LINEAR#{i // LINEAR_SYMBOLS_PER_CONNECTION + 1}"
             
             task = asyncio.create_task(_ws_connection_worker(
-                symbols=chunk,
+                symbols=symbols_batch,
                 market="linear",
                 connection_id=connection_id,
                 on_candle=on_candle,

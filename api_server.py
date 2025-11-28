@@ -1500,12 +1500,75 @@ async def get_metrics():
         raise HTTPException(status_code=500, detail=error_detail)
 
 
+def get_exchange_limits() -> dict:
+    """
+    Получает лимиты символов/стримов на одно WebSocket-соединение для каждой биржи.
+    Импортирует актуальные значения из ws_handler модулей.
+    """
+    limits = {}
+    
+    try:
+        # Binance
+        from exchanges.binance.ws_handler import STREAMS_PER_CONNECTION
+        limits["binance"] = {
+            "spot": STREAMS_PER_CONNECTION,
+            "linear": STREAMS_PER_CONNECTION
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Binance")
+    
+    try:
+        # Gate.io
+        from exchanges.gate.ws_handler import SPOT_SYMBOLS_PER_CONNECTION, LINEAR_SYMBOLS_PER_CONNECTION
+        limits["gate"] = {
+            "spot": SPOT_SYMBOLS_PER_CONNECTION,
+            "linear": LINEAR_SYMBOLS_PER_CONNECTION
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Gate.io")
+    
+    try:
+        # Bybit
+        from exchanges.bybit.ws_handler import WS_SYMBOLS_PER_CONNECTION_SPOT, WS_SYMBOLS_PER_CONNECTION_LINEAR
+        limits["bybit"] = {
+            "spot": WS_SYMBOLS_PER_CONNECTION_SPOT,
+            "linear": WS_SYMBOLS_PER_CONNECTION_LINEAR
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Bybit")
+    
+    try:
+        # Bitget
+        from exchanges.bitget.ws_handler import BATCH_SIZE, FUT_BATCH_SIZE
+        limits["bitget"] = {
+            "spot": BATCH_SIZE,
+            "linear": FUT_BATCH_SIZE
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Bitget")
+    
+    try:
+        # Hyperliquid
+        from exchanges.hyperliquid.ws_handler import SPOT_SYMBOLS_PER_CONNECTION, LINEAR_SYMBOLS_PER_CONNECTION
+        limits["hyperliquid"] = {
+            "spot": SPOT_SYMBOLS_PER_CONNECTION,
+            "linear": LINEAR_SYMBOLS_PER_CONNECTION
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Hyperliquid")
+    
+    return limits
+
+
 @app.get("/api/exchanges/stats")
 async def get_exchanges_stats():
     """Получает статистику бирж"""
     try:
         # Получаем статистику бирж из новой таблицы
         exchange_stats = await db.get_exchange_statistics()
+        
+        # Получаем актуальные лимиты из ws_handler модулей
+        exchange_limits = get_exchange_limits()
         
         # Форматируем статистику в формате, который ожидает dashboard
         exchanges_data = {}
@@ -1528,7 +1591,8 @@ async def get_exchanges_stats():
             }
         
         return {
-            "exchanges": exchanges_data
+            "exchanges": exchanges_data,
+            "limits": exchange_limits  # Также возвращаем отдельно для удобства
         }
     except Exception as e:
         import traceback
