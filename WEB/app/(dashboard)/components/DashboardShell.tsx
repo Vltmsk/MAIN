@@ -335,36 +335,24 @@ export default function Dashboard() {
             // Значение уже рассчитано на бэкенде и приходит из API
             const tps = marketStats.ticks_per_second || 0;
             
-            // Определяем статус - ПРИОРИТЕТ: проверка времени последнего обновления last_candle_ts
+            // Определяем статус на основе времени последней свечи И количества переподключений
+            // Если свеча не приходила 1 минуту - биржа отключена
+            // Если свечи приходят, но много переподключений (>15) - биржа с проблемами
             let status: "active" | "inactive" | "problems" = "inactive";
             
-            // Проверяем, прошла ли минута с последнего обновления last_candle_ts
             const now = Date.now();
             const oneMinuteAgo = now - 60 * 1000; // 1 минута в миллисекундах
             
-            if (!lastUpdateTimestamp || lastUpdateTimestamp < oneMinuteAgo) {
+            if (lastUpdateTimestamp && lastUpdateTimestamp >= oneMinuteAgo) {
+              // Если свеча приходила менее минуты назад - проверяем количество переподключений
+              if (reconnects > 15) {
+                status = "problems";
+              } else {
+                status = "active";
+              }
+            } else {
               // Если timestamp отсутствует или последнее обновление было больше минуты назад - биржа отключена
               status = "inactive";
-            } else {
-              // Если timestamp свежий (< минуты) - используем логику из API или fallback
-              const apiStatus = marketStats.status;
-              if (apiStatus) {
-                // Переводим статус из API (русский) в формат фронтенда
-                if (apiStatus === "Активна") {
-                  status = "active";
-                } else if (apiStatus === "Проблемы") {
-                  status = "problems";
-                } else {
-                  status = "inactive";
-                }
-              } else {
-                // Fallback: определяем статус сами (если API не вернул статус)
-                if (wsConnections > 0 && reconnects <= 15) {
-                  status = "active";
-                } else if (reconnects > 15) {
-                  status = "problems";
-                }
-              }
             }
             
             newExchanges.push({
@@ -419,22 +407,36 @@ export default function Dashboard() {
     // Автообновление каждые 10 секунд
     const interval = setInterval(fetchMetrics, 10000);
     
-    // Периодическая проверка статуса бирж на основе времени последнего обновления
+    // Периодическая проверка статуса бирж на основе времени последней свечи
+    // Если свеча не приходила 1 минуту - биржа отключена
+    // Если свечи приходят, но много переподключений (>15) - биржа с проблемами
     const statusCheckInterval = setInterval(() => {
       setExchanges((prevExchanges) => {
         const now = Date.now();
         const oneMinuteAgo = now - 60 * 1000; // 1 минута в миллисекундах
         
         return prevExchanges.map((exchange) => {
-          // Если есть timestamp последнего обновления и оно старше минуты - биржа отключена
-          if (exchange.lastUpdateTimestamp && exchange.lastUpdateTimestamp < oneMinuteAgo) {
+          // Определяем статус на основе времени последней свечи И количества переподключений
+          if (exchange.lastUpdateTimestamp && exchange.lastUpdateTimestamp >= oneMinuteAgo) {
+            // Если свеча приходила менее минуты назад - проверяем переподключения
+            if (exchange.reconnects > 15) {
+              return {
+                ...exchange,
+                status: "problems" as const
+              };
+            } else {
+              return {
+                ...exchange,
+                status: "active" as const
+              };
+            }
+          } else {
+            // Если timestamp отсутствует или последнее обновление было больше минуты назад - биржа отключена
             return {
               ...exchange,
               status: "inactive" as const
             };
           }
-          // Если статус был inactive, но данные обновились - проверяем через fetchMetrics
-          return exchange;
         });
       });
     }, 5000); // Проверяем каждые 5 секунд

@@ -241,7 +241,7 @@ async def _ws_connection_worker(
         connection_id = f"streams-{len(streams)}"
     
     reconnect_attempt = 0
-    connection_state = {"is_scheduled_reconnect": False}
+    connection_state = {"is_scheduled_reconnect": False, "reconnect_reason": None}
     was_connected = False  # Флаг успешного подключения
     current_ws = None  # Текущее WebSocket соединение для динамических подписок
     
@@ -321,10 +321,11 @@ async def _ws_connection_worker(
                 if not is_scheduled:
                     delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
                     _stats[market]["reconnects"] += 1
-                    logger.info(f"Binance {market} [{connection_id}]: переподключение (счётчик: {_stats[market]['reconnects']})")
                     
-                    # Определяем причину переподключения
-                    reconnect_reason = "normal"
+                    # Получаем причину переподключения из connection_state
+                    reconnect_reason = connection_state.get("reconnect_reason", "неизвестная причина")
+                    
+                    logger.info(f"Binance {market} [{connection_id}]: переподключение (счётчик: {_stats[market]['reconnects']}, причина: {reconnect_reason})")
                     
                     await on_error({
                         "exchange": "binance",
@@ -333,6 +334,8 @@ async def _ws_connection_worker(
                         "type": "reconnect",
                         "reason": reconnect_reason,
                     })
+                    # Сбрасываем причину после использования
+                    connection_state["reconnect_reason"] = None
                     await asyncio.sleep(delay)
                 else:
                     # Для планового переподключения не увеличиваем счётчик
@@ -437,12 +440,16 @@ async def _ws_connection_worker(
                                                     )
                                                     break
                                         
+                                        # Сохраняем причину переподключения
+                                        connection_state["reconnect_reason"] = f"ошибка от сервера (code: {error_code}): {error_msg}"
                                         # Переподключаемся при ошибке от сервера
                                         break
                                     # Проверяем наличие кода ошибки (если есть code и он не 200)
                                     if "code" in payload and payload.get("code") != 200:
                                         error_msg = payload.get("msg", f"Error code: {payload.get('code')}")
                                         logger.error(f"Binance {market} [{connection_id}]: ошибка от сервера (code: {payload.get('code')}): {error_msg}")
+                                        # Сохраняем причину переподключения
+                                        connection_state["reconnect_reason"] = f"ошибка от сервера (code: {payload.get('code')}): {error_msg}"
                                         await on_error({
                                             "exchange": "binance",
                                             "market": market,
@@ -466,7 +473,49 @@ async def _ws_connection_worker(
                             if is_scheduled_close:
                                 logger.info(f"Binance {market} [{connection_id}]: WebSocket закрыт (CLOSE) - плановое переподключение")
                             else:
-                                logger.warning(f"Binance {market} [{connection_id}]: WebSocket закрыт (CLOSE) - соединение разорвано")
+                                # Извлекаем код закрытия и причину
+                                close_code = None
+                                close_reason = None
+                                try:
+                                    if hasattr(msg, 'data') and msg.data:
+                                        close_code = msg.data
+                                    if hasattr(msg, 'extra') and msg.extra:
+                                        if 'close_reason' in msg.extra:
+                                            close_reason = str(msg.extra['close_reason'])
+                                except Exception:
+                                    pass
+                                
+                                # Маппинг кодов закрытия WebSocket на понятные сообщения
+                                close_code_messages = {
+                                    1000: "Нормальное закрытие",
+                                    1001: "Удаленная сторона ушла",
+                                    1002: "Ошибка протокола",
+                                    1003: "Неподдерживаемый тип данных",
+                                    1006: "Аномальное закрытие (без кода)",
+                                    1007: "Невалидные данные",
+                                    1008: "Нарушение политики",
+                                    1009: "Сообщение слишком большое",
+                                    1010: "Ошибка расширения",
+                                    1011: "Внутренняя ошибка сервера",
+                                    1012: "Сервис перезапускается",
+                                    1013: "Попробуйте позже",
+                                    1014: "Плохой шлюз",
+                                    1015: "Ошибка TLS handshake",
+                                }
+                                
+                                close_code_msg = close_code_messages.get(close_code, f"Неизвестный код: {close_code}") if close_code else "Код не указан"
+                                
+                                # Сохраняем причину переподключения
+                                reason_text = f"соединение закрыто (код: {close_code}, {close_code_msg})"
+                                if close_reason:
+                                    reason_text += f", причина: {close_reason}"
+                                connection_state["reconnect_reason"] = reason_text
+                                
+                                logger.warning(
+                                    f"Binance {market} [{connection_id}]: WebSocket закрыт (CLOSE) - соединение разорвано, "
+                                    f"код: {close_code} ({close_code_msg})"
+                                    + (f", причина: {close_reason}" if close_reason else "")
+                                )
                             # Счётчик реконнектов увеличивается в блоке if is_reconnect: при следующей итерации
                             if was_connected and not is_scheduled_close:
                                 await on_error({
@@ -475,10 +524,30 @@ async def _ws_connection_worker(
                                     "connection_id": connection_id,
                                     "type": "reconnect",
                                     "reason": "connection_closed",
+                                    "close_code": close_code,
+                                    "close_reason": close_reason,
                                 })
                             break
                         elif msg.type == aiohttp.WSMsgType.ERROR:
-                            logger.warning(f"Binance {market} [{connection_id}]: WebSocket ошибка (ERROR) - соединение разорвано")
+                            # Получаем детали ошибки из WebSocket
+                            error_details = None
+                            try:
+                                if hasattr(ws, 'exception') and ws.exception():
+                                    error_details = str(ws.exception())
+                            except Exception:
+                                pass
+                            
+                            error_msg = f"WebSocket ошибка (ERROR) - соединение разорвано"
+                            if error_details:
+                                error_msg += f", детали: {error_details}"
+                            
+                            # Сохраняем причину переподключения
+                            reason_text = f"WebSocket ошибка"
+                            if error_details:
+                                reason_text += f": {error_details}"
+                            connection_state["reconnect_reason"] = reason_text
+                            
+                            logger.warning(f"Binance {market} [{connection_id}]: {error_msg}")
                             # Счётчик реконнектов увеличивается в блоке if is_reconnect: при следующей итерации
                             if was_connected:
                                 await on_error({
@@ -487,6 +556,7 @@ async def _ws_connection_worker(
                                     "connection_id": connection_id,
                                     "type": "reconnect",
                                     "reason": "websocket_error",
+                                    "error_details": error_details,
                                 })
                             break
                 finally:
@@ -515,6 +585,8 @@ async def _ws_connection_worker(
             # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
             error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
             logger.warning(f"Binance {market} [{connection_id}]: {error_msg}")
+            # Сохраняем причину переподключения
+            connection_state["reconnect_reason"] = f"разрыв соединения: {e}"
             # Если было подключение, увеличиваем счётчик переподключений
             if was_connected:
                 _stats[market]["reconnects"] += 1
@@ -529,7 +601,9 @@ async def _ws_connection_worker(
             # Небольшая задержка перед переподключением
             await asyncio.sleep(min(2 ** min(reconnect_attempt - 1, 5), 60))
         except Exception as e:
-            logger.error(f"Ошибка в WS соединении Binance {market} [{connection_id}]: {e}")
+            logger.error(f"Ошибка в WS соединении Binance {market} [{connection_id}]: {e}", exc_info=True)
+            # Сохраняем причину переподключения
+            connection_state["reconnect_reason"] = f"исключение: {type(e).__name__}: {e}"
             # Если было подключение, увеличиваем счётчик переподключений
             if was_connected:
                 _stats[market]["reconnects"] += 1
@@ -539,6 +613,7 @@ async def _ws_connection_worker(
                 "market": market,
                 "connection_id": connection_id,
                 "error": str(e),
+                "error_type": type(e).__name__,
             })
             # Небольшая задержка перед переподключением
             await asyncio.sleep(min(2 ** min(reconnect_attempt - 1, 5), 60))
@@ -566,7 +641,7 @@ async def _ws_connection_worker_subscribe(
         connection_id = f"ws-subscribe-{len(streams)}"
     
     reconnect_attempt = 0
-    connection_state = {"is_scheduled_reconnect": False}
+    connection_state = {"is_scheduled_reconnect": False, "reconnect_reason": None}
     was_connected = False  # Флаг успешного подключения
     current_ws = None  # Текущее WebSocket соединение для динамических подписок
     
@@ -653,10 +728,11 @@ async def _ws_connection_worker_subscribe(
                     delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
                     # Увеличиваем счётчик переподключений здесь (один раз)
                     _stats[market]["reconnects"] += 1
-                    logger.info(f"Binance {market} [{connection_id}]: переподключение (счётчик: {_stats[market]['reconnects']})")
                     
-                    # Определяем причину переподключения
-                    reconnect_reason = "normal"
+                    # Получаем причину переподключения из connection_state
+                    reconnect_reason = connection_state.get("reconnect_reason", "неизвестная причина")
+                    
+                    logger.info(f"Binance {market} [{connection_id}]: переподключение (счётчик: {_stats[market]['reconnects']}, причина: {reconnect_reason})")
                     
                     await on_error({
                         "exchange": "binance",
@@ -665,6 +741,8 @@ async def _ws_connection_worker_subscribe(
                         "type": "reconnect",
                         "reason": reconnect_reason,
                     })
+                    # Сбрасываем причину после использования
+                    connection_state["reconnect_reason"] = None
                     await asyncio.sleep(delay)
                 else:
                     # Для планового переподключения не увеличиваем счётчик
@@ -813,6 +891,7 @@ async def _ws_connection_worker_subscribe(
                                                         break
                                             else:
                                                 # Если не удалось определить проблемные streams, просто переподключаемся
+                                                connection_state["reconnect_reason"] = f"ошибка подписки (code: {error_code}): {error_msg}"
                                                 break
                                         else:
                                             # Успешное подтверждение подписки (result может быть null - это нормально)
@@ -850,7 +929,49 @@ async def _ws_connection_worker_subscribe(
                                 if is_scheduled_close:
                                     logger.info(f"Binance {market} [{connection_id}]: WebSocket закрыт (CLOSE) - плановое переподключение")
                                 else:
-                                    logger.warning(f"Binance {market} [{connection_id}]: WebSocket закрыт (CLOSE) - соединение разорвано")
+                                    # Извлекаем код закрытия и причину
+                                    close_code = None
+                                    close_reason = None
+                                    try:
+                                        if hasattr(msg, 'data') and msg.data:
+                                            close_code = msg.data
+                                        if hasattr(msg, 'extra') and msg.extra:
+                                            if 'close_reason' in msg.extra:
+                                                close_reason = str(msg.extra['close_reason'])
+                                    except Exception:
+                                        pass
+                                    
+                                    # Маппинг кодов закрытия WebSocket на понятные сообщения
+                                    close_code_messages = {
+                                        1000: "Нормальное закрытие",
+                                        1001: "Удаленная сторона ушла",
+                                        1002: "Ошибка протокола",
+                                        1003: "Неподдерживаемый тип данных",
+                                        1006: "Аномальное закрытие (без кода)",
+                                        1007: "Невалидные данные",
+                                        1008: "Нарушение политики",
+                                        1009: "Сообщение слишком большое",
+                                        1010: "Ошибка расширения",
+                                        1011: "Внутренняя ошибка сервера",
+                                        1012: "Сервис перезапускается",
+                                        1013: "Попробуйте позже",
+                                        1014: "Плохой шлюз",
+                                        1015: "Ошибка TLS handshake",
+                                    }
+                                    
+                                    close_code_msg = close_code_messages.get(close_code, f"Неизвестный код: {close_code}") if close_code else "Код не указан"
+                                    
+                                    # Сохраняем причину переподключения
+                                    reason_text = f"соединение закрыто (код: {close_code}, {close_code_msg})"
+                                    if close_reason:
+                                        reason_text += f", причина: {close_reason}"
+                                    connection_state["reconnect_reason"] = reason_text
+                                    
+                                    logger.warning(
+                                        f"Binance {market} [{connection_id}]: WebSocket закрыт (CLOSE) - соединение разорвано, "
+                                        f"код: {close_code} ({close_code_msg})"
+                                        + (f", причина: {close_reason}" if close_reason else "")
+                                    )
                                 # Счётчик переподключений увеличится в следующей итерации цикла в блоке if is_reconnect
                                 if was_connected and not is_scheduled_close:
                                     await on_error({
@@ -859,10 +980,30 @@ async def _ws_connection_worker_subscribe(
                                         "connection_id": connection_id,
                                         "type": "reconnect",
                                         "reason": "connection_closed",
+                                        "close_code": close_code,
+                                        "close_reason": close_reason,
                                     })
                                 break
                             elif msg.type == aiohttp.WSMsgType.ERROR:
-                                logger.warning(f"Binance {market} [{connection_id}]: WebSocket ошибка (ERROR) - соединение разорвано")
+                                # Получаем детали ошибки из WebSocket
+                                error_details = None
+                                try:
+                                    if hasattr(ws, 'exception') and ws.exception():
+                                        error_details = str(ws.exception())
+                                except Exception:
+                                    pass
+                                
+                                error_msg = f"WebSocket ошибка (ERROR) - соединение разорвано"
+                                if error_details:
+                                    error_msg += f", детали: {error_details}"
+                                
+                                # Сохраняем причину переподключения
+                                reason_text = f"WebSocket ошибка"
+                                if error_details:
+                                    reason_text += f": {error_details}"
+                                connection_state["reconnect_reason"] = reason_text
+                                
+                                logger.warning(f"Binance {market} [{connection_id}]: {error_msg}")
                                 # Счётчик реконнектов увеличивается в блоке if is_reconnect: при следующей итерации
                                 if was_connected:
                                     await on_error({
@@ -871,6 +1012,7 @@ async def _ws_connection_worker_subscribe(
                                         "connection_id": connection_id,
                                         "type": "reconnect",
                                         "reason": "websocket_error",
+                                        "error_details": error_details,
                                     })
                                 break
                         
@@ -880,6 +1022,8 @@ async def _ws_connection_worker_subscribe(
                                 f"Binance {market}: подписка не подтверждена и данных не получено "
                                 f"(получено сообщений: {messages_received}), переподключение..."
                             )
+                            # Сохраняем причину переподключения
+                            connection_state["reconnect_reason"] = f"подписка не подтверждена (получено сообщений: {messages_received})"
                             # Счётчик реконнектов увеличивается в блоке if is_reconnect: при следующей итерации
                             # Но нужно сохранить was_connected, чтобы счётчик увеличился
                             if was_connected:
@@ -919,6 +1063,8 @@ async def _ws_connection_worker_subscribe(
             # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
             error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
             logger.warning(f"Binance {market} [{connection_id}]: {error_msg}")
+            # Сохраняем причину переподключения
+            connection_state["reconnect_reason"] = f"разрыв соединения: {e}"
             # Если было подключение, увеличиваем счётчик переподключений
             if was_connected:
                 _stats[market]["reconnects"] += 1
@@ -933,7 +1079,9 @@ async def _ws_connection_worker_subscribe(
             # Небольшая задержка перед переподключением
             await asyncio.sleep(min(2 ** min(reconnect_attempt - 1, 5), 60))
         except Exception as e:
-            logger.error(f"Ошибка в WS соединении Binance {market} [{connection_id}]: {e}")
+            logger.error(f"Ошибка в WS соединении Binance {market} [{connection_id}]: {e}", exc_info=True)
+            # Сохраняем причину переподключения
+            connection_state["reconnect_reason"] = f"исключение: {type(e).__name__}: {e}"
             # Если было подключение, увеличиваем счётчик переподключений
             if was_connected:
                 _stats[market]["reconnects"] += 1
@@ -943,6 +1091,7 @@ async def _ws_connection_worker_subscribe(
                 "market": market,
                 "connection_id": connection_id,
                 "error": str(e),
+                "error_type": type(e).__name__,
             })
             # Небольшая задержка перед переподключением
             await asyncio.sleep(min(2 ** min(reconnect_attempt - 1, 5), 60))

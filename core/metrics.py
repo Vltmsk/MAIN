@@ -41,13 +41,14 @@ class Metrics:
             market: Тип рынка ("spot" или "linear"), опционально
         
         Примечание:
-            Для Binance сохраняется время последней свечи в формате ISO timestamp
-            (поле "last_candle_time" в статистике). Для других бирж это поле не обновляется.
+            Для всех бирж сохраняется время последней свечи в формате ISO timestamp
+            (поле "last_candle_time" в статистике). Это используется для определения
+            активности биржи: если свеча не приходила 1 минуту - биржа считается отключенной.
         """
         current_time = time.time()
         if market:
             self.stats[exchange][market]["candles"] += 1
-            # Сохраняем время последней свечи в формате ISO timestamp
+            # Сохраняем время последней свечи в формате ISO timestamp для всех бирж
             from datetime import datetime
             self.stats[exchange][market]["last_candle_time"] = datetime.fromtimestamp(current_time).isoformat()
             
