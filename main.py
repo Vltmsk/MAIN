@@ -841,6 +841,142 @@ async def on_error(error: dict) -> None:
         )
 
 
+async def wait_for_connections(enabled_exchanges: List[str], max_wait_time: int = 30, check_interval: float = 1.0) -> None:
+    """
+    Ожидает установки соединений со всеми биржами.
+    
+    Args:
+        enabled_exchanges: Список включенных бирж для проверки
+        max_wait_time: Максимальное время ожидания в секундах
+        check_interval: Интервал проверки в секундах
+    """
+    if not enabled_exchanges:
+        logger.info("Нет включенных бирж, пропускаем ожидание соединений")
+        return
+    
+    logger.info(f"Ожидание установки соединений с биржами: {', '.join(enabled_exchanges)}...")
+    start_time = time.time()
+    
+    while time.time() - start_time < max_wait_time:
+        total_connections = 0
+        
+        # Проверяем активные соединения только для включенных бирж
+        for exchange_name in enabled_exchanges:
+            try:
+                adapter_path = ADAPTERS.get(exchange_name)
+                if not adapter_path:
+                    continue
+                    
+                adapter_module = importlib.import_module(adapter_path)
+                
+                if hasattr(adapter_module, 'get_statistics'):
+                    stats = adapter_module.get_statistics()
+                    spot_connections = stats.get("spot", {}).get("active_connections", 0)
+                    linear_connections = stats.get("linear", {}).get("active_connections", 0)
+                    total_connections += spot_connections + linear_connections
+            except Exception as e:
+                logger.debug(f"Ошибка при проверке соединений для {exchange_name}: {e}")
+        
+        # Если есть активные соединения, считаем что соединения установлены
+        if total_connections > 0:
+            logger.info(f"Соединения установлены: обнаружено {total_connections} активных соединений")
+            return
+        
+        await asyncio.sleep(check_interval)
+    
+    logger.warning(f"Таймаут ожидания соединений ({max_wait_time} сек), продолжаем инициализацию БД нормализации")
+
+
+async def wait_for_symbols_fetched(enabled_exchanges: List[str], max_wait_time: int = 60, check_interval: float = 1.0) -> None:
+    """
+    Ожидает получения символов со всех бирж.
+    
+    Args:
+        enabled_exchanges: Список включенных бирж для проверки
+        max_wait_time: Максимальное время ожидания в секундах
+        check_interval: Интервал проверки в секундах
+    """
+    if not enabled_exchanges:
+        logger.info("Нет включенных бирж, пропускаем ожидание получения символов")
+        return
+    
+    logger.info(f"Ожидание получения символов с бирж: {', '.join(enabled_exchanges)}...")
+    start_time = time.time()
+    
+    # Определяем, какие рынки должны быть включены для каждой биржи
+    exchange_config_map = {
+        "gate": ("gate_spot", "gate_linear"),
+        "binance": ("binance_spot", "binance_linear"),
+        "bitget": ("bitget_spot", "bitget_linear"),
+        "bybit": ("bybit_spot", "bybit_linear"),
+        "hyperliquid": ("hyperliquid_spot", "hyperliquid_linear"),
+    }
+    
+    # Создаём список ожидаемых комбинаций биржа+рынок
+    expected_markets = []
+    for exchange_name in enabled_exchanges:
+        spot_key, linear_key = exchange_config_map.get(exchange_name, (None, None))
+        if spot_key and getattr(config.exchanges, spot_key, False):
+            expected_markets.append((exchange_name, "spot"))
+        if linear_key and getattr(config.exchanges, linear_key, False):
+            expected_markets.append((exchange_name, "linear"))
+    
+    if not expected_markets:
+        logger.info("Нет включенных рынков, пропускаем ожидание получения символов")
+        return
+    
+    while time.time() - start_time < max_wait_time:
+        all_symbols_fetched = True
+        
+        # Проверяем, что все биржи получили символы для своих рынков
+        for exchange_name, market in expected_markets:
+            try:
+                adapter_path = ADAPTERS.get(exchange_name)
+                if not adapter_path:
+                    all_symbols_fetched = False
+                    continue
+                    
+                adapter_module = importlib.import_module(adapter_path)
+                
+                if hasattr(adapter_module, 'get_statistics'):
+                    stats = adapter_module.get_statistics()
+                    market_stats = stats.get(market, {})
+                    active_symbols = market_stats.get("active_symbols", 0)
+                    
+                    if active_symbols == 0:
+                        all_symbols_fetched = False
+                        break
+                else:
+                    all_symbols_fetched = False
+                    break
+            except Exception as e:
+                logger.debug(f"Ошибка при проверке символов для {exchange_name} {market}: {e}")
+                all_symbols_fetched = False
+                break
+        
+        # Если все биржи получили символы, выходим
+        if all_symbols_fetched:
+            total_symbols = 0
+            for exchange_name, market in expected_markets:
+                try:
+                    adapter_path = ADAPTERS.get(exchange_name)
+                    if adapter_path:
+                        adapter_module = importlib.import_module(adapter_path)
+                        if hasattr(adapter_module, 'get_statistics'):
+                            stats = adapter_module.get_statistics()
+                            market_stats = stats.get(market, {})
+                            total_symbols += market_stats.get("active_symbols", 0)
+                except Exception:
+                    pass
+            
+            logger.info(f"Все биржи получили символы: всего {total_symbols} символов")
+            return
+        
+        await asyncio.sleep(check_interval)
+    
+    logger.warning(f"Таймаут ожидания получения символов ({max_wait_time} сек), продолжаем инициализацию БД нормализации")
+
+
 async def start_exchange(exchange_name: str) -> None:
     """
     Запуск одной биржи.
@@ -1225,7 +1361,50 @@ async def main():
     logger.info("START: Запуск сборщика данных со всех бирж")
     logger.info("=" * 60)
     
-    # Инициализируем БД нормализации символов
+    # Инициализируем основную БД
+    await db.initialize()
+    
+    # Запускаем мониторинг здоровья системы
+    await health_monitor.start_monitoring()
+    
+    # _builder больше не используется глобально - каждый ws_handler создаёт свой
+    # Но callback передаётся через параметр start()
+    
+    # Запускаем включённые биржи (хотя бы один рынок должен быть включен)
+    enabled_exchanges = []
+    if config.exchanges.gate_spot or config.exchanges.gate_linear:
+        enabled_exchanges.append("gate")
+    if config.exchanges.binance_spot or config.exchanges.binance_linear:
+        enabled_exchanges.append("binance")
+    if config.exchanges.bitget_spot or config.exchanges.bitget_linear:
+        enabled_exchanges.append("bitget")
+    if config.exchanges.bybit_spot or config.exchanges.bybit_linear:
+        enabled_exchanges.append("bybit")
+    if config.exchanges.hyperliquid_spot or config.exchanges.hyperliquid_linear:
+        enabled_exchanges.append("hyperliquid")
+    
+    # Запускаем биржи параллельно
+    logger.info(f"Запускаем {len(enabled_exchanges)} бирж: {', '.join(enabled_exchanges)}")
+    results = await asyncio.gather(
+        *[start_exchange(exchange_name) for exchange_name in enabled_exchanges],
+        return_exceptions=True  # Продолжаем запуск других бирж даже если одна упала
+    )
+    
+    # Проверяем результаты запуска и логируем ошибки
+    for exchange_name, result in zip(enabled_exchanges, results):
+        if isinstance(result, Exception):
+            logger.error(f"Ошибка при запуске биржи {exchange_name}: {result}", exc_info=result)
+    
+    logger.info(f"Всего создано задач: {exchange_manager.get_tasks_count()}")
+    
+    # Ожидаем установки соединений
+    await wait_for_connections(enabled_exchanges, max_wait_time=30, check_interval=1.0)
+    
+    # Ожидаем получения символов со всех бирж перед инициализацией БД нормализации
+    # Все биржи подключаются примерно за 3 минуты, поэтому даём запас до 4 минут
+    await wait_for_symbols_fetched(enabled_exchanges, max_wait_time=240, check_interval=1.0)
+    
+    # Инициализируем БД нормализации символов после получения всех символов
     try:
         from BD.symbol_normalization_db import symbol_normalization_db
         await symbol_normalization_db.initialize()
@@ -1241,9 +1420,9 @@ async def main():
             all_symbols = await symbol_normalization_db.get_all_symbols()
         else:
             # Проверяем полноту БД - если записей меньше ожидаемого, запускаем синхронизацию
-            # Ожидаем примерно: 5 бирж × 2 рынка × ~1000 символов = ~10,000 записей
-            # Если записей меньше 1000, вероятно БД не полностью заполнена
-            expected_min_records = 1000
+            # Ожидаем примерно: 5 бирж × 2 рынка × ~500+ символов = ~5,000+ записей
+            # Если записей меньше 5000, вероятно БД не полностью заполнена
+            expected_min_records = 5000
             if len(all_symbols) < expected_min_records:
                 logger.info(
                     f"БД нормализации содержит только {len(all_symbols)} записей, "
@@ -1280,42 +1459,6 @@ async def main():
     except Exception as e:
         logger.error(f"Ошибка при инициализации БД нормализации: {e}", exc_info=True)
         # Продолжаем работу даже если БД нормализации не инициализирована
-    
-    # Инициализируем основную БД
-    await db.initialize()
-    
-    # Запускаем мониторинг здоровья системы
-    await health_monitor.start_monitoring()
-    
-    # _builder больше не используется глобально - каждый ws_handler создаёт свой
-    # Но callback передаётся через параметр start()
-    
-    # Запускаем включённые биржи (хотя бы один рынок должен быть включен)
-    enabled_exchanges = []
-    if config.exchanges.gate_spot or config.exchanges.gate_linear:
-        enabled_exchanges.append("gate")
-    if config.exchanges.binance_spot or config.exchanges.binance_linear:
-        enabled_exchanges.append("binance")
-    if config.exchanges.bitget_spot or config.exchanges.bitget_linear:
-        enabled_exchanges.append("bitget")
-    if config.exchanges.bybit_spot or config.exchanges.bybit_linear:
-        enabled_exchanges.append("bybit")
-    if config.exchanges.hyperliquid_spot or config.exchanges.hyperliquid_linear:
-        enabled_exchanges.append("hyperliquid")
-    
-    # Запускаем биржи параллельно
-    logger.info(f"Запускаем {len(enabled_exchanges)} бирж: {', '.join(enabled_exchanges)}")
-    results = await asyncio.gather(
-        *[start_exchange(exchange_name) for exchange_name in enabled_exchanges],
-        return_exceptions=True  # Продолжаем запуск других бирж даже если одна упала
-    )
-    
-    # Проверяем результаты запуска и логируем ошибки
-    for exchange_name, result in zip(enabled_exchanges, results):
-        if isinstance(result, Exception):
-            logger.error(f"Ошибка при запуске биржи {exchange_name}: {result}", exc_info=result)
-    
-    logger.info(f"Всего создано задач: {exchange_manager.get_tasks_count()}")
     
     # Запускаем вывод статистики (с защитой от множественных запусков)
     if not exchange_manager.is_stats_task_started():
