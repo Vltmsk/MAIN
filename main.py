@@ -1237,23 +1237,52 @@ async def main():
             logger.info("БД нормализации пуста, начинаем заполнение...")
             from core.symbol_utils import populate_normalization_db
             await populate_normalization_db()
+            # Получаем обновленную статистику после заполнения
+            all_symbols = await symbol_normalization_db.get_all_symbols()
         else:
-            logger.info(f"БД нормализации содержит {len(all_symbols)} символов")
+            # Проверяем полноту БД - если записей меньше ожидаемого, запускаем синхронизацию
+            # Ожидаем примерно: 5 бирж × 2 рынка × ~1000 символов = ~10,000 записей
+            # Если записей меньше 1000, вероятно БД не полностью заполнена
+            expected_min_records = 1000
+            if len(all_symbols) < expected_min_records:
+                logger.info(
+                    f"БД нормализации содержит только {len(all_symbols)} записей, "
+                    f"ожидается минимум {expected_min_records}. Запускаем синхронизацию..."
+                )
+                from core.symbol_utils import sync_normalization_db
+                await sync_normalization_db()
+                # Получаем обновленную статистику
+                all_symbols = await symbol_normalization_db.get_all_symbols()
+        
+        # Подсчитываем и выводим детальную статистику
+        total_records = len(all_symbols)
+        unique_normalized = len(set(s.get("normalized_symbol") for s in all_symbols))
+        
+        # Статистика по биржам и рынкам
+        stats_by_exchange = {}
+        for symbol_data in all_symbols:
+            exchange = symbol_data.get("exchange", "unknown")
+            market = symbol_data.get("market", "unknown")
+            if exchange not in stats_by_exchange:
+                stats_by_exchange[exchange] = {}
+            if market not in stats_by_exchange[exchange]:
+                stats_by_exchange[exchange][market] = 0
+            stats_by_exchange[exchange][market] += 1
+        
+        # Формируем детальное сообщение
+        stats_lines = [f"БД нормализации содержит {total_records} записей ({unique_normalized} уникальных символов)"]
+        for exchange in sorted(stats_by_exchange.keys()):
+            for market in sorted(stats_by_exchange[exchange].keys()):
+                count = stats_by_exchange[exchange][market]
+                stats_lines.append(f"  - {exchange} {market}: {count} записей")
+        
+        logger.info("\n".join(stats_lines))
     except Exception as e:
         logger.error(f"Ошибка при инициализации БД нормализации: {e}", exc_info=True)
         # Продолжаем работу даже если БД нормализации не инициализирована
     
     # Инициализируем основную БД
     await db.initialize()
-    
-    # Очищаем таблицу активных символов при запуске (с чистого листа)
-    logger.info("Очистка таблицы active_symbols при запуске...")
-    try:
-        await db.clear_active_symbols()
-        logger.info("Таблица active_symbols очищена")
-    except Exception as e:
-        logger.error(f"Ошибка при очистке active_symbols: {e}", exc_info=True)
-        # Продолжаем работу, символы будут добавлены при запуске бирж
     
     # Запускаем мониторинг здоровья системы
     await health_monitor.start_monitoring()
