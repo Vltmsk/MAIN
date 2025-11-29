@@ -721,63 +721,60 @@ async def _ws_connection_worker(
         
         except asyncio.CancelledError:
             break
-        except aiohttp.WSServerHandshakeError as e:
-            # Обработка ошибок WebSocket handshake (502, 503, 504 и т.д.)
-            status = getattr(e, 'status', None) or getattr(e, 'code', None)
+        except (aiohttp.WSServerHandshakeError, aiohttp.ClientResponseError, Exception) as e:
+            # Обработка всех ошибок подключения (502, 503, 504 и т.д.)
             error_str = str(e)
-            
-            # Извлекаем код статуса из сообщения об ошибке, если он не в атрибутах
-            if status is None:
-                status_match = re.search(r'(\d{3})', error_str)
-                if status_match:
-                    try:
-                        status = int(status_match.group(1))
-                    except ValueError:
-                        pass
-            
-            # Определяем, является ли это серверной ошибкой (5xx)
+            status = None
             is_server_error = False
+            
+            # Определяем тип ошибки и код статуса
+            if isinstance(e, aiohttp.WSServerHandshakeError):
+                status = getattr(e, 'status', None) or getattr(e, 'code', None)
+                if status is None:
+                    status_match = re.search(r'(\d{3})', error_str)
+                    if status_match:
+                        try:
+                            status = int(status_match.group(1))
+                        except ValueError:
+                            pass
+            elif isinstance(e, aiohttp.ClientResponseError):
+                status = e.status
+            
+            # Если статус не определен, пытаемся извлечь из строки ошибки
+            if status is None:
+                if '502' in error_str or '503' in error_str or '504' in error_str or 'Invalid response status' in error_str:
+                    status_match = re.search(r'(\d{3})', error_str)
+                    if status_match:
+                        try:
+                            status = int(status_match.group(1))
+                        except ValueError:
+                            pass
+            
+            # Проверяем на серверные ошибки
             if status:
                 is_server_error = status >= 500
-                error_msg = f"WebSocket handshake error {status}: {error_str}"
+                error_msg = f"HTTP {status}: {error_str}" if status else f"WebSocket error: {error_str}"
+            elif '502' in error_str or 'Invalid response status' in error_str:
+                is_server_error = True
+                status = 502
+                error_msg = f"WebSocket handshake error 502: {error_str}"
             else:
-                # Проверяем строку ошибки на наличие кодов 5xx
-                if '502' in error_str or '503' in error_str or '504' in error_str:
-                    is_server_error = True
-                    error_msg = f"WebSocket handshake error: {error_str}"
-                else:
-                    error_msg = f"WebSocket handshake error: {error_str}"
+                error_msg = f"WebSocket error: {error_str}"
             
             logger.error(f"Ошибка в WS соединении Hyperliquid {connection_id}: {error_msg}")
             
-            # Для ошибок 5xx (проблемы на стороне сервера) увеличиваем задержку
+            # Если было подключение ранее, или это не первая попытка - это переподключение
+            if was_connected or reconnect_attempt > 1:
+                _stats[market]["reconnects"] += 1
+                logger.info(f"Hyperliquid {connection_id}: переподключение из-за ошибки {status or 'unknown'} (счётчик: {_stats[market]['reconnects']})")
+            
+            # Для ошибок 5xx увеличиваем задержку
             if is_server_error:
-                # Увеличиваем базовую задержку для серверных ошибок
-                additional_delay = min(10 * reconnect_attempt, 30)  # До 30 секунд дополнительной задержки
+                additional_delay = min(10 * reconnect_attempt, 30)
                 logger.warning(f"Серверная ошибка WebSocket, дополнительная задержка: {additional_delay}с")
                 await asyncio.sleep(additional_delay)
             
-            await on_error({
-                "exchange": "hyperliquid",
-                "market": market,
-                "connection_id": connection_id,
-                "error": error_msg,
-                "status_code": status,
-                "error_type": "websocket_handshake",
-            })
-            _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
-        except aiohttp.ClientResponseError as e:
-            # Специальная обработка HTTP ошибок (502, 503, 504 и т.д.)
-            status = e.status
-            error_msg = f"HTTP {status}: {e.message}"
-            logger.error(f"Ошибка в WS соединении Hyperliquid {connection_id}: {error_msg}")
-            
-            # Для ошибок 5xx (проблемы на стороне сервера) увеличиваем задержку
-            if status >= 500:
-                # Увеличиваем базовую задержку для серверных ошибок
-                additional_delay = min(10 * reconnect_attempt, 30)  # До 30 секунд дополнительной задержки
-                logger.warning(f"Серверная ошибка {status}, дополнительная задержка: {additional_delay}с")
-                await asyncio.sleep(additional_delay)
+            delay = min(2 ** min(reconnect_attempt - 1, 5), MAX_RECONNECT_DELAY)
             
             await on_error({
                 "exchange": "hyperliquid",
@@ -785,12 +782,22 @@ async def _ws_connection_worker(
                 "connection_id": connection_id,
                 "error": error_msg,
                 "status_code": status,
+                "error_type": "websocket_handshake" if isinstance(e, (aiohttp.WSServerHandshakeError, aiohttp.ClientResponseError)) else "connection_error",
             })
             _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+            
+            # Задержка перед следующей попыткой подключения (цикл продолжается)
+            await asyncio.sleep(delay)
         except (ConnectionResetError, ConnectionError) as e:
             # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
             error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
             logger.warning(f"Hyperliquid {connection_id}: {error_msg}")
+            
+            # Если было подключение, увеличиваем счётчик
+            if was_connected:
+                _stats[market]["reconnects"] += 1
+                logger.info(f"Hyperliquid {connection_id}: переподключение из-за разрыва (счётчик: {_stats[market]['reconnects']})")
+            
             await on_error({
                 "exchange": "hyperliquid",
                 "market": market,
@@ -799,52 +806,10 @@ async def _ws_connection_worker(
                 "error_type": "connection_reset",
             })
             _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
-        except aiohttp.ClientError as e:
-            # Обработка других ошибок клиента (сеть, таймауты и т.д.)
-            error_msg = f"Client error: {e}"
-            logger.error(f"Ошибка в WS соединении Hyperliquid {connection_id}: {error_msg}")
-            await on_error({
-                "exchange": "hyperliquid",
-                "market": market,
-                "connection_id": connection_id,
-                "error": error_msg,
-            })
-            _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
-        except Exception as e:
-            # Обработка всех остальных ошибок, включая случаи, когда ошибка 502 приходит как строка
-            error_str = str(e)
             
-            # Проверяем, содержит ли ошибка код 502 или другие серверные ошибки
-            is_server_error = False
-            status = None
-            if '502' in error_str or 'Invalid response status' in error_str:
-                is_server_error = True
-                status = 502
-                # Извлекаем код статуса из сообщения, если возможно
-                status_match = re.search(r'(\d{3})', error_str)
-                if status_match:
-                    try:
-                        status = int(status_match.group(1))
-                    except ValueError:
-                        pass
-            
-            error_msg = error_str if not is_server_error else f"HTTP {status}: {error_str}"
-            logger.error(f"Ошибка в WS соединении Hyperliquid {connection_id}: {error_msg}")
-            
-            # Для ошибок 5xx увеличиваем задержку
-            if is_server_error:
-                additional_delay = min(10 * reconnect_attempt, 30)
-                logger.warning(f"Обнаружена серверная ошибка, дополнительная задержка: {additional_delay}с")
-                await asyncio.sleep(additional_delay)
-            
-            await on_error({
-                "exchange": "hyperliquid",
-                "market": market,
-                "connection_id": connection_id,
-                "error": error_msg,
-                "status_code": status,
-            })
-            _stats[market]["active_connections"] = max(0, _stats[market]["active_connections"] - 1)
+            # Задержка перед следующей попыткой
+            delay = min(2 ** min(reconnect_attempt - 1, 5), MAX_RECONNECT_DELAY)
+            await asyncio.sleep(delay)
 
 
 async def start(

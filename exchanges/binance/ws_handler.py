@@ -11,6 +11,7 @@ import json
 import socket
 import time
 from collections import deque
+import random
 from config import AppConfig
 from core.candle_builder import Candle, CandleBuilder
 from core.logger import get_logger
@@ -565,6 +566,10 @@ async def _ws_connection_worker(
             # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
             error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
             logger.warning(f"Binance {market}: {error_msg}")
+            # Если было подключение, увеличиваем счётчик переподключений
+            if was_connected:
+                _stats[market]["reconnects"] += 1
+                logger.info(f"Binance {market}: переподключение из-за разрыва (счётчик: {_stats[market]['reconnects']})")
             await on_error({
                 "exchange": "binance",
                 "market": market,
@@ -572,13 +577,21 @@ async def _ws_connection_worker(
                 "error": error_msg,
                 "error_type": "connection_reset",
             })
+            # Небольшая задержка перед переподключением
+            await asyncio.sleep(min(2 ** min(reconnect_attempt - 1, 5), 60))
         except Exception as e:
             logger.error(f"Ошибка в WS соединении Binance {market}: {e}")
+            # Если было подключение, увеличиваем счётчик переподключений
+            if was_connected:
+                _stats[market]["reconnects"] += 1
+                logger.info(f"Binance {market}: переподключение из-за ошибки (счётчик: {_stats[market]['reconnects']})")
             await on_error({
                 "exchange": "binance",
                 "market": market,
                 "error": str(e),
             })
+            # Небольшая задержка перед переподключением
+            await asyncio.sleep(min(2 ** min(reconnect_attempt - 1, 5), 60))
 
 
 async def _ws_connection_worker_subscribe(
@@ -594,6 +607,12 @@ async def _ws_connection_worker_subscribe(
     reconnect_attempt = 0
     connection_state = {"is_scheduled_reconnect": False}
     was_connected = False  # Флаг успешного подключения
+    
+    # Добавляем небольшую случайную задержку перед первым подключением,
+    # чтобы распределить попытки подключения разных worker'ов во времени
+    # и избежать одновременных запросов, которые могут привести к rate limiting
+    initial_delay = random.uniform(0, 0.5)  # Случайная задержка от 0 до 0.5 секунды
+    await asyncio.sleep(initial_delay)
     
     while True:
         reconnect_attempt += 1
@@ -676,11 +695,12 @@ async def _ws_connection_worker_subscribe(
                             f"не удалось обновить список символов: {e}, используем текущий список"
                         )
                 
-                # Если это не плановое переподключение, логируем и определяем причину
+                # Если это не плановое переподключение, увеличиваем счётчик и логируем
                 if not is_scheduled:
                     delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
-                    # Счётчик переподключений увеличивается при входе в новый блок async with
-                    # (см. строку 727), чтобы избежать двойного подсчёта
+                    # Увеличиваем счётчик переподключений здесь (один раз)
+                    _stats[market]["reconnects"] += 1
+                    logger.info(f"Binance {market}: переподключение (счётчик: {_stats[market]['reconnects']})")
                     
                     # Определяем причину переподключения
                     reconnect_reason = "normal"
@@ -723,11 +743,16 @@ async def _ws_connection_worker_subscribe(
             
             url = FAPI_WS_ENDPOINT_WS
             
+            # Логируем попытку подключения для диагностики
+            connection_id_debug = f"linear-chunk-{len(streams)}-streams"
+            logger.info(f"Binance {market}: попытка подключения ({connection_id_debug}, попытка {reconnect_attempt})")
+            
             async with _session.ws_connect(url) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
                 was_connected = True  # Устанавливаем флаг успешного подключения
                 
+                logger.info(f"Binance {market}: успешное подключение ({connection_id_debug})")
                 _stats[market]["active_connections"] += 1
                 
                 # Список streams, которые нужно удалить из-за ошибок подписки
@@ -941,9 +966,8 @@ async def _ws_connection_worker_subscribe(
                             
                             elif msg.type == aiohttp.WSMsgType.CLOSE:
                                 logger.debug(f"Binance {market}: WebSocket закрыт (CLOSE)")
-                                # Если соединение было успешно установлено и это не плановое переподключение, это переподключение
+                                # Счётчик переподключений увеличится в следующей итерации цикла в блоке if is_reconnect
                                 if was_connected and not connection_state.get("is_scheduled_reconnect", False):
-                                    _stats[market]["reconnects"] += 1
                                     await on_error({
                                         "exchange": "binance",
                                         "market": market,
@@ -1003,6 +1027,10 @@ async def _ws_connection_worker_subscribe(
             # Обработка ConnectionResetError (WinError 10054) - соединение принудительно закрыто удаленным хостом
             error_msg = f"Соединение принудительно закрыто удаленным хостом: {e}"
             logger.warning(f"Binance {market} (subscribe mode): {error_msg}")
+            # Если было подключение, увеличиваем счётчик переподключений
+            if was_connected:
+                _stats[market]["reconnects"] += 1
+                logger.info(f"Binance {market}: переподключение из-за разрыва (счётчик: {_stats[market]['reconnects']})")
             await on_error({
                 "exchange": "binance",
                 "market": market,
@@ -1010,13 +1038,21 @@ async def _ws_connection_worker_subscribe(
                 "error": error_msg,
                 "error_type": "connection_reset",
             })
+            # Небольшая задержка перед переподключением
+            await asyncio.sleep(min(2 ** min(reconnect_attempt - 1, 5), 60))
         except Exception as e:
             logger.error(f"Ошибка в WS соединении Binance {market} (subscribe mode): {e}")
+            # Если было подключение, увеличиваем счётчик переподключений
+            if was_connected:
+                _stats[market]["reconnects"] += 1
+                logger.info(f"Binance {market}: переподключение из-за ошибки (счётчик: {_stats[market]['reconnects']})")
             await on_error({
                 "exchange": "binance",
                 "market": market,
                 "error": str(e),
             })
+            # Небольшая задержка перед переподключением
+            await asyncio.sleep(min(2 ** min(reconnect_attempt - 1, 5), 60))
 
 
 async def _schedule_reconnect(
@@ -1342,6 +1378,11 @@ async def start(
             ))
             _tasks.append(task)
             _linear_tasks.append(task)
+            
+            # Добавляем задержку между запуском задач, чтобы избежать одновременных подключений
+            # и превышения rate limit (распределяем попытки подключения во времени)
+            if i < len(linear_chunks) - 1:  # Не ждём после последней задачи
+                await asyncio.sleep(1.0)  # 1 секунда между запусками для более равномерного распределения
     elif fetch_linear:
         logger.warning("Binance linear: включен в конфигурации, но символов не получено")
     elif linear_symbols:
@@ -1392,9 +1433,10 @@ def get_statistics() -> dict:
         - active_symbols: int  
         - reconnects: int
     """
-    # Возвращаем статистику без перезаписи active_connections,
-    # так как она обновляется в worker'ах при реальных подключениях/отключениях
-    # Количество незавершенных задач может не соответствовать реальным соединениям
-    # (задача может быть активна, но соединение в процессе переподключения)
+    # Обновляем статистику активных соединений на основе отдельных списков задач
+    # Это гарантирует, что количество активных соединений соответствует реальным активным задачам
+    _stats["spot"]["active_connections"] = len([t for t in _spot_tasks if not t.done()])
+    _stats["linear"]["active_connections"] = len([t for t in _linear_tasks if not t.done()])
+    
     return _stats.copy()
 
