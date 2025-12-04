@@ -474,6 +474,20 @@ async def _ws_connection_worker(
                                 logger.error(f"Binance {market} [{connection_id}]: Payload (первые 200 символов): {msg.data[:200] if len(msg.data) > 200 else msg.data}")
                                 # При ошибке обработки сообщения продолжаем работу, не переподключаемся
                         
+                        elif msg.type == aiohttp.WSMsgType.PING:
+                            # Явно отвечаем на ping от сервера Binance
+                            # Binance отправляет ping каждые 20 секунд (spot) или 3 минуты (linear)
+                            # Таймаут разрыва: 1 минута (spot) или 10 минут (linear) без pong
+                            try:
+                                await ws.pong()
+                            except Exception as e:
+                                logger.warning(f"Binance {market} [{connection_id}]: ошибка при отправке pong: {e}")
+                        
+                        elif msg.type == aiohttp.WSMsgType.PONG:
+                            # Получен pong от сервера - соединение активно
+                            # Логируем только для отладки (можно убрать в production)
+                            pass
+                        
                         elif msg.type == aiohttp.WSMsgType.CLOSE:
                             # Логируем закрытие соединения с информацией о причине
                             is_scheduled_close = connection_state.get("is_scheduled_reconnect", False)
@@ -942,6 +956,20 @@ async def _ws_connection_worker_subscribe(
                                 except Exception as e:
                                     logger.error(f"Ошибка обработки сообщения Binance {market} [{connection_id}]: {e}")
                                     logger.error(f"Binance {market} [{connection_id}]: Payload (первые 200 символов): {msg.data[:200] if len(msg.data) > 200 else msg.data}")
+                            
+                            elif msg.type == aiohttp.WSMsgType.PING:
+                                # Явно отвечаем на ping от сервера Binance
+                                # Binance отправляет ping каждые 20 секунд (spot) или 3 минуты (linear)
+                                # Таймаут разрыва: 1 минута (spot) или 10 минут (linear) без pong
+                                try:
+                                    await ws.pong()
+                                except Exception as e:
+                                    logger.warning(f"Binance {market} [{connection_id}]: ошибка при отправке pong: {e}")
+                            
+                            elif msg.type == aiohttp.WSMsgType.PONG:
+                                # Получен pong от сервера - соединение активно
+                                # Логируем только для отладки (можно убрать в production)
+                                pass
                             
                             elif msg.type == aiohttp.WSMsgType.CLOSE:
                                 # Логируем закрытие соединения с информацией о причине
