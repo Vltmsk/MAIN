@@ -1489,6 +1489,13 @@ async def _update_symbols_periodically(
             new_symbols = await fetch_symbols(market)
             new_symbols_set = set(new_symbols)
             
+            # Быстро собираем информацию под блокировкой, затем обрабатываем вне блокировки
+            removed_symbols = set()
+            added_symbols = set()
+            connections_to_unsubscribe = []  # (conn_id, ws, stream) для отписки
+            connections_to_subscribe = []  # (conn_id, ws, stream) для подписки
+            new_connections_to_create = []  # Список чанков для новых соединений
+            
             async with _symbol_update_lock:
                 # Получаем старый список
                 if market == "spot":
@@ -1504,72 +1511,27 @@ async def _update_symbols_periodically(
                 removed_symbols = old_symbols_set - new_symbols_set
                 added_symbols = new_symbols_set - old_symbols_set
                 
-                # Логируем обновление кэша символов через централизованный логгер
-                has_changes = bool(removed_symbols or added_symbols)
-                await report_symbol_cache_update(
-                    exchange="Binance",
-                    market=market,
-                    has_changes=has_changes,
-                    removed_count=len(removed_symbols),
-                    added_count=len(added_symbols),
-                    total_symbols=len(new_symbols)
-                )
-                
+                # Быстро собираем информацию о соединениях, которые нужно обновить
                 # Обрабатываем удаленные символы
                 for symbol in removed_symbols:
                     stream = _symbol_to_stream(symbol, market)
                     
                     # Находим все соединения, содержащие этот stream
-                    # Создаем копию словаря для безопасной итерации
-                    connections_to_update = []
                     for conn_id, (ws, streams_list, conn_market) in list(_active_connections.items()):
                         if conn_market == market and stream in streams_list:
-                            connections_to_update.append((conn_id, ws, streams_list))
-                    
-                    # Удаляем stream из всех соединений
-                    for conn_id, ws, streams_list in connections_to_update:
-                        if stream in streams_list:
-                            # Создаем новый список вместо модификации существующего
+                            # Создаем новый список без этого stream
                             new_streams = [s for s in streams_list if s != stream]
                             # Обновляем кортеж в словаре
-                            if _symbol_update_lock:
-                                async with _symbol_update_lock:
-                                    _active_connections[conn_id] = (ws, new_streams, market)
+                            _active_connections[conn_id] = (ws, new_streams, market)
                             
-                            logger.info(
-                                f"Binance {market}: символ {symbol} удален с биржи, "
-                                f"отписываемся от {conn_id}"
-                            )
-                            
-                            # Для spot соединений нужно переподключиться (URL содержит streams)
-                            # Для linear можно отправить UNSUBSCRIBE через JSON
-                            if market == "linear":
-                                # Проверяем ws.closed непосредственно перед отправкой
-                                if not ws.closed:
-                                    try:
-                                        unsubscribe_msg = {
-                                            "method": "UNSUBSCRIBE",
-                                            "params": [stream],
-                                            "id": 2
-                                        }
-                                        await ws.send_json(unsubscribe_msg)
-                                    except Exception as e:
-                                        logger.warning(
-                                            f"Binance {market} [{conn_id}]: "
-                                            f"ошибка при отписке от {stream}: {e}"
-                                        )
-                                else:
-                                    logger.debug(
-                                        f"Binance {market} [{conn_id}]: "
-                                        f"соединение закрыто, пропускаем отписку от {stream}"
-                                    )
+                            # Сохраняем для обработки вне блокировки
+                            connections_to_unsubscribe.append((conn_id, ws, stream, symbol))
                 
                 # Обрабатываем новые символы
                 for symbol in added_symbols:
                     stream = _symbol_to_stream(symbol, market)
                     
-                    # Находим соединение с наименьшим количеством streams (но меньше лимита)
-                    # Создаем копию словаря для безопасной итерации
+                    # Находим соединение с наименьшим количеством streams
                     best_connection = None
                     best_conn_id = None
                     best_streams = None
@@ -1583,106 +1545,158 @@ async def _update_symbols_periodically(
                                 best_conn_id = conn_id
                                 best_streams = streams_list
                     
-                    if best_connection:
-                        # Проверяем ws.closed непосредственно перед отправкой
-                        if not best_connection.closed:
-                            # Создаем новый список вместо модификации существующего
-                            new_streams = best_streams + [stream]
-                            # Обновляем кортеж в словаре
-                            if _symbol_update_lock:
-                                async with _symbol_update_lock:
-                                    _active_connections[best_conn_id] = (best_connection, new_streams, market)
-                            
-                            # Для spot нужно переподключиться (URL содержит streams)
-                            # Для linear отправляем SUBSCRIBE через JSON
-                            if market == "linear":
-                                try:
-                                    subscribe_msg = {
-                                        "method": "SUBSCRIBE",
-                                        "params": [stream],
-                                        "id": 3
-                                    }
-                                    await best_connection.send_json(subscribe_msg)
-                                    logger.info(
-                                        f"Binance {market}: новый символ {symbol} добавлен, "
-                                        f"подписываемся в {best_conn_id}"
-                                    )
-                                except Exception as e:
-                                    logger.warning(
-                                        f"Binance {market} [{best_conn_id}]: "
-                                        f"ошибка при подписке на {stream}: {e}"
-                                    )
-                                    # Удаляем stream из списка при ошибке (создаем новый список)
-                                    if _symbol_update_lock:
-                                        async with _symbol_update_lock:
-                                            updated_streams = [s for s in new_streams if s != stream]
-                                            _active_connections[best_conn_id] = (best_connection, updated_streams, market)
-                            else:
-                                # Для spot нужно переподключиться
-                                logger.info(
-                                    f"Binance {market}: новый символ {symbol} добавлен, "
-                                    f"требуется переподключение {best_conn_id}"
-                                )
-                        else:
-                            logger.debug(
-                                f"Binance {market} [{best_conn_id}]: "
-                                f"соединение закрыто, пропускаем подписку на {stream}"
+                    if best_connection and not best_connection.closed:
+                        # Создаем новый список с добавленным stream
+                        new_streams = best_streams + [stream]
+                        # Обновляем кортеж в словаре
+                        _active_connections[best_conn_id] = (best_connection, new_streams, market)
+                        
+                        # Сохраняем для обработки вне блокировки
+                        connections_to_subscribe.append((best_conn_id, best_connection, stream, symbol))
+                    else:
+                        # Все соединения заполнены - нужно создать новое
+                        # Это будет обработано после выхода из блокировки
+            
+            # Теперь обрабатываем все вне блокировки
+            # Логируем обновление кэша символов
+            has_changes = bool(removed_symbols or added_symbols)
+            await report_symbol_cache_update(
+                exchange="Binance",
+                market=market,
+                has_changes=has_changes,
+                removed_count=len(removed_symbols),
+                added_count=len(added_symbols),
+                total_symbols=len(new_symbols)
+            )
+            
+            # Обрабатываем отписки от удаленных символов
+            for conn_id, ws, stream, symbol in connections_to_unsubscribe:
+                logger.info(
+                    f"Binance {market}: символ {symbol} удален с биржи, "
+                    f"отписываемся от {conn_id}"
+                )
+                
+                # Для spot соединений нужно переподключиться (URL содержит streams)
+                # Для linear можно отправить UNSUBSCRIBE через JSON
+                if market == "linear":
+                    if not ws.closed:
+                        try:
+                            unsubscribe_msg = {
+                                "method": "UNSUBSCRIBE",
+                                "params": [stream],
+                                "id": 2
+                            }
+                            await ws.send_json(unsubscribe_msg)
+                        except Exception as e:
+                            logger.warning(
+                                f"Binance {market} [{conn_id}]: "
+                                f"ошибка при отписке от {stream}: {e}"
                             )
                     else:
-                        # Все соединения заполнены или нет соединений - создаем новое
+                        logger.debug(
+                            f"Binance {market} [{conn_id}]: "
+                            f"соединение закрыто, пропускаем отписку от {stream}"
+                        )
+                else:
+                    # Для spot нужен реконнект - логируем, но не делаем его здесь
+                    # Worker сам переподключится при следующей итерации
+                    logger.debug(
+                        f"Binance {market} [{conn_id}]: "
+                        f"символ {symbol} удален, будет переподключение при следующем реконнекте"
+                    )
+            
+            # Обрабатываем подписки на новые символы
+            for conn_id, ws, stream, symbol in connections_to_subscribe:
+                # Для spot нужно переподключиться (URL содержит streams)
+                # Для linear отправляем SUBSCRIBE через JSON
+                if market == "linear":
+                    try:
+                        subscribe_msg = {
+                            "method": "SUBSCRIBE",
+                            "params": [stream],
+                            "id": 3
+                        }
+                        await ws.send_json(subscribe_msg)
                         logger.info(
                             f"Binance {market}: новый символ {symbol} добавлен, "
-                            f"создаем новое соединение"
+                            f"подписываемся в {conn_id}"
                         )
-                        # Создаем новое соединение для нового символа
-                        # Собираем все новые символы, которые не поместились
-                        # Создаем копию словаря для безопасной итерации
-                        existing_streams = set()
-                        for _, streams_list, m in list(_active_connections.values()):
-                            if m == market:
-                                existing_streams.update(streams_list)
-                        new_symbols_to_add = [s for s in added_symbols if _symbol_to_stream(s, market) not in existing_streams]
-                        
-                        if new_symbols_to_add:
-                            # Создаем streams для новых символов
-                            new_streams = [_symbol_to_stream(s, market) for s in new_symbols_to_add]
-                            new_streams = _validate_streams(new_streams, market)
-                            
-                            if new_streams:
-                                # Разбиваем на чанки
-                                new_chunks = _chunk_list(new_streams, STREAMS_PER_CONNECTION)
-                                
-                                # Создаем новые соединения
-                                for i, chunk in enumerate(new_chunks):
-                                    if market == "spot":
-                                        connection_id = f"SPOT-WS-{len(_spot_tasks) + i + 1}"
-                                        url = f"{SPOT_WS_ENDPOINT}?streams={'/'.join(chunk)}"
-                                        task = asyncio.create_task(_ws_connection_worker(
-                                            streams=chunk,
-                                            market="spot",
-                                            url=url,
-                                            on_candle=on_candle,
-                                            on_error=on_error,
-                                            connection_id=connection_id,
-                                        ))
-                                        _tasks.append(task)
-                                        _spot_tasks.append(task)
-                                    else:  # linear
-                                        connection_id = f"LINEAR-WS-{len(_linear_tasks) + i + 1}"
-                                        task = asyncio.create_task(_ws_connection_worker_subscribe(
-                                            streams=chunk,
-                                            market="linear",
-                                            on_candle=on_candle,
-                                            on_error=on_error,
-                                            connection_id=connection_id,
-                                        ))
-                                        _tasks.append(task)
-                                        _linear_tasks.append(task)
-                                    
-                                    logger.info(
-                                        f"Binance {market}: создано новое соединение {connection_id} "
-                                        f"для {len(chunk)} символов"
-                                    )
+                    except Exception as e:
+                        logger.warning(
+                            f"Binance {market} [{conn_id}]: "
+                            f"ошибка при подписке на {stream}: {e}"
+                        )
+                        # Удаляем stream из списка при ошибке
+                        async with _symbol_update_lock:
+                            if conn_id in _active_connections:
+                                ws_current, streams_list, conn_market = _active_connections[conn_id]
+                                if conn_market == market:
+                                    updated_streams = [s for s in streams_list if s != stream]
+                                    _active_connections[conn_id] = (ws_current, updated_streams, market)
+                else:
+                    # Для spot нужно переподключиться
+                    logger.info(
+                        f"Binance {market}: новый символ {symbol} добавлен, "
+                        f"требуется переподключение {conn_id}"
+                    )
+            
+            # Создаем новые соединения для символов, которые не поместились
+            async with _symbol_update_lock:
+                existing_streams = set()
+                for _, streams_list, m in list(_active_connections.values()):
+                    if m == market:
+                        existing_streams.update(streams_list)
+                
+                new_symbols_to_add = [
+                    s for s in added_symbols 
+                    if _symbol_to_stream(s, market) not in existing_streams
+                ]
+                
+                if new_symbols_to_add:
+                    # Создаем streams для новых символов
+                    new_streams = [_symbol_to_stream(s, market) for s in new_symbols_to_add]
+                    new_streams = _validate_streams(new_streams, market)
+                    
+                    if new_streams:
+                        # Разбиваем на чанки
+                        new_chunks = _chunk_list(new_streams, STREAMS_PER_CONNECTION)
+                        new_connections_to_create = new_chunks
+            
+            # Создаем новые соединения вне блокировки
+            for i, chunk in enumerate(new_connections_to_create):
+                logger.info(
+                    f"Binance {market}: создаем новое соединение для {len(chunk)} символов"
+                )
+                
+                if market == "spot":
+                    connection_id = f"SPOT-WS-{len(_spot_tasks) + i + 1}"
+                    url = f"{SPOT_WS_ENDPOINT}?streams={'/'.join(chunk)}"
+                    task = asyncio.create_task(_ws_connection_worker(
+                        streams=chunk,
+                        market="spot",
+                        url=url,
+                        on_candle=on_candle,
+                        on_error=on_error,
+                        connection_id=connection_id,
+                    ))
+                    _tasks.append(task)
+                    _spot_tasks.append(task)
+                else:  # linear
+                    connection_id = f"LINEAR-WS-{len(_linear_tasks) + i + 1}"
+                    task = asyncio.create_task(_ws_connection_worker_subscribe(
+                        streams=chunk,
+                        market="linear",
+                        on_candle=on_candle,
+                        on_error=on_error,
+                        connection_id=connection_id,
+                    ))
+                    _tasks.append(task)
+                    _linear_tasks.append(task)
+                
+                logger.info(
+                    f"Binance {market}: создано новое соединение {connection_id} "
+                    f"для {len(chunk)} символов"
+                )
         
         except Exception as e:
             logger.error(f"Ошибка при обновлении символов Binance {market}: {e}", exc_info=True)
