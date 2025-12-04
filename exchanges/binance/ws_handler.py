@@ -31,6 +31,15 @@ STREAMS_PER_CONNECTION = 150
 # Время планового переподключения (23 часа в секундах)
 SCHEDULED_RECONNECT_INTERVAL = 23 * 60 * 60  # 82800 секунд
 
+# Критичные коды ошибок, требующие переподключения
+# Остальные ошибки (400, 1003, 429, 502, 503, 504) обрабатываются без переподключения
+CRITICAL_ERROR_CODES = [
+    401,   # Unauthorized - ошибка авторизации
+    403,   # Forbidden - доступ запрещён
+    1002,  # Invalid opcode - ошибка протокола WebSocket
+    1011,  # Internal error - внутренняя ошибка сервера
+    500,   # Internal Server Error - критичная ошибка сервера
+]
 
 # Лимиты переподключений
 MAX_CONNECTION_ATTEMPTS_PER_WINDOW = 300  # Максимум попыток подключения
@@ -393,6 +402,9 @@ async def _ws_connection_worker(
                                         error_msg = error_info.get("msg", "Unknown error") if isinstance(error_info, dict) else str(error_info)
                                         error_code = error_info.get("code", "Unknown") if isinstance(error_info, dict) else "Unknown"
                                         
+                                        # Проверяем, является ли ошибка критичной
+                                        is_critical = error_code in CRITICAL_ERROR_CODES if isinstance(error_code, int) else False
+                                        
                                         # Если ошибка связана с несуществующими символами, извлекаем проблемные streams
                                         if error_code in [400, 1003] or (isinstance(error_msg, str) and any(phrase in error_msg.lower() for phrase in ["invalid", "not exist", "not found", "doesn't exist"])):
                                             # Пытаемся извлечь проблемные streams из ответа
@@ -416,8 +428,13 @@ async def _ws_connection_worker(
                                                         f"стрим {stream} будет удален из списка подписки (не существует на бирже)"
                                                     )
                                         
-                                        logger.error(f"Binance {market} [{connection_id}]: ошибка от сервера (code: {error_code}): {error_msg}")
-                                        logger.error(f"Binance {market} [{connection_id}]: полный ответ: {json.dumps(payload)}")
+                                        # Логируем ошибку
+                                        if is_critical:
+                                            logger.error(f"Binance {market} [{connection_id}]: критичная ошибка от сервера (code: {error_code}): {error_msg}")
+                                        else:
+                                            logger.warning(f"Binance {market} [{connection_id}]: некритичная ошибка от сервера (code: {error_code}): {error_msg}")
+                                        
+                                        logger.debug(f"Binance {market} [{connection_id}]: полный ответ: {json.dumps(payload)}")
                                         await on_error({
                                             "exchange": "binance",
                                             "market": market,
@@ -447,26 +464,89 @@ async def _ws_connection_worker(
                                                     )
                                                     break
                                         
-                                        # Сохраняем причину переподключения
-                                        connection_state["reconnect_reason"] = f"ошибка от сервера (code: {error_code}): {error_msg}"
-                                        # Переподключаемся при ошибке от сервера
-                                        break
+                                        # Переподключаемся только при критичных ошибках
+                                        if is_critical:
+                                            connection_state["reconnect_reason"] = f"критичная ошибка от сервера (code: {error_code}): {error_msg}"
+                                            logger.warning(f"Binance {market} [{connection_id}]: переподключение из-за критичной ошибки")
+                                            break
+                                        else:
+                                            # Некритичная ошибка - продолжаем работу
+                                            continue
+                                    
                                     # Проверяем наличие кода ошибки (если есть code и он не 200)
                                     if "code" in payload and payload.get("code") != 200:
-                                        error_msg = payload.get("msg", f"Error code: {payload.get('code')}")
-                                        logger.error(f"Binance {market} [{connection_id}]: ошибка от сервера (code: {payload.get('code')}): {error_msg}")
-                                        # Сохраняем причину переподключения
-                                        connection_state["reconnect_reason"] = f"ошибка от сервера (code: {payload.get('code')}): {error_msg}"
+                                        error_code = payload.get("code")
+                                        error_msg = payload.get("msg", f"Error code: {error_code}")
+                                        
+                                        # Проверяем, является ли ошибка критичной
+                                        is_critical = error_code in CRITICAL_ERROR_CODES if isinstance(error_code, int) else False
+                                        
+                                        # Если ошибка связана с несуществующими символами, извлекаем проблемные streams
+                                        if error_code in [400, 1003] or (isinstance(error_msg, str) and any(phrase in error_msg.lower() for phrase in ["invalid", "not exist", "not found", "doesn't exist"])):
+                                            # Пытаемся извлечь проблемные streams из ответа
+                                            problematic_streams = []
+                                            if "stream" in payload:
+                                                problematic_streams = [payload["stream"]]
+                                            elif "streams" in payload:
+                                                problematic_streams = payload["streams"]
+                                            elif isinstance(payload.get("data"), list):
+                                                problematic_streams = [item.get("stream") for item in payload["data"] if isinstance(item, dict) and "stream" in item]
+                                            
+                                            # Если не удалось извлечь, используем все streams (Binance может не указывать конкретные)
+                                            if not problematic_streams:
+                                                problematic_streams = streams
+                                            
+                                            for stream in problematic_streams:
+                                                if stream and stream in streams:
+                                                    streams_to_remove.add(stream)
+                                                    logger.info(
+                                                        f"Binance {market} [{connection_id}]: "
+                                                        f"стрим {stream} будет удален из списка подписки (не существует на бирже)"
+                                                    )
+                                        
+                                        if is_critical:
+                                            logger.error(f"Binance {market} [{connection_id}]: критичная ошибка от сервера (code: {error_code}): {error_msg}")
+                                        else:
+                                            logger.warning(f"Binance {market} [{connection_id}]: некритичная ошибка от сервера (code: {error_code}): {error_msg}")
+                                        
+                                        logger.debug(f"Binance {market} [{connection_id}]: полный ответ: {json.dumps(payload)}")
                                         await on_error({
                                             "exchange": "binance",
                                             "market": market,
                                             "connection_id": connection_id,
                                             "type": "server_error",
                                             "error": error_msg,
-                                            "code": payload.get("code"),
+                                            "code": error_code,
                                         })
-                                        # Переподключаемся при ошибке от сервера
-                                        break
+                                        
+                                        # Удаляем проблемные streams из списка
+                                        if streams_to_remove:
+                                            removed = [s for s in streams if s in streams_to_remove]
+                                            streams[:] = [s for s in streams if s not in streams_to_remove]
+                                            if removed:
+                                                logger.warning(
+                                                    f"Binance {market} [{connection_id}]: "
+                                                    f"удалены стримы из списка подписки: {', '.join(removed[:10])}"
+                                                    f"{' и еще ' + str(len(removed) - 10) + ' стримов' if len(removed) > 10 else ''}"
+                                                )
+                                                streams_to_remove.clear()
+                                                
+                                                # Если все streams были удалены, прекращаем работу
+                                                if not streams:
+                                                    logger.warning(
+                                                        f"Binance {market} [{connection_id}]: "
+                                                        f"все стримы были удалены, прекращаем работу соединения"
+                                                    )
+                                                    break
+                                        
+                                        # Переподключаемся только при критичных ошибках
+                                        if is_critical:
+                                            connection_state["reconnect_reason"] = f"критичная ошибка от сервера (code: {error_code}): {error_msg}"
+                                            logger.warning(f"Binance {market} [{connection_id}]: переподключение из-за критичной ошибки")
+                                            break
+                                        else:
+                                            # Некритичная ошибка - продолжаем работу
+                                            continue
                                 
                                 await _handle_kline_message(payload, market, on_candle)
                             except Exception as e:
@@ -866,6 +946,9 @@ async def _ws_connection_worker_subscribe(
                                             error_msg = error_info.get("msg", "Unknown error") if isinstance(error_info, dict) else str(error_info)
                                             error_code = error_info.get("code", "Unknown") if isinstance(error_info, dict) else "Unknown"
                                             
+                                            # Проверяем, является ли ошибка критичной
+                                            is_critical = error_code in CRITICAL_ERROR_CODES if isinstance(error_code, int) else False
+                                            
                                             # Извлекаем информацию о проблемных стримах из ответа или используем весь список
                                             problematic_streams = streams
                                             if isinstance(error_info, dict) and "params" in error_info:
@@ -874,13 +957,17 @@ async def _ws_connection_worker_subscribe(
                                                 problematic_streams = payload.get("params", streams)
                                             
                                             # Логируем проблемные символы
-                                            logger.error(f"Binance {market} [{connection_id}]: ошибка подписки (code: {error_code}): {error_msg}")
-                                            logger.error(f"Binance {market} [{connection_id}]: количество проблемных стримов: {len(problematic_streams)}")
-                                            if len(problematic_streams) <= 10:
-                                                logger.error(f"Binance {market} [{connection_id}]: проблемные стримы: {problematic_streams}")
+                                            if is_critical:
+                                                logger.error(f"Binance {market} [{connection_id}]: критичная ошибка подписки (code: {error_code}): {error_msg}")
                                             else:
-                                                logger.error(f"Binance {market} [{connection_id}]: первые 10 проблемных стримов: {problematic_streams[:10]}")
-                                            logger.error(f"Binance {market} [{connection_id}]: полный ответ: {json.dumps(payload)}")
+                                                logger.warning(f"Binance {market} [{connection_id}]: некритичная ошибка подписки (code: {error_code}): {error_msg}")
+                                            
+                                            logger.warning(f"Binance {market} [{connection_id}]: количество проблемных стримов: {len(problematic_streams)}")
+                                            if len(problematic_streams) <= 10:
+                                                logger.debug(f"Binance {market} [{connection_id}]: проблемные стримы: {problematic_streams}")
+                                            else:
+                                                logger.debug(f"Binance {market} [{connection_id}]: первые 10 проблемных стримов: {problematic_streams[:10]}")
+                                            logger.debug(f"Binance {market} [{connection_id}]: полный ответ: {json.dumps(payload)}")
                                             
                                             # Если ошибка связана с несуществующими символами, добавляем их в список на удаление
                                             # Проверяем типичные коды ошибок для несуществующих символов
@@ -923,10 +1010,16 @@ async def _ws_connection_worker_subscribe(
                                                             f"все стримы были удалены, прекращаем работу соединения"
                                                         )
                                                         break
-                                            else:
-                                                # Если не удалось определить проблемные streams, просто переподключаемся
-                                                connection_state["reconnect_reason"] = f"ошибка подписки (code: {error_code}): {error_msg}"
+                                            
+                                            # Переподключаемся только при критичных ошибках
+                                            if is_critical:
+                                                connection_state["reconnect_reason"] = f"критичная ошибка подписки (code: {error_code}): {error_msg}"
+                                                logger.warning(f"Binance {market} [{connection_id}]: переподключение из-за критичной ошибки подписки")
                                                 break
+                                            else:
+                                                # Некритичная ошибка - продолжаем работу, пытаемся обработать остальные сообщения
+                                                # Если это ошибка несуществующих символов, они уже удалены, продолжаем
+                                                continue
                                         else:
                                             # Успешное подтверждение подписки (result может быть null - это нормально)
                                             subscription_confirmed = True
