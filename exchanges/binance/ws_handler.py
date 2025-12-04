@@ -357,7 +357,7 @@ async def _ws_connection_worker(
                 await asyncio.sleep(rate_limit_delay)
                 continue
             
-            async with _session.ws_connect(url) as ws:
+            async with _session.ws_connect(url, heartbeat=25) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
                 # Устанавливаем флаг успешного подключения
@@ -796,7 +796,7 @@ async def _ws_connection_worker_subscribe(
             # Логируем попытку подключения для диагностики
             logger.info(f"Binance {market} [{connection_id}]: попытка подключения (попытка {reconnect_attempt})")
             
-            async with _session.ws_connect(url) as ws:
+            async with _session.ws_connect(url, heartbeat=25) as ws:
                 # Сбрасываем счётчик после успешного подключения
                 reconnect_attempt = 0
                 # Устанавливаем флаг успешного подключения
