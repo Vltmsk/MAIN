@@ -15,6 +15,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 from BD.database import db
 import time
+from datetime import datetime
+import pytz
 from core.logger import get_logger, setup_root_logger
 from core.db_error_handler import handle_db_error
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -1321,6 +1323,51 @@ async def delete_user_spikes(user: str):
 
 # ==================== ОШИБКИ ====================
 
+def convert_timestamp_to_utc_iso(timestamp_str: str) -> str:
+    """
+    Преобразует timestamp из локального времени сервера (Europe/Chisinau, UTC+2/UTC+3)
+    в UTC и возвращает в ISO 8601 формате.
+    
+    Args:
+        timestamp_str: Timestamp в формате SQLite "YYYY-MM-DD HH:MM:SS" или ISO 8601
+        
+    Returns:
+        ISO 8601 строка с UTC часовым поясом (например, "2025-12-02T09:46:34+00:00")
+    """
+    if not timestamp_str:
+        return timestamp_str
+    
+    try:
+        # Если уже в ISO формате с часовым поясом, возвращаем как есть
+        if 'T' in timestamp_str and ('Z' in timestamp_str or '+' in timestamp_str or 
+                                     (timestamp_str.count('-') > 2 and ':' in timestamp_str[-6:])):
+            # Парсим ISO формат
+            if timestamp_str.endswith('Z'):
+                dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            else:
+                dt = datetime.fromisoformat(timestamp_str)
+            # Конвертируем в UTC
+            if dt.tzinfo is None:
+                # Если нет часового пояса, предполагаем что это UTC
+                dt = pytz.UTC.localize(dt)
+            else:
+                dt = dt.astimezone(pytz.UTC)
+            return dt.isoformat()
+        else:
+            # SQLite формат "YYYY-MM-DD HH:MM:SS" - предполагаем что это локальное время сервера
+            dt = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+            # Локализуем в часовой пояс сервера (Europe/Chisinau)
+            server_tz = pytz.timezone('Europe/Chisinau')
+            dt_local = server_tz.localize(dt)
+            # Конвертируем в UTC
+            dt_utc = dt_local.astimezone(pytz.UTC)
+            return dt_utc.isoformat()
+    except (ValueError, AttributeError) as e:
+        logger.debug(f"Не удалось преобразовать timestamp '{timestamp_str}': {e}")
+        # Если не удалось распарсить, возвращаем как есть
+        return timestamp_str
+
+
 @app.post("/api/errors")
 async def create_error(error: ErrorCreate):
     """Логирует ошибку"""
@@ -1352,6 +1399,12 @@ async def get_errors(
             error_type=error_type,
             limit=limit
         )
+        
+        # Преобразуем timestamp в ISO 8601 формат с UTC для правильного отображения в веб-интерфейсе
+        for error in errors:
+            if error.get('timestamp'):
+                error['timestamp'] = convert_timestamp_to_utc_iso(error['timestamp'])
+        
         return {"errors": errors}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1500,12 +1553,75 @@ async def get_metrics():
         raise HTTPException(status_code=500, detail=error_detail)
 
 
+def get_exchange_limits() -> dict:
+    """
+    Получает лимиты символов/стримов на одно WebSocket-соединение для каждой биржи.
+    Импортирует актуальные значения из ws_handler модулей.
+    """
+    limits = {}
+    
+    try:
+        # Binance
+        from exchanges.binance.ws_handler import STREAMS_PER_CONNECTION
+        limits["binance"] = {
+            "spot": STREAMS_PER_CONNECTION,
+            "linear": STREAMS_PER_CONNECTION
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Binance")
+    
+    try:
+        # Gate.io
+        from exchanges.gate.ws_handler import SPOT_SYMBOLS_PER_CONNECTION, LINEAR_SYMBOLS_PER_CONNECTION
+        limits["gate"] = {
+            "spot": SPOT_SYMBOLS_PER_CONNECTION,
+            "linear": LINEAR_SYMBOLS_PER_CONNECTION
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Gate.io")
+    
+    try:
+        # Bybit
+        from exchanges.bybit.ws_handler import WS_SYMBOLS_PER_CONNECTION_SPOT, WS_SYMBOLS_PER_CONNECTION_LINEAR
+        limits["bybit"] = {
+            "spot": WS_SYMBOLS_PER_CONNECTION_SPOT,
+            "linear": WS_SYMBOLS_PER_CONNECTION_LINEAR
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Bybit")
+    
+    try:
+        # Bitget
+        from exchanges.bitget.ws_handler import BATCH_SIZE, FUT_BATCH_SIZE
+        limits["bitget"] = {
+            "spot": BATCH_SIZE,
+            "linear": FUT_BATCH_SIZE
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Bitget")
+    
+    try:
+        # Hyperliquid
+        from exchanges.hyperliquid.ws_handler import SPOT_SYMBOLS_PER_CONNECTION, LINEAR_SYMBOLS_PER_CONNECTION
+        limits["hyperliquid"] = {
+            "spot": SPOT_SYMBOLS_PER_CONNECTION,
+            "linear": LINEAR_SYMBOLS_PER_CONNECTION
+        }
+    except ImportError:
+        logger.warning("Не удалось импортировать лимиты для Hyperliquid")
+    
+    return limits
+
+
 @app.get("/api/exchanges/stats")
 async def get_exchanges_stats():
     """Получает статистику бирж"""
     try:
         # Получаем статистику бирж из новой таблицы
         exchange_stats = await db.get_exchange_statistics()
+        
+        # Получаем актуальные лимиты из ws_handler модулей
+        exchange_limits = get_exchange_limits()
         
         # Форматируем статистику в формате, который ожидает dashboard
         exchanges_data = {}
@@ -1528,7 +1644,8 @@ async def get_exchanges_stats():
             }
         
         return {
-            "exchanges": exchanges_data
+            "exchanges": exchanges_data,
+            "limits": exchange_limits  # Также возвращаем отдельно для удобства
         }
     except Exception as e:
         import traceback

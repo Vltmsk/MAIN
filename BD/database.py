@@ -17,6 +17,24 @@ logger = get_logger(__name__)
 # Путь к базе данных
 DB_PATH = Path(__file__).parent / "detected_alerts.db"
 
+# Список всех бирж и рынков для создания отдельных таблиц
+EXCHANGES = ["binance", "bitget", "bybit", "gate", "hyperliquid"]
+MARKETS = ["spot", "linear"]
+
+
+def _get_active_symbols_table_name(exchange: str, market: str) -> str:
+    """
+    Возвращает имя таблицы для активных символов конкретной биржи и рынка.
+    
+    Args:
+        exchange: Название биржи
+        market: Тип рынка (spot/linear)
+        
+    Returns:
+        str: Имя таблицы (например, "active_symbols_binance_spot")
+    """
+    return f"active_symbols_{exchange}_{market}"
+
 
 class Database:
     """Класс для работы с базой данных SQLite (асинхронная версия)"""
@@ -400,6 +418,21 @@ class Database:
                 )
             """)
             
+            # Создаём отдельные таблицы для каждой биржи и рынка (10 таблиц)
+            # Это улучшает производительность кэша памяти SQLite
+            for exchange in EXCHANGES:
+                for market in MARKETS:
+                    table_name = _get_active_symbols_table_name(exchange, market)
+                    await conn.execute(f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            symbol TEXT NOT NULL UNIQUE,
+                            is_active INTEGER DEFAULT 1,
+                            first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+            
             # Создаём индексы через отдельные команды (для совместимости)
             # SQLite не поддерживает INDEX в CREATE TABLE напрямую, создаём отдельно
 
@@ -439,6 +472,13 @@ class Database:
                 # Индексы для user_metrics_settings
                 "CREATE INDEX IF NOT EXISTS idx_user_metrics_settings_user_id ON user_metrics_settings(user_id)",
             ]
+            
+            # Создаём индексы для каждой таблицы active_symbols
+            for exchange in EXCHANGES:
+                for market in MARKETS:
+                    table_name = _get_active_symbols_table_name(exchange, market)
+                    indexes.append(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_symbol ON {table_name}(symbol)")
+                    indexes.append(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_active ON {table_name}(is_active)")
             
             for index_sql in indexes:
                 await conn.execute(index_sql)
@@ -2057,7 +2097,260 @@ class Database:
             return []
         finally:
             await conn.close()
+
+    # ==================== РАБОТА С АКТИВНЫМИ СИМВОЛАМИ ====================
     
+    async def clear_active_symbols(self, exchange: Optional[str] = None, market: Optional[str] = None):
+        """
+        Очищает таблицы активных символов (при запуске проекта).
+        Если указаны exchange и/или market, очищает только для них.
+        
+        Args:
+            exchange: Фильтр по бирже (опционально)
+            market: Фильтр по рынку (опционально)
+        """
+        conn = await self._get_connection()
+        try:
+            exchanges_to_clear = [exchange] if exchange else EXCHANGES
+            markets_to_clear = [market] if market else MARKETS
+            
+            cleared_count = 0
+            for exch in exchanges_to_clear:
+                if exch not in EXCHANGES:
+                    continue
+                for mkt in markets_to_clear:
+                    if mkt not in MARKETS:
+                        continue
+                    table_name = _get_active_symbols_table_name(exch, mkt)
+                    await conn.execute(f"DELETE FROM {table_name}")
+                    cleared_count += 1
+            
+            await conn.commit()
+            
+            filter_info = ""
+            if exchange or market:
+                filter_info = f" (exchange={exchange}, market={market})" if exchange and market else \
+                             f" (exchange={exchange})" if exchange else f" (market={market})"
+            logger.info(f"Очищены таблицы active_symbols ({cleared_count} таблиц){filter_info}")
+        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
+            logger.error(f"Ошибка БД при очистке active_symbols: {e}", exc_info=True)
+            await conn.rollback()
+            raise
+        except aiosqlite.Error as e:
+            logger.error(f"Ошибка БД при очистке active_symbols: {e}", exc_info=True)
+            await conn.rollback()
+            raise
+        finally:
+            await conn.close()
+    
+    async def upsert_active_symbols(
+        self,
+        exchange: str,
+        market: str,
+        symbols: List[str]
+    ) -> tuple[int, int]:
+        """
+        Обновляет активные символы для биржи и рынка (batch операция).
+        Добавляет новые символы и обновляет last_seen_at для существующих.
+        Оптимизировано для экономии памяти: использует итерацию вместо fetchall().
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка (spot/linear)
+            symbols: Список активных символов
+            
+        Returns:
+            tuple[int, int]: (количество добавленных, количество обновленных)
+        """
+        if not symbols:
+            return (0, 0)
+        
+        if exchange not in EXCHANGES or market not in MARKETS:
+            logger.warning(f"Неподдерживаемая комбинация биржи и рынка: {exchange} {market}")
+            return (0, 0)
+        
+        table_name = _get_active_symbols_table_name(exchange, market)
+        conn = await self._get_connection()
+        try:
+            # Используем итерацию вместо fetchall() для экономии памяти
+            # Обрабатываем батчами для больших списков символов
+            existing_symbols = set()
+            batch_size = 1000
+            for i in range(0, len(symbols), batch_size):
+                batch = symbols[i:i + batch_size]
+                placeholders = ','.join(['?'] * len(batch))
+                async with conn.execute(f"""
+                    SELECT symbol FROM {table_name}
+                    WHERE symbol IN ({placeholders})
+                """, batch) as cursor:
+                    async for row in cursor:
+                        existing_symbols.add(row[0])
+            
+            # Разделяем символы на новые и существующие для batch операций
+            symbols_to_update = [symbol for symbol in symbols if symbol in existing_symbols]
+            symbols_to_insert = [symbol for symbol in symbols if symbol not in existing_symbols]
+            
+            # Очищаем множество для освобождения памяти
+            existing_symbols.clear()
+            
+            # Batch обновление существующих символов
+            if symbols_to_update:
+                await conn.executemany(f"""
+                    UPDATE {table_name}
+                    SET is_active = 1, last_seen_at = CURRENT_TIMESTAMP
+                    WHERE symbol = ?
+                """, [(symbol,) for symbol in symbols_to_update])
+                updated_count = len(symbols_to_update)
+            else:
+                updated_count = 0
+            
+            # Batch вставка новых символов
+            if symbols_to_insert:
+                await conn.executemany(f"""
+                    INSERT INTO {table_name}
+                    (symbol, is_active, first_seen_at, last_seen_at)
+                    VALUES (?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, [(symbol,) for symbol in symbols_to_insert])
+                added_count = len(symbols_to_insert)
+            else:
+                added_count = 0
+            
+            await conn.commit()
+            logger.debug(
+                f"Обновлены активные символы для {exchange} {market}: "
+                f"добавлено {added_count}, обновлено {updated_count}"
+            )
+            return (added_count, updated_count)
+        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
+            logger.error(f"Ошибка БД при обновлении active_symbols: {e}", exc_info=True)
+            await conn.rollback()
+            raise
+        except aiosqlite.Error as e:
+            logger.error(f"Ошибка БД при обновлении active_symbols: {e}", exc_info=True)
+            await conn.rollback()
+            raise
+        finally:
+            await conn.close()
+    
+    async def sync_active_symbols(
+        self,
+        exchange: str,
+        market: str,
+        current_symbols: List[str]
+    ) -> tuple[List[str], List[str]]:
+        """
+        Синхронизирует активные символы с текущим списком с биржи.
+        Помечает отсутствующие символы как неактивные.
+        Оптимизировано для экономии памяти: использует батчинг и очистку множеств.
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка (spot/linear)
+            current_symbols: Текущий список символов с биржи
+            
+        Returns:
+            tuple[List[str], List[str]]: (новые символы, удаленные символы)
+        """
+        if exchange not in EXCHANGES or market not in MARKETS:
+            logger.warning(f"Неподдерживаемая комбинация биржи и рынка: {exchange} {market}")
+            return ([], [])
+        
+        table_name = _get_active_symbols_table_name(exchange, market)
+        conn = await self._get_connection()
+        try:
+            # Получаем текущие активные символы из БД (используем итерацию для экономии памяти)
+            db_symbols = set()
+            async with conn.execute(f"""
+                SELECT symbol FROM {table_name}
+                WHERE is_active = 1
+            """) as cursor:
+                async for row in cursor:
+                    db_symbols.add(row[0])
+            
+            # Преобразуем current_symbols в множество для быстрого сравнения
+            current_symbols_set = set(current_symbols)
+            
+            # Находим новые символы (есть в current, но нет в БД)
+            new_symbols = list(current_symbols_set - db_symbols)
+            
+            # Находим удаленные символы (есть в БД, но нет в current)
+            removed_symbols = list(db_symbols - current_symbols_set)
+            
+            # Очищаем множества для освобождения памяти
+            db_symbols.clear()
+            current_symbols_set.clear()
+            
+            # Добавляем новые символы
+            if new_symbols:
+                await self.upsert_active_symbols(exchange, market, new_symbols)
+            
+            # Помечаем удаленные символы как неактивные
+            # ВАЖНО: коммит должен быть выполнен обязательно после UPDATE для сохранения изменений
+            # Обрабатываем батчами для больших списков
+            if removed_symbols:
+                batch_size = 1000
+                for i in range(0, len(removed_symbols), batch_size):
+                    batch = removed_symbols[i:i + batch_size]
+                    await conn.executemany(f"""
+                        UPDATE {table_name}
+                        SET is_active = 0, last_seen_at = CURRENT_TIMESTAMP
+                        WHERE symbol = ?
+                    """, [(symbol,) for symbol in batch])
+                await conn.commit()
+            
+            return (new_symbols, removed_symbols)
+        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
+            logger.error(f"Ошибка БД при синхронизации active_symbols: {e}", exc_info=True)
+            await conn.rollback()
+            return ([], [])
+        except aiosqlite.Error as e:
+            logger.error(f"Ошибка БД при синхронизации active_symbols: {e}", exc_info=True)
+            await conn.rollback()
+            return ([], [])
+        finally:
+            await conn.close()
+    
+    async def get_active_symbols(
+        self,
+        exchange: str,
+        market: str
+    ) -> List[str]:
+        """
+        Получает список активных символов для биржи и рынка.
+        
+        Args:
+            exchange: Название биржи
+            market: Тип рынка (spot/linear)
+            
+        Returns:
+            List[str]: Список активных символов
+        """
+        if exchange not in EXCHANGES or market not in MARKETS:
+            logger.warning(f"Неподдерживаемая комбинация биржи и рынка: {exchange} {market}")
+            return []
+        
+        table_name = _get_active_symbols_table_name(exchange, market)
+        conn = await self._get_connection()
+        try:
+            async with conn.execute(f"""
+                SELECT symbol FROM {table_name}
+                WHERE is_active = 1
+                ORDER BY symbol
+            """) as cursor:
+                # Используем итерацию для экономии памяти вместо fetchall()
+                symbols = []
+                async for row in cursor:
+                    symbols.append(row[0])
+                return symbols
+        except (aiosqlite.OperationalError, aiosqlite.IntegrityError) as e:
+            logger.error(f"Ошибка БД при получении active_symbols: {e}", exc_info=True)
+            return []
+        except aiosqlite.Error as e:
+            logger.error(f"Ошибка БД при получении active_symbols: {e}", exc_info=True)
+            return []
+        finally:
+            await conn.close()
+
     # ==================== РАБОТА СО СТАТИСТИКОЙ БИРЖ ====================
     
     async def upsert_exchange_statistics(

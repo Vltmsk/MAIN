@@ -182,7 +182,7 @@ class SpikeDetector:
         # Список известных котируемых валют (в порядке убывания длины для правильного поиска)
         quote_currencies = [
             "USDT", "USDC", "TRY", "BTC", "ETH", "BNB", "EUR", "GBP", "AUD", "BRL",
-            "TUSD", "FDUSD", "BIDR", "TRX", "DOGE", "AEUR"
+            "TUSD", "FDUSD", "BIDR", "TRX", "DOGE", "AEUR", "IDR"
         ]
         
         exchange_lower = exchange.lower()

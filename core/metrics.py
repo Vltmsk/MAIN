@@ -28,6 +28,10 @@ class Metrics:
         # Структура: candles_counter[(exchange, market)] = {"count": int, "start_time": float}
         self._candles_counter: Dict[tuple, Dict] = {}
         
+        # Время последней очистки старых счетчиков
+        self._last_cleanup_time = time.time()
+        self._cleanup_interval = 3600  # Очистка каждый час
+        
     def inc_candle(self, exchange: str, market: str = None):
         """
         Увеличить счётчик свечей.
@@ -37,13 +41,14 @@ class Metrics:
             market: Тип рынка ("spot" или "linear"), опционально
         
         Примечание:
-            Для Binance сохраняется время последней свечи в формате ISO timestamp
-            (поле "last_candle_time" в статистике). Для других бирж это поле не обновляется.
+            Для всех бирж сохраняется время последней свечи в формате ISO timestamp
+            (поле "last_candle_time" в статистике). Это используется для определения
+            активности биржи: если свеча не приходила 1 минуту - биржа считается отключенной.
         """
         current_time = time.time()
         if market:
             self.stats[exchange][market]["candles"] += 1
-            # Сохраняем время последней свечи в формате ISO timestamp
+            # Сохраняем время последней свечи в формате ISO timestamp для всех бирж
             from datetime import datetime
             self.stats[exchange][market]["last_candle_time"] = datetime.fromtimestamp(current_time).isoformat()
             
@@ -88,7 +93,25 @@ class Metrics:
         
     def inc_error(self, exchange: str):
         """Увеличить счётчик ошибок."""
-        self.stats[exchange]["errors"] += 1
+        # Исправление: проверяем, что stats[exchange]["errors"] является числом
+        # Если stats[exchange] уже содержит market-ключи (spot/linear), 
+        # то нужно использовать отдельный ключ для ошибок на верхнем уровне
+        if exchange not in self.stats:
+            self.stats[exchange] = {}
+        
+        # Проверяем, есть ли уже market-ключи (spot/linear)
+        has_markets = any(key in self.stats[exchange] for key in ["spot", "linear"])
+        
+        if has_markets:
+            # Если есть market-ключи, используем отдельный ключ "errors" на верхнем уровне
+            if "errors" not in self.stats[exchange] or not isinstance(self.stats[exchange]["errors"], int):
+                self.stats[exchange]["errors"] = 0
+            self.stats[exchange]["errors"] += 1
+        else:
+            # Если нет market-ключей, используем стандартную структуру
+            if "errors" not in self.stats[exchange] or not isinstance(self.stats[exchange]["errors"], int):
+                self.stats[exchange]["errors"] = 0
+            self.stats[exchange]["errors"] += 1
         
     def get_ticks_per_second(self, exchange: str, market: str) -> Optional[float]:
         """
@@ -141,8 +164,44 @@ class Metrics:
         candles_per_second = counter["count"] / elapsed_time
         return candles_per_second
     
+    def _cleanup_old_counters(self):
+        """
+        Периодическая очистка старых счетчиков для предотвращения утечки памяти.
+        Удаляет счетчики, которые не обновлялись более 2 часов.
+        """
+        current_time = time.time()
+        # Выполняем очистку не чаще чем раз в час
+        if current_time - self._last_cleanup_time < self._cleanup_interval:
+            return
+        
+        self._last_cleanup_time = current_time
+        max_age = 7200  # 2 часа
+        
+        # Очищаем ticks_counter
+        keys_to_remove = []
+        for key, counter in self._ticks_counter.items():
+            age = current_time - counter.get("start_time", 0)
+            if age > max_age:
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del self._ticks_counter[key]
+        
+        # Очищаем candles_counter
+        keys_to_remove = []
+        for key, counter in self._candles_counter.items():
+            age = current_time - counter.get("start_time", 0)
+            if age > max_age:
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del self._candles_counter[key]
+    
     def get_stats(self) -> Dict:
         """Получить текущую статистику."""
+        # Выполняем периодическую очистку перед получением статистики
+        self._cleanup_old_counters()
+        
         return {
             "total_candles": self.total_candles,
             "total_trades": self.total_trades,
@@ -156,4 +215,5 @@ class Metrics:
         self.total_trades = 0
         self._ticks_counter.clear()
         self._candles_counter.clear()
+        self._last_cleanup_time = time.time()
 

@@ -25,17 +25,15 @@ BOT_USERNAME = "a1price_bot"  # без @
 
 # Тайминги
 UPDATE_DEBOUNCE_SEC = 1.0      # минимум между редактированиями
-LIVE_DEADLINE_SEC   = 60       # единственный раунд «живых» правок
 FIRST_SEND_DELAY    = 2.0      # задержка перед первым ответом
-PAN_RETRY_EVERY_SEC = 6.0      # период повторного запроса PanSwap, если цены нет
+SECOND_ROUND_DELAY  = 30.0     # задержка перед вторым раундом обновления цен
+NO_PRICE_TIMEOUT    = 20.0     # если за это время нет цен - монета не найдена
 NOT_FOUND_GRACE_SEC = 15.0     # сколько НЕ показывать «не найдена»
 
 # Таймауты (мс/сек)
-TIMEOUT_DEFAULT_MS = 2500
-TIMEOUT_SLOW_MS    = 5000       # Gate/HTX — подлиннее
-TIMEOUT_OKX_MS     = 10000      # OKX — ещё длиннее
-TIMEOUT_OKX_HTTP   = 10         # сек, HTTP-фолбэк OKX
-TIMEOUT_PAN_HTTP   = 8          # сек, API PancakeSwap / DexScreener
+TIMEOUT_ALL_MS     = 25000      # 25 секунд для всех бирж
+TIMEOUT_OKX_HTTP   = 25         # сек, HTTP-фолбэк OKX
+TIMEOUT_PAN_HTTP   = 25         # сек, API PancakeSwap / DexScreener
 
 # Кэш маркетов
 MARKETS_TTL = timedelta(minutes=10)
@@ -170,11 +168,7 @@ class ExchangeManager:
             return
 
         def timeout_for(name: str) -> int:
-            if name == "OKX":
-                return TIMEOUT_OKX_MS
-            if name in ("Gate", "HTX"):
-                return TIMEOUT_SLOW_MS
-            return TIMEOUT_DEFAULT_MS
+            return TIMEOUT_ALL_MS  # 25 секунд для всех бирж
 
         # Spot
         self.exchanges_spot = {
@@ -182,7 +176,7 @@ class ExchangeManager:
             "Bybit":   ccxt.bybit({"timeout": timeout_for("Bybit"), "options": {"defaultType": "spot"}}),
             "Bitget":  ccxt.bitget({"timeout": timeout_for("Bitget"), "options": {"defaultType": "spot"}}),
             "Gate":    ccxt.gate({"timeout": timeout_for("Gate"), "options": {"defaultType": "spot"}}),
-            "MEXC":    ccxt.mexc({"timeout": 10000, "enableRateLimit": True, "options": {"defaultType": "spot"}}),
+            "MEXC":    ccxt.mexc({"timeout": timeout_for("MEXC"), "enableRateLimit": True, "options": {"defaultType": "spot"}}),
             "HTX":     ccxt.htx({"timeout": timeout_for("HTX"), "enableRateLimit": True, "options": {"defaultType": "spot"}}),
             "OKX":     ccxt.okx({"timeout": timeout_for("OKX"), "enableRateLimit": True, "options": {"defaultType": "spot"}}),
             "BingX":   ccxt.bingx({"timeout": timeout_for("BingX"), "options": {"defaultType": "spot"}}),
@@ -355,8 +349,10 @@ def pick_market_symbol(ex: ccxt.Exchange, coin: str, want_type: str) -> Optional
             if m.get("base") == coin and m.get("quote") == "USDT":
                 if m.get("active") is False:
                     continue
-                if want_type == "spot" and m.get("spot"):
-                    return m.get("symbol")
+                if want_type == "spot":
+                    # Для spot проверяем несколько вариантов
+                    if m.get("spot") or m.get("type") == "spot" or (m.get("type") is None and m.get("swap") is None and m.get("future") is None):
+                        return m.get("symbol")
                 if want_type == "swap" and m.get("type") == "swap" and m.get("linear") and m.get("settle") == "USDT":
                     return m.get("symbol")
         return None
@@ -741,29 +737,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not changed.is_set():
                 changed.set()
 
-        async def run_one(name: str, want_type: str, ex: Optional[ccxt.Exchange], deadline: float):
+        async def run_one(name: str, want_type: str, ex: Optional[ccxt.Exchange]):
             if name not in rows:
                 rows[name] = {"spot": None, "fut": None}
 
             # PanSwap — только спот
             if name == "PanSwap":
                 if want_type == "spot":
-                    while True:
+                    try:
                         price = await panswap_spot_price(coin)
-                        prev = rows[name]["spot"]
-                        if price != prev:
-                            rows[name]["spot"] = price
-                            mark_changed()
                         if price is not None:
-                            break
-                        if asyncio.get_event_loop().time() >= deadline:
-                            break
-                        await asyncio.sleep(PAN_RETRY_EVERY_SEC)
+                            if rows[name]["spot"] != price:
+                                rows[name]["spot"] = price
+                                mark_changed()
+                        else:
+                            log(f"[{name}/{want_type}] {coin}: не удалось получить цену")
+                    except Exception as e:
+                        log(f"[{name}/{want_type}] {coin}: ошибка получения цены: {e!r}")
                 return
 
             try:
                 pick = await build_pick(ex, name, coin, want_type) if ex is not None else None
-                if pick is None and name != "OKX":
+                if pick is None and name not in ("OKX", "MEXC"):
+                    log(f"[{name}/{want_type}] {coin}: маркет не найден")
                     return
 
                 urls.setdefault(name, {"spot": None, "fut": None})
@@ -772,43 +768,73 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if want_type == "spot":
                     price = None
                     if pick:
-                        if name == "MEXC":
-                            price = await fetch_spot_mid_mexcfast(ex, pick.symbol, coin)
-                            if price is None:
-                                await asyncio.sleep(0.2)
+                        try:
+                            if name == "MEXC":
                                 price = await fetch_spot_mid_mexcfast(ex, pick.symbol, coin)
-                        else:
-                            price = await fetch_spot_mid_standard(ex, pick.symbol, name, coin)
+                                if price is None:
+                                    await asyncio.sleep(0.2)
+                                    price = await fetch_spot_mid_mexcfast(ex, pick.symbol, coin)
+                            else:
+                                price = await fetch_spot_mid_standard(ex, pick.symbol, name, coin)
+                        except Exception as e:
+                            log(f"[{name}/{want_type}] {coin}: ошибка получения цены spot: {e!r}")
+                    
+                    # Для MEXC spot пробуем получить цену даже если pick не найден
+                    if name == "MEXC" and price is None and pick is None:
+                        # Пробуем стандартный символ
+                        try_symbols = [f"{coin}/USDT", f"{coin}USDT"]
+                        for try_sym in try_symbols:
+                            try:
+                                price = await fetch_spot_mid_mexcfast(ex, try_sym, coin)
+                                if price is not None:
+                                    log(f"[MEXC/spot] {coin}: got price using fallback symbol {try_sym}, price={price}")
+                                    break
+                            except Exception as e:
+                                log(f"[MEXC/spot] {coin}: fallback symbol {try_sym} failed: {e!r}")
+                                continue
 
                     if name == "OKX" and price is None:
-                        http_mid = await okx_http_spot_mid(coin)
-                        if isinstance(http_mid, (int, float)):
-                            price = http_mid
-                            log(f"[OKX/spot] {coin}: HTTP fallback mid={price}")
+                        try:
+                            http_mid = await okx_http_spot_mid(coin)
+                            if isinstance(http_mid, (int, float)):
+                                price = http_mid
+                                log(f"[OKX/spot] {coin}: HTTP fallback mid={price}")
+                        except Exception as e:
+                            log(f"[OKX/spot] {coin}: ошибка HTTP fallback: {e!r}")
 
-                    if price is not None and rows[name]["spot"] != price:
+                    if price is None:
+                        log(f"[{name}/{want_type}] {coin}: не удалось получить цену")
+                    elif rows[name]["spot"] != price:
                         rows[name]["spot"] = price
                         mark_changed()
 
                 else:
                     price = None
                     if pick:
-                        price = await fetch_fut_last(ex, pick.symbol, name, coin)
+                        try:
+                            price = await fetch_fut_last(ex, pick.symbol, name, coin)
+                        except Exception as e:
+                            log(f"[{name}/{want_type}] {coin}: ошибка получения цены futures: {e!r}")
 
                     if name == "OKX" and price is None:
-                        http_last = await okx_http_swap_last(coin)
-                        if isinstance(http_last, (int, float)):
-                            price = http_last
-                            log(f"[OKX/swap] {coin}: HTTP fallback last={price}")
+                        try:
+                            http_last = await okx_http_swap_last(coin)
+                            if isinstance(http_last, (int, float)):
+                                price = http_last
+                                log(f"[OKX/swap] {coin}: HTTP fallback last={price}")
+                        except Exception as e:
+                            log(f"[OKX/swap] {coin}: ошибка HTTP fallback: {e!r}")
 
-                    if price is not None and rows[name]["fut"] != price:
+                    if price is None:
+                        log(f"[{name}/{want_type}] {coin}: не удалось получить цену")
+                    elif rows[name]["fut"] != price:
                         rows[name]["fut"] = price
                         mark_changed()
 
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                log(f"[{name}/{want_type}] {coin}: unexpected error {e!r}")
+                log(f"[{name}/{want_type}] {coin}: неожиданная ошибка: {e!r}")
 
         names = ["Binance","Bybit","Bitget","Gate","HTX","MEXC","KuCoin","BingX","OKX","PanSwap"]
 
@@ -840,39 +866,145 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         state.last_edit_at = loop.time()
                         log(f"[edit] updated table for {coin}")
 
-        # ---- Единственный раунд «живых» правок (60с) ----
-        log(f"---- Round start (60s) for {coin} ----")
-        deadline_ts = loop.time() + LIVE_DEADLINE_SEC
-        changed.clear()
-
-        tasks: List[asyncio.Task] = []
-        for n in names:
-            tasks.append(context.application.create_task(run_one(n, "spot", MANAGER.exchanges_spot.get(n), deadline_ts)))
-            tasks.append(context.application.create_task(run_one(n, "swap", MANAGER.exchanges_fut.get(n), deadline_ts)))
-
-        await asyncio.sleep(FIRST_SEND_DELAY)
-        await maybe_edit()
-
-        while loop.time() < deadline_ts:
-            try:
-                timeout = max(0.0, deadline_ts - loop.time())
-                await asyncio.wait_for(changed.wait(), timeout=timeout)
-            except asyncio.TimeoutError:
-                break
+        async def run_round(round_num: int):
+            """Запускает один раунд запросов ко всем биржам"""
+            log(f"---- Round {round_num} start for {coin} ----")
             changed.clear()
-            await maybe_edit()
-
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-        with contextlib.suppress(Exception):
+            
+            tasks: List[asyncio.Task] = []
+            for n in names:
+                tasks.append(context.application.create_task(run_one(n, "spot", MANAGER.exchanges_spot.get(n))))
+                tasks.append(context.application.create_task(run_one(n, "swap", MANAGER.exchanges_fut.get(n))))
+            
+            # Обновляем сообщение по мере поступления цен
+            # Ждем завершения всех задач, обновляя сообщение при изменениях
+            update_task = None
+            
+            async def update_loop():
+                """Цикл обновления сообщения при изменениях"""
+                while True:
+                    try:
+                        await asyncio.wait_for(changed.wait(), timeout=0.5)
+                        changed.clear()
+                        await maybe_edit()
+                    except asyncio.TimeoutError:
+                        # Проверяем, все ли задачи завершены
+                        if all(t.done() for t in tasks):
+                            break
+                        continue
+            
+            update_task = context.application.create_task(update_loop())
+            
+            # Ждем завершения всех задач
             await asyncio.gather(*tasks, return_exceptions=True)
-        log(f"---- Round end for {coin} ----")
+            
+            # Отменяем цикл обновления и ждем его завершения
+            if update_task and not update_task.done():
+                update_task.cancel()
+                try:
+                    await asyncio.wait_for(update_task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            
+            # Финальное обновление после завершения всех задач
+            await maybe_edit()
+            log(f"---- Round {round_num} end for {coin} ----")
+
+        # Первый раунд - сразу
+        round1_start_time = loop.time()
+        check_task = None
+        should_skip_round2 = False
+        
+        async def check_no_price():
+            """Проверяет через 20 секунд, есть ли цены"""
+            nonlocal should_skip_round2
+            try:
+                await asyncio.sleep(NO_PRICE_TIMEOUT)
+                # Проверяем еще раз, возможно цены появились
+                has_any_price = any(
+                    (row.get("spot") is not None or row.get("fut") is not None)
+                    for row in rows.values()
+                )
+                if not has_any_price:
+                    log(f"---- No prices found for {coin} after {NO_PRICE_TIMEOUT}s, will skip Round 2 ----")
+                    should_skip_round2 = True
+                    if state.sent:
+                        try:
+                            await state.sent.edit_text(
+                                f"❌ Монета <b>{coin}</b> не найдена на биржах",
+                                parse_mode=ParseMode.HTML
+                            )
+                            log(f"[edit] sent 'not found' message for {coin}")
+                        except Exception as e:
+                            log(f"[edit] error sending 'not found' message: {e!r}")
+            except asyncio.CancelledError:
+                pass
+        
+        try:
+            # Запускаем проверку параллельно с первым раундом
+            check_task = context.application.create_task(check_no_price())
+            
+            await run_round(1)
+            log(f"---- Round 1 completed for {coin} ----")
+            
+            # Отменяем проверку, если первый раунд завершился раньше
+            if check_task and not check_task.done():
+                check_task.cancel()
+                with contextlib.suppress(Exception):
+                    await check_task
+                
+                # Проверяем наличие цен после завершения первого раунда
+                has_any_price = any(
+                    (row.get("spot") is not None or row.get("fut") is not None)
+                    for row in rows.values()
+                )
+                if not has_any_price:
+                    log(f"---- No prices found for {coin} after Round 1, will skip Round 2 ----")
+                    should_skip_round2 = True
+                    if state.sent:
+                        try:
+                            await state.sent.edit_text(
+                                f"❌ Монета <b>{coin}</b> не найдена на биржах",
+                                parse_mode=ParseMode.HTML
+                            )
+                            log(f"[edit] sent 'not found' message for {coin}")
+                        except Exception as e:
+                            log(f"[edit] error sending 'not found' message: {e!r}")
+        except Exception as e:
+            log(f"---- Round 1 error for {coin}: {e!r} ----")
+            # Отменяем проверку при ошибке
+            if check_task and not check_task.done():
+                check_task.cancel()
+                with contextlib.suppress(Exception):
+                    await check_task
+            raise
+        
+        # Если нужно пропустить второй раунд - завершаем
+        if should_skip_round2:
+            log(f"---- Skipping Round 2 for {coin} (no prices found) ----")
+            return
+        
+        # Если есть цены - продолжаем со вторым раундом
+        log(f"---- Prices found for {coin}, waiting {SECOND_ROUND_DELAY}s before Round 2 ----")
+        
+        # Второй раунд - через 30 секунд
+        try:
+            await asyncio.sleep(SECOND_ROUND_DELAY)
+            log(f"---- Starting Round 2 for {coin} ----")
+            await run_round(2)
+            log(f"---- Round 2 completed for {coin} ----")
+        except Exception as e:
+            log(f"---- Round 2 error for {coin}: {e!r} ----")
+            raise
 
     finally:
         log(f"[handle end]   chat={chat.id} update_id={update.update_id}")
 
 # ====================== Запуск ======================
+
+async def post_init(app: Application) -> None:
+    """Инициализация ExchangeManager после создания event loop"""
+    await MANAGER.init()
 
 def build_application():
     request = HTTPXRequest(
@@ -888,6 +1020,7 @@ def build_application():
         .token(BOT_TOKEN)
         .request(request)
         .concurrent_updates(True)   # параллельные апдейты
+        .post_init(post_init)
         .build()
     )
 
@@ -895,9 +1028,6 @@ def build_application():
     return application
 
 if __name__ == "__main__":
-    # Асинхронная инициализация до запуска PTB
-    asyncio.run(MANAGER.init())
-
     app = build_application()
     # Синхронный polling — внутри сам управляет своим loop
     app.run_polling(

@@ -33,6 +33,7 @@ export default function Dashboard() {
   const [totalDetects, setTotalDetects] = useState(0);
   const [uptimeSeconds, setUptimeSeconds] = useState<number | null>(0);
   const [startTime, setStartTime] = useState<number | null>(null);
+  const [exchangeLimits, setExchangeLimits] = useState<Record<string, { spot: number; linear: number }>>({});
   
   // Состояния для статистики стрел
   const [spikesStats, setSpikesStats] = useState<{
@@ -217,6 +218,14 @@ export default function Dashboard() {
         return;
       }
       
+      // Сохраняем лимиты из API (если есть)
+      if (statsData.limits) {
+        console.log("Загружены лимиты бирж:", statsData.limits);
+        setExchangeLimits(statsData.limits);
+      } else {
+        console.warn("Лимиты бирж не получены из API");
+      }
+      
       // Обрабатываем данные даже если они частично пустые
       if (metricsData.metrics && statsData.exchanges) {
         // Создаем список всех бирж и их типов рынка
@@ -246,8 +255,44 @@ export default function Dashboard() {
             const symbols = marketStats.active_symbols || 0;
             const reconnects = marketStats.reconnects || 0;
             
-            // Формируем строку с информацией о WS (без количества символов, т.к. оно в отдельном столбце)
-            let wsInfo = `${wsConnections} WS`;
+            // Вычисляем ожидаемое количество WebSocket-соединений на основе лимитов из API
+            const exchangeKey = nameKey.toLowerCase();
+            const limits = exchangeLimits[exchangeKey];
+            
+            // Отладка: проверяем наличие лимитов
+            if (!limits && Object.keys(exchangeLimits).length > 0) {
+              console.warn(`Лимиты не найдены для биржи: ${exchangeKey}. Доступные ключи:`, Object.keys(exchangeLimits));
+            }
+            let expectedConnections = 0;
+            
+            // Вычисляем максимальное количество соединений на основе лимитов
+            if (limits) {
+              const limitPerConnection = market === "spot" ? limits.spot : limits.linear;
+              if (limitPerConnection > 0) {
+                // Вычисляем на основе количества символов
+                if (symbols > 0) {
+                  expectedConnections = Math.ceil(symbols / limitPerConnection);
+                } else if (wsConnections > 0) {
+                  // Если символов нет, но есть активные соединения, используем их как максимум
+                  expectedConnections = wsConnections;
+                }
+              }
+            }
+            
+            // Если не удалось вычислить на основе лимитов, но есть активные соединения,
+            // используем текущее количество как максимум
+            if (expectedConnections === 0 && wsConnections > 0) {
+              expectedConnections = wsConnections;
+            }
+            
+            // Формируем строку с информацией о WS в формате "текущее/максимальное"
+            let wsInfo: string;
+            if (expectedConnections > 0) {
+              wsInfo = `${wsConnections}/${expectedConnections}`;
+            } else {
+              // Если нет данных вообще, показываем только текущее
+              wsInfo = `${wsConnections} WS`;
+            }
             
             // Получаем свечи для конкретного рынка - сначала из API, потом из метрик
             let candles = marketStats.candles || 0;
@@ -290,36 +335,24 @@ export default function Dashboard() {
             // Значение уже рассчитано на бэкенде и приходит из API
             const tps = marketStats.ticks_per_second || 0;
             
-            // Определяем статус - ПРИОРИТЕТ: проверка времени последнего обновления last_candle_ts
+            // Определяем статус на основе времени последней свечи И количества переподключений
+            // Если свеча не приходила 1 минуту - биржа отключена
+            // Если свечи приходят, но много переподключений (>15) - биржа с проблемами
             let status: "active" | "inactive" | "problems" = "inactive";
             
-            // Проверяем, прошла ли минута с последнего обновления last_candle_ts
             const now = Date.now();
             const oneMinuteAgo = now - 60 * 1000; // 1 минута в миллисекундах
             
-            if (!lastUpdateTimestamp || lastUpdateTimestamp < oneMinuteAgo) {
+            if (lastUpdateTimestamp && lastUpdateTimestamp >= oneMinuteAgo) {
+              // Если свеча приходила менее минуты назад - проверяем количество переподключений
+              if (reconnects > 15) {
+                status = "problems";
+              } else {
+                status = "active";
+              }
+            } else {
               // Если timestamp отсутствует или последнее обновление было больше минуты назад - биржа отключена
               status = "inactive";
-            } else {
-              // Если timestamp свежий (< минуты) - используем логику из API или fallback
-              const apiStatus = marketStats.status;
-              if (apiStatus) {
-                // Переводим статус из API (русский) в формат фронтенда
-                if (apiStatus === "Активна") {
-                  status = "active";
-                } else if (apiStatus === "Проблемы") {
-                  status = "problems";
-                } else {
-                  status = "inactive";
-                }
-              } else {
-                // Fallback: определяем статус сами (если API не вернул статус)
-                if (wsConnections > 0 && reconnects <= 15) {
-                  status = "active";
-                } else if (reconnects > 15) {
-                  status = "problems";
-                }
-              }
             }
             
             newExchanges.push({
@@ -374,22 +407,36 @@ export default function Dashboard() {
     // Автообновление каждые 10 секунд
     const interval = setInterval(fetchMetrics, 10000);
     
-    // Периодическая проверка статуса бирж на основе времени последнего обновления
+    // Периодическая проверка статуса бирж на основе времени последней свечи
+    // Если свеча не приходила 1 минуту - биржа отключена
+    // Если свечи приходят, но много переподключений (>15) - биржа с проблемами
     const statusCheckInterval = setInterval(() => {
       setExchanges((prevExchanges) => {
         const now = Date.now();
         const oneMinuteAgo = now - 60 * 1000; // 1 минута в миллисекундах
         
         return prevExchanges.map((exchange) => {
-          // Если есть timestamp последнего обновления и оно старше минуты - биржа отключена
-          if (exchange.lastUpdateTimestamp && exchange.lastUpdateTimestamp < oneMinuteAgo) {
+          // Определяем статус на основе времени последней свечи И количества переподключений
+          if (exchange.lastUpdateTimestamp && exchange.lastUpdateTimestamp >= oneMinuteAgo) {
+            // Если свеча приходила менее минуты назад - проверяем переподключения
+            if (exchange.reconnects > 15) {
+              return {
+                ...exchange,
+                status: "problems" as const
+              };
+            } else {
+              return {
+                ...exchange,
+                status: "active" as const
+              };
+            }
+          } else {
+            // Если timestamp отсутствует или последнее обновление было больше минуты назад - биржа отключена
             return {
               ...exchange,
               status: "inactive" as const
             };
           }
-          // Если статус был inactive, но данные обновились - проверяем через fetchMetrics
-          return exchange;
         });
       });
     }, 5000); // Проверяем каждые 5 секунд

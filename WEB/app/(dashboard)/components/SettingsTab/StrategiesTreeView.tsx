@@ -111,7 +111,7 @@ export default function StrategiesTreeView({
                     {isEnabled ? (
                       <div className="w-2 h-2 rounded-full bg-emerald-500" />
                     ) : (
-                      <div className="w-2 h-2 rounded-full bg-zinc-600" />
+                      <div className="w-2 h-2 rounded-full bg-red-500" />
                     )}
                   </div>
                 </div>

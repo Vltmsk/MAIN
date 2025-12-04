@@ -16,7 +16,7 @@ const extractQuoteCurrency = (symbol: string): string => {
   const quoteCurrencies = [
     "USDC", "USDT", "FDUSD", "BIDR", "AEUR",
     "BTC", "ETH", "BNB", "TUSD", "DOGE", "TRX",
-    "TRY", "EUR", "GBP", "AUD", "BRL"
+    "TRY", "EUR", "GBP", "AUD", "BRL", "IDR"
   ];
   
   // Сначала проверяем разделители (приоритет для символов с разделителями)
@@ -56,7 +56,7 @@ const extractBaseCurrency = (symbol: string): string => {
   const quoteCurrencies = [
     "USDC", "USDT", "FDUSD", "BIDR", "AEUR",
     "BTC", "ETH", "BNB", "TUSD", "DOGE", "TRX",
-    "TRY", "EUR", "GBP", "AUD", "BRL"
+    "TRY", "EUR", "GBP", "AUD", "BRL", "IDR"
   ];
   
   // Сначала проверяем разделители (приоритет для символов с разделителями)
@@ -166,6 +166,9 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
   const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
   const [searchDelta, setSearchDelta] = useState<string>("");
   const [searchVolume, setSearchVolume] = useState<string>("");
+  const [searchLastDetects, setSearchLastDetects] = useState<string>("");
+  const [searchedSpikes, setSearchedSpikes] = useState<any[]>([]);
+  const [searchedSpikesLoading, setSearchedSpikesLoading] = useState(false);
   
   // Функция фильтрации сигналов по базовой валюте
   const filterSpikesByBaseCurrency = useCallback((spikes: any[], searchQuery: string): any[] => {
@@ -295,6 +298,58 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
       };
     }
   }, [fetchSymbolSpikes, selectedSymbol]);
+
+  // Функция загрузки сигналов по монете для поиска
+  const fetchSpikesBySymbol = useCallback(async (symbol: string) => {
+    if (!symbol.trim()) {
+      setSearchedSpikes([]);
+      return;
+    }
+
+    setSearchedSpikesLoading(true);
+    try {
+      let url: string;
+      if (statisticsMode === "personal") {
+        url = `/api/users/${encodeURIComponent(userLogin)}/spikes/by-symbol/${encodeURIComponent(symbol.trim())}`;
+      } else {
+        url = `/api/users/Stats/spikes/by-symbol/${encodeURIComponent(symbol.trim())}`;
+      }
+      
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const spikes = data.spikes || [];
+        // Берем последние 20 сигналов, отсортированные по времени (новые первыми)
+        const lastSpikes = spikes.slice(0, 20);
+        setSearchedSpikes(lastSpikes);
+      } else {
+        console.error("Ошибка загрузки сигналов по монете:", res.status);
+        setSearchedSpikes([]);
+      }
+    } catch (error) {
+      console.error("Ошибка загрузки сигналов по монете:", error);
+      setSearchedSpikes([]);
+    } finally {
+      setSearchedSpikesLoading(false);
+    }
+  }, [statisticsMode, userLogin]);
+
+  // Загрузка сигналов при изменении поискового запроса (с задержкой)
+  useEffect(() => {
+    if (!searchLastDetects.trim()) {
+      setSearchedSpikes([]);
+      return;
+    }
+
+    // Дебаунс для поиска - ждем 500ms после последнего ввода
+    const timeoutId = setTimeout(() => {
+      fetchSpikesBySymbol(searchLastDetects);
+    }, 500);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [searchLastDetects, fetchSpikesBySymbol]);
 
   // Функция для очистки статистики стрел пользователя
   const handleDeleteSpikes = async () => {
@@ -926,44 +981,84 @@ export default function StatisticsTab({ userLogin }: StatisticsTabProps) {
           {spikesStats.spikes.length > 0 && (
             <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
               <div className="p-6 border-b border-zinc-800">
-                <h2 className="text-xl font-semibold text-white">Последние детекты</h2>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-semibold text-white">Последние детекты</h2>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="Поиск монеты..."
+                      value={searchLastDetects}
+                      onChange={(e) => setSearchLastDetects(e.target.value)}
+                      className="bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 pr-10 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent w-48"
+                    />
+                    {searchLastDetects && (
+                      <button
+                        onClick={() => {
+                          setSearchLastDetects("");
+                          setSearchedSpikes([]);
+                        }}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white transition-colors"
+                        title="Очистить"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-zinc-800/50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Время</th>
-                      <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Биржа</th>
-                      <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Рынок</th>
-                      <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Символ</th>
-                      <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Дельта %</th>
-                      <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Объём USDT</th>
-                      <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Тень %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {spikesStats.spikes.map((spike: any, idx: number) => {
-                      const formattedSymbol = formatSymbol(spike.symbol);
-                      return (
-                        <tr key={idx} className="border-t border-zinc-800 hover:bg-zinc-800/30 transition-colors">
-                          <td className="px-6 py-4 text-zinc-300 text-sm">
-                            {new Date(spike.ts).toLocaleString('ru-RU')}
+                {searchedSpikesLoading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+                      <div className="text-zinc-400 text-sm">Загрузка...</div>
+                    </div>
+                  </div>
+                ) : (
+                  <table className="w-full">
+                    <thead className="bg-zinc-800/50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Время</th>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Биржа</th>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Рынок</th>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Символ</th>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Дельта %</th>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Объём USDT</th>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-300">Тень %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(searchLastDetects.trim() ? searchedSpikes : spikesStats.spikes).length > 0 ? (
+                        (searchLastDetects.trim() ? searchedSpikes : spikesStats.spikes).map((spike: any, idx: number) => {
+                          const formattedSymbol = formatSymbol(spike.symbol);
+                          return (
+                            <tr key={idx} className="border-t border-zinc-800 hover:bg-zinc-800/30 transition-colors">
+                              <td className="px-6 py-4 text-zinc-300 text-sm">
+                                {new Date(spike.ts).toLocaleString('ru-RU')}
+                              </td>
+                              <td className="px-6 py-4 text-zinc-300 capitalize">{spike.exchange}</td>
+                              <td className="px-6 py-4 text-zinc-300 capitalize">{spike.market === 'linear' ? 'Фьючерсы' : spike.market}</td>
+                              <td className="px-6 py-4 text-white font-medium">
+                                {formattedSymbol}
+                              </td>
+                              <td className={`px-6 py-4 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
+                              </td>
+                              <td className="px-6 py-4 text-zinc-300">${formatNumber(Math.round(spike.volume_usdt))}</td>
+                              <td className="px-6 py-4 text-zinc-300">{spike.wick_pct.toFixed(1)}%</td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={7} className="px-6 py-8 text-center text-zinc-400">
+                            {searchLastDetects.trim() ? "Монета не найдена" : "Нет данных"}
                           </td>
-                          <td className="px-6 py-4 text-zinc-300 capitalize">{spike.exchange}</td>
-                          <td className="px-6 py-4 text-zinc-300 capitalize">{spike.market === 'linear' ? 'Фьючерсы' : spike.market}</td>
-                          <td className="px-6 py-4 text-white font-medium">
-                            {formattedSymbol}
-                          </td>
-                          <td className={`px-6 py-4 font-semibold ${spike.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {spike.delta >= 0 ? '+' : ''}{spike.delta.toFixed(2)}%
-                          </td>
-                          <td className="px-6 py-4 text-zinc-300">${formatNumber(Math.round(spike.volume_usdt))}</td>
-                          <td className="px-6 py-4 text-zinc-300">{spike.wick_pct.toFixed(1)}%</td>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      )}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
           )}

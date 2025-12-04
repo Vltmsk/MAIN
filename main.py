@@ -7,7 +7,7 @@ import json
 import time
 import aiosqlite
 import aiohttp
-from typing import Dict, List, Callable, Awaitable, Optional
+from typing import Dict, List, Callable, Awaitable, Optional, Any
 from core.candle_builder import CandleBuilder, Candle
 from core.logger import setup_root_logger, get_logger
 from core.metrics import Metrics
@@ -65,6 +65,8 @@ class ExchangeManager:
         self._all_tasks: List[asyncio.Task] = []
         self._reconnect_logged: Dict[str, float] = {}  # Для отслеживания дубликатов реконнектов: {key: timestamp}
         self._exchange_start_times: Dict[str, float] = {}  # Время старта биржи: {exchange: timestamp}
+        self._stats_task_started: bool = False  # Флаг запуска задачи статистики
+        self._db_stats_task_started: bool = False  # Флаг запуска задачи обновления статистики в БД
     
     def add_tasks(self, tasks: List[asyncio.Task]) -> None:
         """Добавляет задачи в список"""
@@ -111,6 +113,24 @@ class ExchangeManager:
         self._all_tasks.clear()
         self._reconnect_logged.clear()
         self._exchange_start_times.clear()
+        self._stats_task_started = False
+        self._db_stats_task_started = False
+    
+    def is_stats_task_started(self) -> bool:
+        """Проверяет, запущена ли задача статистики"""
+        return self._stats_task_started
+    
+    def set_stats_task_started(self, value: bool = True) -> None:
+        """Устанавливает флаг запуска задачи статистики"""
+        self._stats_task_started = value
+    
+    def is_db_stats_task_started(self) -> bool:
+        """Проверяет, запущена ли задача обновления статистики в БД"""
+        return self._db_stats_task_started
+    
+    def set_db_stats_task_started(self, value: bool = True) -> None:
+        """Устанавливает флаг запуска задачи обновления статистики в БД"""
+        self._db_stats_task_started = value
 
 
 # Глобальный экземпляр менеджера бирж
@@ -589,15 +609,18 @@ async def on_candle(candle: Candle) -> None:
                         # Формируем сообщения в зависимости от способа детектирования
                         if templates_to_use is not None:
                             # Используем шаблоны стратегий (приоритет)
-                            messages = []
-                            for strategy in templates_to_use:
+                            # Обрабатываем стратегии параллельно для ускорения
+                            async def format_strategy_message(strategy: Dict[str, Any]) -> List[Dict[str, Any]]:
+                                """Форматирует сообщение для одной стратегии"""
                                 strategy_template = strategy.get("template", "")
                                 strategy_chat_id = strategy.get("chatId") or chat_id
                                 
-                                if strategy_template:
-                                    # Форматируем сообщение из шаблона стратегии
-                                    if timer:
-                                        timer.start("format.message")
+                                if not strategy_template:
+                                    return []
+                                
+                                if timer:
+                                    timer.start("format.message")
+                                try:
                                     strategy_messages = await telegram_notifier.format_spike_messages(
                                         candle=candle,
                                         delta=delta,
@@ -610,9 +633,23 @@ async def on_candle(candle: Candle) -> None:
                                         timezone=user_timezone,
                                         default_chat_id=strategy_chat_id
                                     )
+                                    return strategy_messages
+                                finally:
                                     if timer:
                                         timer.end("format.message")
+                            
+                            # Параллельная обработка всех стратегий
+                            if timer:
+                                timer.start("format.message")
+                            try:
+                                strategy_tasks = [format_strategy_message(strategy) for strategy in templates_to_use]
+                                strategy_results = await asyncio.gather(*strategy_tasks)
+                                messages = []
+                                for strategy_messages in strategy_results:
                                     messages.extend(strategy_messages)
+                            finally:
+                                if timer:
+                                    timer.end("format.message")
                         else:
                             # Используем дефолтный шаблон (messageTemplate)
                             # ВАЖНО: conditional_templates должны использоваться даже при детекте через обычные настройки
@@ -788,7 +825,12 @@ async def on_error(error: dict) -> None:
             # Периодически очищаем старые записи (старше 10 секунд), только после добавления
             exchange_manager.cleanup_old_reconnects(current_time, max_age=10.0)
     else:
-        metrics.inc_error(exchange)
+        # Исправление: безопасное увеличение счётчика ошибок
+        try:
+            metrics.inc_error(exchange)
+        except Exception as e:
+            logger.error(f"Ошибка при увеличении счётчика ошибок для {exchange}: {e}", exc_info=True)
+        
         error_message = error.get("error") or error.get("message") or str(error)
         logger.error(
             f"Ошибка от {exchange}: {error_message}",
@@ -802,6 +844,142 @@ async def on_error(error: dict) -> None:
                 "stack_trace": error.get("stack_trace"),
             },
         )
+
+
+async def wait_for_connections(enabled_exchanges: List[str], max_wait_time: int = 30, check_interval: float = 1.0) -> None:
+    """
+    Ожидает установки соединений со всеми биржами.
+    
+    Args:
+        enabled_exchanges: Список включенных бирж для проверки
+        max_wait_time: Максимальное время ожидания в секундах
+        check_interval: Интервал проверки в секундах
+    """
+    if not enabled_exchanges:
+        logger.info("Нет включенных бирж, пропускаем ожидание соединений")
+        return
+    
+    logger.info(f"Ожидание установки соединений с биржами: {', '.join(enabled_exchanges)}...")
+    start_time = time.time()
+    
+    while time.time() - start_time < max_wait_time:
+        total_connections = 0
+        
+        # Проверяем активные соединения только для включенных бирж
+        for exchange_name in enabled_exchanges:
+            try:
+                adapter_path = ADAPTERS.get(exchange_name)
+                if not adapter_path:
+                    continue
+                    
+                adapter_module = importlib.import_module(adapter_path)
+                
+                if hasattr(adapter_module, 'get_statistics'):
+                    stats = adapter_module.get_statistics()
+                    spot_connections = stats.get("spot", {}).get("active_connections", 0)
+                    linear_connections = stats.get("linear", {}).get("active_connections", 0)
+                    total_connections += spot_connections + linear_connections
+            except Exception as e:
+                logger.debug(f"Ошибка при проверке соединений для {exchange_name}: {e}")
+        
+        # Если есть активные соединения, считаем что соединения установлены
+        if total_connections > 0:
+            logger.info(f"Соединения установлены: обнаружено {total_connections} активных соединений")
+            return
+        
+        await asyncio.sleep(check_interval)
+    
+    logger.warning(f"Таймаут ожидания соединений ({max_wait_time} сек), продолжаем инициализацию БД нормализации")
+
+
+async def wait_for_symbols_fetched(enabled_exchanges: List[str], max_wait_time: int = 60, check_interval: float = 1.0) -> None:
+    """
+    Ожидает получения символов со всех бирж.
+    
+    Args:
+        enabled_exchanges: Список включенных бирж для проверки
+        max_wait_time: Максимальное время ожидания в секундах
+        check_interval: Интервал проверки в секундах
+    """
+    if not enabled_exchanges:
+        logger.info("Нет включенных бирж, пропускаем ожидание получения символов")
+        return
+    
+    logger.info(f"Ожидание получения символов с бирж: {', '.join(enabled_exchanges)}...")
+    start_time = time.time()
+    
+    # Определяем, какие рынки должны быть включены для каждой биржи
+    exchange_config_map = {
+        "gate": ("gate_spot", "gate_linear"),
+        "binance": ("binance_spot", "binance_linear"),
+        "bitget": ("bitget_spot", "bitget_linear"),
+        "bybit": ("bybit_spot", "bybit_linear"),
+        "hyperliquid": ("hyperliquid_spot", "hyperliquid_linear"),
+    }
+    
+    # Создаём список ожидаемых комбинаций биржа+рынок
+    expected_markets = []
+    for exchange_name in enabled_exchanges:
+        spot_key, linear_key = exchange_config_map.get(exchange_name, (None, None))
+        if spot_key and getattr(config.exchanges, spot_key, False):
+            expected_markets.append((exchange_name, "spot"))
+        if linear_key and getattr(config.exchanges, linear_key, False):
+            expected_markets.append((exchange_name, "linear"))
+    
+    if not expected_markets:
+        logger.info("Нет включенных рынков, пропускаем ожидание получения символов")
+        return
+    
+    while time.time() - start_time < max_wait_time:
+        all_symbols_fetched = True
+        
+        # Проверяем, что все биржи получили символы для своих рынков
+        for exchange_name, market in expected_markets:
+            try:
+                adapter_path = ADAPTERS.get(exchange_name)
+                if not adapter_path:
+                    all_symbols_fetched = False
+                    continue
+                    
+                adapter_module = importlib.import_module(adapter_path)
+                
+                if hasattr(adapter_module, 'get_statistics'):
+                    stats = adapter_module.get_statistics()
+                    market_stats = stats.get(market, {})
+                    active_symbols = market_stats.get("active_symbols", 0)
+                    
+                    if active_symbols == 0:
+                        all_symbols_fetched = False
+                        break
+                else:
+                    all_symbols_fetched = False
+                    break
+            except Exception as e:
+                logger.debug(f"Ошибка при проверке символов для {exchange_name} {market}: {e}")
+                all_symbols_fetched = False
+                break
+        
+        # Если все биржи получили символы, выходим
+        if all_symbols_fetched:
+            total_symbols = 0
+            for exchange_name, market in expected_markets:
+                try:
+                    adapter_path = ADAPTERS.get(exchange_name)
+                    if adapter_path:
+                        adapter_module = importlib.import_module(adapter_path)
+                        if hasattr(adapter_module, 'get_statistics'):
+                            stats = adapter_module.get_statistics()
+                            market_stats = stats.get(market, {})
+                            total_symbols += market_stats.get("active_symbols", 0)
+                except Exception:
+                    pass
+            
+            logger.info(f"Все биржи получили символы: всего {total_symbols} символов")
+            return
+        
+        await asyncio.sleep(check_interval)
+    
+    logger.warning(f"Таймаут ожидания получения символов ({max_wait_time} сек), продолжаем инициализацию БД нормализации")
 
 
 async def start_exchange(exchange_name: str) -> None:
@@ -1029,9 +1207,14 @@ def _calculate_batches_per_ws(exchange_name: str, market: str, active_symbols: i
     return None
 
 
+# Кэш импортированных модулей для оптимизации памяти
+_adapter_modules_cache: Dict[str, Any] = {}
+
+
 async def _save_statistics_to_db():
     """
     Собирает статистику со всех бирж и сохраняет в БД.
+    Оптимизировано: использует кэш модулей вместо повторного импорта.
     """
     try:
         metrics_stats = metrics.get_stats()
@@ -1040,7 +1223,12 @@ async def _save_statistics_to_db():
         for exchange_name in ADAPTERS.keys():
             try:
                 adapter_path = ADAPTERS[exchange_name]
-                adapter_module = importlib.import_module(adapter_path)
+                
+                # Кэшируем модули вместо повторного импорта
+                if adapter_path not in _adapter_modules_cache:
+                    _adapter_modules_cache[adapter_path] = importlib.import_module(adapter_path)
+                
+                adapter_module = _adapter_modules_cache[adapter_path]
                 
                 # Получаем данные по свечам
                 exchange_candles = metrics_stats.get("by_exchange", {}).get(exchange_name, {})
@@ -1178,23 +1366,8 @@ async def main():
     logger.info("START: Запуск сборщика данных со всех бирж")
     logger.info("=" * 60)
     
-    # Инициализируем БД нормализации символов
-    try:
-        from BD.symbol_normalization_db import symbol_normalization_db
-        await symbol_normalization_db.initialize()
-        logger.info("БД нормализации символов инициализирована")
-        
-        # Проверяем, нужно ли заполнить БД (если она пустая)
-        all_symbols = await symbol_normalization_db.get_all_symbols()
-        if not all_symbols:
-            logger.info("БД нормализации пуста, начинаем заполнение...")
-            from core.symbol_utils import populate_normalization_db
-            await populate_normalization_db()
-        else:
-            logger.info(f"БД нормализации содержит {len(all_symbols)} символов")
-    except Exception as e:
-        logger.error(f"Ошибка при инициализации БД нормализации: {e}", exc_info=True)
-        # Продолжаем работу даже если БД нормализации не инициализирована
+    # Инициализируем основную БД
+    await db.initialize()
     
     # Запускаем мониторинг здоровья системы
     await health_monitor.start_monitoring()
@@ -1229,17 +1402,88 @@ async def main():
     
     logger.info(f"Всего создано задач: {exchange_manager.get_tasks_count()}")
     
-    # Запускаем вывод статистики
-    logger.info("Запуск задачи вывода статистики...")
-    stats_task = asyncio.create_task(print_statistics())
-    exchange_manager.add_task(stats_task)
-    logger.info("Задача статистики запущена. Первый вывод через 5 секунд.")
+    # Ожидаем установки соединений
+    await wait_for_connections(enabled_exchanges, max_wait_time=30, check_interval=1.0)
     
-    # Запускаем обновление статистики в БД
-    logger.info("Запуск задачи обновления статистики в БД...")
-    db_stats_task = asyncio.create_task(update_statistics_to_db())
-    exchange_manager.add_task(db_stats_task)
-    logger.info("Задача обновления статистики в БД запущена. Первое обновление через 5 секунд, затем каждые 15 секунд.")
+    # Ожидаем получения символов со всех бирж перед инициализацией БД нормализации
+    # Все биржи подключаются примерно за 3 минуты, поэтому даём запас до 4 минут
+    await wait_for_symbols_fetched(enabled_exchanges, max_wait_time=240, check_interval=1.0)
+    
+    # Инициализируем БД нормализации символов после получения всех символов
+    try:
+        from BD.symbol_normalization_db import symbol_normalization_db
+        await symbol_normalization_db.initialize()
+        logger.info("БД нормализации символов инициализирована")
+        
+        # Проверяем, нужно ли заполнить БД (если она пустая)
+        all_symbols = await symbol_normalization_db.get_all_symbols()
+        if not all_symbols:
+            logger.info("БД нормализации пуста, начинаем заполнение...")
+            from core.symbol_utils import populate_normalization_db
+            await populate_normalization_db()
+            # Получаем обновленную статистику после заполнения
+            all_symbols = await symbol_normalization_db.get_all_symbols()
+        else:
+            # Проверяем полноту БД - если записей меньше ожидаемого, запускаем синхронизацию
+            # Ожидаем примерно: 5 бирж × 2 рынка × ~500+ символов = ~5,000+ записей
+            # Если записей меньше 5000, вероятно БД не полностью заполнена
+            expected_min_records = 5000
+            if len(all_symbols) < expected_min_records:
+                logger.info(
+                    f"БД нормализации содержит только {len(all_symbols)} записей, "
+                    f"ожидается минимум {expected_min_records}. Запускаем синхронизацию..."
+                )
+                from core.symbol_utils import sync_normalization_db
+                await sync_normalization_db()
+                # Получаем обновленную статистику
+                all_symbols = await symbol_normalization_db.get_all_symbols()
+        
+        # Подсчитываем и выводим детальную статистику
+        total_records = len(all_symbols)
+        unique_normalized = len(set(s.get("normalized_symbol") for s in all_symbols))
+        
+        # Статистика по биржам и рынкам
+        stats_by_exchange = {}
+        for symbol_data in all_symbols:
+            exchange = symbol_data.get("exchange", "unknown")
+            market = symbol_data.get("market", "unknown")
+            if exchange not in stats_by_exchange:
+                stats_by_exchange[exchange] = {}
+            if market not in stats_by_exchange[exchange]:
+                stats_by_exchange[exchange][market] = 0
+            stats_by_exchange[exchange][market] += 1
+        
+        # Формируем детальное сообщение
+        stats_lines = [f"БД нормализации содержит {total_records} записей ({unique_normalized} уникальных символов)"]
+        for exchange in sorted(stats_by_exchange.keys()):
+            for market in sorted(stats_by_exchange[exchange].keys()):
+                count = stats_by_exchange[exchange][market]
+                stats_lines.append(f"  - {exchange} {market}: {count} записей")
+        
+        logger.info("\n".join(stats_lines))
+    except Exception as e:
+        logger.error(f"Ошибка при инициализации БД нормализации: {e}", exc_info=True)
+        # Продолжаем работу даже если БД нормализации не инициализирована
+    
+    # Запускаем вывод статистики (с защитой от множественных запусков)
+    if not exchange_manager.is_stats_task_started():
+        logger.info("Запуск задачи вывода статистики...")
+        stats_task = asyncio.create_task(print_statistics())
+        exchange_manager.add_task(stats_task)
+        exchange_manager.set_stats_task_started(True)
+        logger.info("Задача статистики запущена. Первый вывод через 5 секунд.")
+    else:
+        logger.warning("Задача статистики уже запущена, пропускаем повторный запуск.")
+    
+    # Запускаем обновление статистики в БД (с защитой от множественных запусков)
+    if not exchange_manager.is_db_stats_task_started():
+        logger.info("Запуск задачи обновления статистики в БД...")
+        db_stats_task = asyncio.create_task(update_statistics_to_db())
+        exchange_manager.add_task(db_stats_task)
+        exchange_manager.set_db_stats_task_started(True)
+        logger.info("Задача обновления статистики в БД запущена. Первое обновление через 5 секунд, затем каждые 15 секунд.")
+    else:
+        logger.warning("Задача обновления статистики в БД уже запущена, пропускаем повторный запуск.")
     
     # Ожидание
     try:
