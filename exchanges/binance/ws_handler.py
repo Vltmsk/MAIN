@@ -328,33 +328,33 @@ async def _ws_connection_worker(
             #                     f"при переподключении удалено {removed_count} неактуальных стримов"
             #                 )
             #             streams[:] = valid_streams
+            
+            # Если это не плановое переподключение, увеличиваем счётчик и логируем
+            if not is_scheduled:
+                delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
+                if _stats_lock:
+                    async with _stats_lock:
+                        _stats[market]["reconnects"] += 1
+                        reconnect_count = _stats[market]["reconnects"]
                 
-                # Если это не плановое переподключение, увеличиваем счётчик и логируем
-                if not is_scheduled:
-                    delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
-                    if _stats_lock:
-                        async with _stats_lock:
-                            _stats[market]["reconnects"] += 1
-                            reconnect_count = _stats[market]["reconnects"]
-                    
-                    # Получаем причину переподключения из connection_state
-                    reconnect_reason = connection_state.get("reconnect_reason", "неизвестная причина")
-                    
-                    logger.info(f"Binance {market} [{connection_id}]: переподключение (счётчик: {reconnect_count}, причина: {reconnect_reason})")
-                    
-                    await on_error({
-                        "exchange": "binance",
-                        "market": market,
-                        "connection_id": connection_id,
-                        "type": "reconnect",
-                        "reason": reconnect_reason,
-                    })
-                    # Сбрасываем причину после использования
-                    connection_state["reconnect_reason"] = None
-                    await asyncio.sleep(delay)
-                else:
-                    # Для планового переподключения не увеличиваем счётчик
-                    await asyncio.sleep(1)  # Небольшая задержка перед новым подключением
+                # Получаем причину переподключения из connection_state
+                reconnect_reason = connection_state.get("reconnect_reason", "неизвестная причина")
+                
+                logger.info(f"Binance {market} [{connection_id}]: переподключение (счётчик: {reconnect_count}, причина: {reconnect_reason})")
+                
+                await on_error({
+                    "exchange": "binance",
+                    "market": market,
+                    "connection_id": connection_id,
+                    "type": "reconnect",
+                    "reason": reconnect_reason,
+                })
+                # Сбрасываем причину после использования
+                connection_state["reconnect_reason"] = None
+                await asyncio.sleep(delay)
+            else:
+                # Для планового переподключения не увеличиваем счётчик
+                await asyncio.sleep(1)  # Небольшая задержка перед новым подключением
             
             if _session is None or _session.closed:
                 logger.error(f"Binance {market}: сессия не инициализирована или закрыта")
@@ -833,34 +833,34 @@ async def _ws_connection_worker_subscribe(
             #                     f"при переподключении удалено {removed_count} неактуальных стримов"
             #                 )
             #             streams[:] = valid_streams
+            
+            # Если это не плановое переподключение, увеличиваем счётчик и логируем
+            if not is_scheduled:
+                delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
+                # Увеличиваем счётчик переподключений здесь (один раз)
+                if _stats_lock:
+                    async with _stats_lock:
+                        _stats[market]["reconnects"] += 1
+                        reconnect_count = _stats[market]["reconnects"]
                 
-                # Если это не плановое переподключение, увеличиваем счётчик и логируем
-                if not is_scheduled:
-                    delay = min(2 ** min(reconnect_attempt - 1, 5), 60)
-                    # Увеличиваем счётчик переподключений здесь (один раз)
-                    if _stats_lock:
-                        async with _stats_lock:
-                            _stats[market]["reconnects"] += 1
-                            reconnect_count = _stats[market]["reconnects"]
-                    
-                    # Получаем причину переподключения из connection_state
-                    reconnect_reason = connection_state.get("reconnect_reason", "неизвестная причина")
-                    
-                    logger.info(f"Binance {market} [{connection_id}]: переподключение (счётчик: {reconnect_count}, причина: {reconnect_reason})")
-                    
-                    await on_error({
-                        "exchange": "binance",
-                        "market": market,
-                        "connection_id": connection_id,
-                        "type": "reconnect",
-                        "reason": reconnect_reason,
-                    })
-                    # Сбрасываем причину после использования
-                    connection_state["reconnect_reason"] = None
-                    await asyncio.sleep(delay)
-                else:
-                    # Для планового переподключения не увеличиваем счётчик
-                    await asyncio.sleep(1)  # Небольшая задержка перед новым подключением
+                # Получаем причину переподключения из connection_state
+                reconnect_reason = connection_state.get("reconnect_reason", "неизвестная причина")
+                
+                logger.info(f"Binance {market} [{connection_id}]: переподключение (счётчик: {reconnect_count}, причина: {reconnect_reason})")
+                
+                await on_error({
+                    "exchange": "binance",
+                    "market": market,
+                    "connection_id": connection_id,
+                    "type": "reconnect",
+                    "reason": reconnect_reason,
+                })
+                # Сбрасываем причину после использования
+                connection_state["reconnect_reason"] = None
+                await asyncio.sleep(delay)
+            else:
+                # Для планового переподключения не увеличиваем счётчик
+                await asyncio.sleep(1)  # Небольшая задержка перед новым подключением
             
             if _session is None or _session.closed:
                 logger.error(f"Binance {market} [{connection_id}]: сессия не инициализирована или закрыта")
