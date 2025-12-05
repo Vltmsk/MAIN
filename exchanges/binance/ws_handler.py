@@ -21,6 +21,12 @@ FAPI_WS_ENDPOINT_WS = "wss://fstream.binance.com/ws"  # Для подписки 
 # Лимит потоков на одно WS-подключение
 STREAMS_PER_CONNECTION = 150
 
+# Таймауты для стабильной работы на сервере с плохим интернетом
+WS_HEARTBEAT_TIMEOUT = 60  # Таймаут для ping/pong (увеличено с 25 до 60 для плохого интернета)
+WS_CONNECT_TIMEOUT = 30  # Таймаут подключения в секундах
+WS_TOTAL_TIMEOUT = 300  # Общий таймаут для операций в секундах (5 минут)
+WS_READ_TIMEOUT = 120  # Таймаут чтения в секундах (2 минуты)
+
 # Глобальные переменные
 _builder: CandleBuilder | None = None
 _tasks: List[asyncio.Task] = []
@@ -81,7 +87,16 @@ async def _ws_connection_worker(
                 })
                 await asyncio.sleep(delay)
             
-            async with _session.ws_connect(url, heartbeat=25) as ws:
+            # Используем увеличенные таймауты для стабильной работы на сервере
+            async with _session.ws_connect(
+                url, 
+                heartbeat=WS_HEARTBEAT_TIMEOUT,
+                timeout=aiohttp.ClientTimeout(
+                    total=WS_TOTAL_TIMEOUT,
+                    connect=WS_CONNECT_TIMEOUT,
+                    sock_read=WS_READ_TIMEOUT
+                )
+            ) as ws:
                 _stats[market]["active_connections"] += 1
                 
                 async for msg in ws:
@@ -100,6 +115,22 @@ async def _ws_connection_worker(
                 
         except asyncio.CancelledError:
             break
+        except asyncio.TimeoutError as e:
+            logger.warning(f"Таймаут в WS соединении Binance {market}: {e}")
+            await on_error({
+                "exchange": "binance",
+                "market": market,
+                "error": f"Timeout: {str(e)}",
+                "type": "timeout",
+            })
+        except aiohttp.ClientError as e:
+            logger.warning(f"Ошибка клиента в WS соединении Binance {market}: {e}")
+            await on_error({
+                "exchange": "binance",
+                "market": market,
+                "error": f"Client error: {str(e)}",
+                "type": "client_error",
+            })
         except Exception as e:
             logger.error(f"Ошибка в WS соединении Binance {market}: {e}")
             await on_error({
@@ -137,7 +168,16 @@ async def _ws_connection_worker_subscribe(
                 await asyncio.sleep(delay)
             
             url = FAPI_WS_ENDPOINT_WS
-            async with _session.ws_connect(url, heartbeat=25) as ws:
+            # Используем увеличенные таймауты для стабильной работы на сервере
+            async with _session.ws_connect(
+                url, 
+                heartbeat=WS_HEARTBEAT_TIMEOUT,
+                timeout=aiohttp.ClientTimeout(
+                    total=WS_TOTAL_TIMEOUT,
+                    connect=WS_CONNECT_TIMEOUT,
+                    sock_read=WS_READ_TIMEOUT
+                )
+            ) as ws:
                 _stats[market]["active_connections"] += 1
                 
                 # Отправляем подписку через JSON
@@ -174,6 +214,22 @@ async def _ws_connection_worker_subscribe(
         
         except asyncio.CancelledError:
             break
+        except asyncio.TimeoutError as e:
+            logger.warning(f"Таймаут в WS соединении Binance {market} (subscribe mode): {e}")
+            await on_error({
+                "exchange": "binance",
+                "market": market,
+                "error": f"Timeout: {str(e)}",
+                "type": "timeout",
+            })
+        except aiohttp.ClientError as e:
+            logger.warning(f"Ошибка клиента в WS соединении Binance {market} (subscribe mode): {e}")
+            await on_error({
+                "exchange": "binance",
+                "market": market,
+                "error": f"Client error: {str(e)}",
+                "type": "client_error",
+            })
         except Exception as e:
             logger.error(f"Ошибка в WS соединении Binance {market} (subscribe mode): {e}")
             await on_error({
@@ -350,8 +406,23 @@ async def start(
     """
     global _builder, _tasks, _spot_tasks, _linear_tasks, _session
     
-    # Создаём сессию
-    _session = aiohttp.ClientSession()
+    # Создаём сессию с таймаутами для стабильной работы на сервере
+    # Увеличенные таймауты помогают при нестабильном интернете
+    timeout = aiohttp.ClientTimeout(
+        total=WS_TOTAL_TIMEOUT,
+        connect=WS_CONNECT_TIMEOUT,
+        sock_read=WS_READ_TIMEOUT
+    )
+    connector = aiohttp.TCPConnector(
+        limit=100,  # Максимум соединений в пуле
+        limit_per_host=30,  # Максимум соединений на один хост
+        ttl_dns_cache=300,  # Кэш DNS на 5 минут
+        use_dns_cache=True,
+    )
+    _session = aiohttp.ClientSession(
+        timeout=timeout,
+        connector=connector
+    )
     
     # Получаем callback для подсчёта трейдов, если передан
     # Для Binance трейды не обрабатываются через CandleBuilder (свечи уже готовые),
