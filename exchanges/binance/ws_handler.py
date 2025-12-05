@@ -273,60 +273,61 @@ async def _ws_connection_worker(
             # 3. Это плановое переподключение
             is_reconnect = reconnect_attempt > 1 or was_connected or (reconnect_attempt == 1 and is_scheduled)
             
-            if is_reconnect:
-                # Обновляем список символов перед переподключением
-                if _symbol_update_lock:
-                    async with _symbol_update_lock:
-                        # Сохраняем старый список ПЕРЕД получением нового
-                        if market == "spot":
-                            old_symbols = _active_spot_symbols.copy()
-                        else:
-                            old_symbols = _active_linear_symbols.copy()
-                        
-                        fresh_symbols = await fetch_symbols(market)
-                        
-                        # Сравниваем старый и новый списки для обнаружения реальных листингов
-                        old_symbols_set = set(old_symbols)
-                        fresh_symbols_set = set(fresh_symbols)
-                        added_symbols = fresh_symbols_set - old_symbols_set
-                        
-                        # Обновляем глобальный список
-                        if market == "spot":
-                            _active_spot_symbols[:] = fresh_symbols
-                        else:
-                            _active_linear_symbols[:] = fresh_symbols
-                        
-                        # Логируем обнаружение листингов только если действительно есть новые символы
-                        if added_symbols:
-                            added_list = sorted(list(added_symbols))
-                            added_names = added_list[:10]
-                            added_count = len(added_list)
-                            logger.info(
-                                f"Binance {market}: обновление списка символов перед переподключением..."
-                            )
-                            logger.info(
-                                f"Binance {market}: обнаружен листинг: найдено {added_count} новых символов: "
-                                f"{', '.join(added_names)}{f' и еще {added_count - 10} символов' if added_count > 10 else ''}"
-                            )
-                            logger.info(
-                                f"Binance {market}: переподключение из-за листинга {added_count} символов"
-                            )
-                        
-                        # Фильтруем streams, оставляя только актуальные символы
-                        active_symbols_set = set(fresh_symbols)
-                        valid_streams = []
-                        for stream in streams:
-                            symbol = _extract_symbols_from_streams([stream], market)
-                            if symbol and symbol[0] in active_symbols_set:
-                                valid_streams.append(stream)
-                        
-                        removed_count = len(streams) - len(valid_streams)
-                        if removed_count > 0:
-                            logger.info(
-                                f"Binance {market} [{connection_id}]: "
-                                f"при переподключении удалено {removed_count} неактуальных стримов"
-                            )
-                        streams[:] = valid_streams
+            # Обновление кэша символов при реконнектах отключено
+            # if is_reconnect:
+            #     # Обновляем список символов перед переподключением
+            #     if _symbol_update_lock:
+            #         async with _symbol_update_lock:
+            #             # Сохраняем старый список ПЕРЕД получением нового
+            #             if market == "spot":
+            #                 old_symbols = _active_spot_symbols.copy()
+            #             else:
+            #                 old_symbols = _active_linear_symbols.copy()
+            #             
+            #             fresh_symbols = await fetch_symbols(market)
+            #             
+            #             # Сравниваем старый и новый списки для обнаружения реальных листингов
+            #             old_symbols_set = set(old_symbols)
+            #             fresh_symbols_set = set(fresh_symbols)
+            #             added_symbols = fresh_symbols_set - old_symbols_set
+            #             
+            #             # Обновляем глобальный список
+            #             if market == "spot":
+            #                 _active_spot_symbols[:] = fresh_symbols
+            #             else:
+            #                 _active_linear_symbols[:] = fresh_symbols
+            #             
+            #             # Логируем обнаружение листингов только если действительно есть новые символы
+            #             if added_symbols:
+            #                 added_list = sorted(list(added_symbols))
+            #                 added_names = added_list[:10]
+            #                 added_count = len(added_list)
+            #                 logger.info(
+            #                     f"Binance {market}: обновление списка символов перед переподключением..."
+            #                 )
+            #                 logger.info(
+            #                     f"Binance {market}: обнаружен листинг: найдено {added_count} новых символов: "
+            #                     f"{', '.join(added_names)}{f' и еще {added_count - 10} символов' if added_count > 10 else ''}"
+            #                 )
+            #                 logger.info(
+            #                     f"Binance {market}: переподключение из-за листинга {added_count} символов"
+            #                 )
+            #             
+            #             # Фильтруем streams, оставляя только актуальные символы
+            #             active_symbols_set = set(fresh_symbols)
+            #             valid_streams = []
+            #             for stream in streams:
+            #                 symbol = _extract_symbols_from_streams([stream], market)
+            #                 if symbol and symbol[0] in active_symbols_set:
+            #                     valid_streams.append(stream)
+            #             
+            #             removed_count = len(streams) - len(valid_streams)
+            #             if removed_count > 0:
+            #                 logger.info(
+            #                     f"Binance {market} [{connection_id}]: "
+            #                     f"при переподключении удалено {removed_count} неактуальных стримов"
+            #                 )
+            #             streams[:] = valid_streams
                 
                 # Если это не плановое переподключение, увеличиваем счётчик и логируем
                 if not is_scheduled:
@@ -777,60 +778,61 @@ async def _ws_connection_worker_subscribe(
             # 3. Это плановое переподключение
             is_reconnect = reconnect_attempt > 1 or was_connected or (reconnect_attempt == 1 and is_scheduled)
             
-            if is_reconnect:
-                # Обновляем список символов перед переподключением
-                if _symbol_update_lock:
-                    async with _symbol_update_lock:
-                        # Сохраняем старый список ПЕРЕД получением нового
-                        if market == "spot":
-                            old_symbols = _active_spot_symbols.copy()
-                        else:
-                            old_symbols = _active_linear_symbols.copy()
-                        
-                        fresh_symbols = await fetch_symbols(market)
-                        
-                        # Сравниваем старый и новый списки для обнаружения реальных листингов
-                        old_symbols_set = set(old_symbols)
-                        fresh_symbols_set = set(fresh_symbols)
-                        added_symbols = fresh_symbols_set - old_symbols_set
-                        
-                        # Обновляем глобальный список
-                        if market == "spot":
-                            _active_spot_symbols[:] = fresh_symbols
-                        else:
-                            _active_linear_symbols[:] = fresh_symbols
-                        
-                        # Логируем обнаружение листингов только если действительно есть новые символы
-                        if added_symbols:
-                            added_list = sorted(list(added_symbols))
-                            added_names = added_list[:10]
-                            added_count = len(added_list)
-                            logger.info(
-                                f"Binance {market} (subscribe mode): обновление списка символов перед переподключением..."
-                            )
-                            logger.info(
-                                f"Binance {market} (subscribe mode): обнаружен листинг: найдено {added_count} новых символов: "
-                                f"{', '.join(added_names)}{f' и еще {added_count - 10} символов' if added_count > 10 else ''}"
-                            )
-                            logger.info(
-                                f"Binance {market} (subscribe mode): переподключение из-за листинга {added_count} символов"
-                            )
-                        
-                        # Фильтруем streams, оставляя только актуальные символы
-                        active_symbols_set = set(fresh_symbols)
-                        valid_streams = []
-                        for stream in streams:
-                            symbol = _extract_symbols_from_streams([stream], market)
-                            if symbol and symbol[0] in active_symbols_set:
-                                valid_streams.append(stream)
-                        
-                        removed_count = len(streams) - len(valid_streams)
-                        if removed_count > 0:
-                            logger.info(
-                                f"Binance {market} [{connection_id}]: "
-                                f"при переподключении удалено {removed_count} неактуальных стримов"
-                            )
-                        streams[:] = valid_streams
+            # Обновление кэша символов при реконнектах отключено
+            # if is_reconnect:
+            #     # Обновляем список символов перед переподключением
+            #     if _symbol_update_lock:
+            #         async with _symbol_update_lock:
+            #             # Сохраняем старый список ПЕРЕД получением нового
+            #             if market == "spot":
+            #                 old_symbols = _active_spot_symbols.copy()
+            #             else:
+            #                 old_symbols = _active_linear_symbols.copy()
+            #             
+            #             fresh_symbols = await fetch_symbols(market)
+            #             
+            #             # Сравниваем старый и новый списки для обнаружения реальных листингов
+            #             old_symbols_set = set(old_symbols)
+            #             fresh_symbols_set = set(fresh_symbols)
+            #             added_symbols = fresh_symbols_set - old_symbols_set
+            #             
+            #             # Обновляем глобальный список
+            #             if market == "spot":
+            #                 _active_spot_symbols[:] = fresh_symbols
+            #             else:
+            #                 _active_linear_symbols[:] = fresh_symbols
+            #             
+            #             # Логируем обнаружение листингов только если действительно есть новые символы
+            #             if added_symbols:
+            #                 added_list = sorted(list(added_symbols))
+            #                 added_names = added_list[:10]
+            #                 added_count = len(added_list)
+            #                 logger.info(
+            #                     f"Binance {market} (subscribe mode): обновление списка символов перед переподключением..."
+            #                 )
+            #                 logger.info(
+            #                     f"Binance {market} (subscribe mode): обнаружен листинг: найдено {added_count} новых символов: "
+            #                     f"{', '.join(added_names)}{f' и еще {added_count - 10} символов' if added_count > 10 else ''}"
+            #                 )
+            #                 logger.info(
+            #                     f"Binance {market} (subscribe mode): переподключение из-за листинга {added_count} символов"
+            #                 )
+            #             
+            #             # Фильтруем streams, оставляя только актуальные символы
+            #             active_symbols_set = set(fresh_symbols)
+            #             valid_streams = []
+            #             for stream in streams:
+            #                 symbol = _extract_symbols_from_streams([stream], market)
+            #                 if symbol and symbol[0] in active_symbols_set:
+            #                     valid_streams.append(stream)
+            #             
+            #             removed_count = len(streams) - len(valid_streams)
+            #             if removed_count > 0:
+            #                 logger.info(
+            #                     f"Binance {market} [{connection_id}]: "
+            #                     f"при переподключении удалено {removed_count} неактуальных стримов"
+            #                 )
+            #             streams[:] = valid_streams
                 
                 # Если это не плановое переподключение, увеличиваем счётчик и логируем
                 if not is_scheduled:
@@ -1847,18 +1849,19 @@ async def start(
                 _stats["linear"]["active_connections"] = 0
                 _stats["linear"]["reconnects"] = 0
     
-    # Запускаем задачи периодического обновления символов
-    if fetch_spot:
-        update_task_spot = asyncio.create_task(
-            _update_symbols_periodically("spot", on_candle, on_error, config)
-        )
-        _tasks.append(update_task_spot)
-    
-    if fetch_linear:
-        update_task_linear = asyncio.create_task(
-            _update_symbols_periodically("linear", on_candle, on_error, config)
-        )
-        _tasks.append(update_task_linear)
+    # Периодическое обновление кэша символов отключено
+    # # Запускаем задачи периодического обновления символов
+    # if fetch_spot:
+    #     update_task_spot = asyncio.create_task(
+    #         _update_symbols_periodically("spot", on_candle, on_error, config)
+    #     )
+    #     _tasks.append(update_task_spot)
+    # 
+    # if fetch_linear:
+    #     update_task_linear = asyncio.create_task(
+    #         _update_symbols_periodically("linear", on_candle, on_error, config)
+    #     )
+    #     _tasks.append(update_task_linear)
     
     return list(_tasks)
 
